@@ -1,0 +1,32 @@
+services:
+  fclones:
+    image: ghcr.io/cplieger/fclones:latest
+    container_name: fclones
+    restart: unless-stopped
+    user: "1000:1000"  # match your host user
+    mem_limit: 512m
+
+    environment:
+      TZ: "Europe/Paris"
+      FCLONES_SCHEDULE: "0 * * * *"  # cron syntax
+      FCLONES_SCAN_PATHS: "/scandir"
+      FCLONES_ARGS: "--rf-over 1"
+      FCLONES_ACTION: "link"  # group (report), link (hardlink), or remove
+      FCLONES_ACTION_ARGS: "--priority bottom"
+      DISCORD_WEBHOOK_URL: ""
+      DISCORD_NOTIFY_ON_COMPLETION: "true"
+      DISCORD_NOTIFY_ONLY_IF_DUPLICATES: "true"
+
+    volumes:
+      - "/path/to/media:/scandir"
+      - "/opt/appdata/fclones:/cache"
+
+    healthcheck:
+      test:
+        - CMD
+        - /app/wrapper
+        - health
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
