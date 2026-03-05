@@ -2,6 +2,8 @@ package main
 
 import (
 	"os"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -13,7 +15,7 @@ func TestParseStats(t *testing.T) {
 		size   string
 	}{
 		{
-			name:   "standard output",
+			name:   "standard output with parenthesized size",
 			input:  "# Redundant: 5 files (1.2 GB)\n# Total: 10 3 groups",
 			groups: "3",
 			size:   "1.2 GB",
@@ -31,13 +33,13 @@ func TestParseStats(t *testing.T) {
 			size:   "0 files",
 		},
 		{
-			name:   "real fclones output with commas",
+			name:   "real output with commas and extra fields",
 			input:  "# Redundant: 1,234 files (5.6 GB) in 789 groups\n# Total: 2,000 789 groups",
 			groups: "789",
 			size:   "5.6 GB",
 		},
 		{
-			name:   "empty input",
+			name:   "empty input returns defaults",
 			input:  "",
 			groups: "0",
 			size:   "0 B",
@@ -64,14 +66,24 @@ func TestParseDuplicatesFormatted(t *testing.T) {
 		want  string
 	}{
 		{
-			name:  "no duplicates",
+			name:  "comments only",
 			input: "# some comment\n",
 			want:  "No duplicates found.",
 		},
 		{
-			name:  "single group",
+			name:  "single group with two files",
 			input: "# comment\n\n/path/to/file1\n/path/to/file2\n",
 			want:  "/path/to/file1\n↳ /path/to/file2\n",
+		},
+		{
+			name:  "multiple groups separated by blank lines",
+			input: "# comment\n\n/path/a1\n/path/a2\n/path/a3\n\n/path/b1\n/path/b2\n",
+			want:  "/path/a1\n↳ /path/a2\n↳ /path/a3\n/path/b1\n↳ /path/b2\n",
+		},
+		{
+			name:  "group header line resets file counter",
+			input: "# comment\n\n3a2b,1024 B,2 * 512 B:\n/path/file1\n/path/file2\n",
+			want:  "/path/file1\n↳ /path/file2\n",
 		},
 	}
 
@@ -92,17 +104,17 @@ func TestExtractProcessedLine(t *testing.T) {
 		want  string
 	}{
 		{
-			name:  "with processed line",
+			name:  "extracts Processed line from middle",
 			input: "some output\nProcessed 5 files, reclaimed 1.2 GB\nmore output",
 			want:  "Processed 5 files, reclaimed 1.2 GB",
 		},
 		{
-			name:  "no processed line",
+			name:  "falls back to last non-empty line",
 			input: "some output\nlast line",
 			want:  "last line",
 		},
 		{
-			name:  "empty",
+			name:  "empty input",
 			input: "",
 			want:  "(No output captured)",
 		},
@@ -118,47 +130,47 @@ func TestExtractProcessedLine(t *testing.T) {
 	}
 }
 
-func TestParseArgs(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  []string
-	}{
-		{
-			name:  "simple args",
-			input: "--min-size 1024 --threads 4",
-			want:  []string{"--min-size", "1024", "--threads", "4"},
-		},
-		{
-			name:  "quoted args",
-			input: `--path "/some dir/with spaces" --name 'test file'`,
-			want:  []string{"--path", "/some dir/with spaces", "--name", "test file"},
-		},
-		{
-			name:  "empty",
-			input: "",
-			want:  nil,
-		},
-		{
-			name:  "single arg",
-			input: "--rf-over 1",
-			want:  []string{"--rf-over", "1"},
-		},
+// assertArgs is a test helper that compares parseArgs output to expected values.
+func assertArgs(t *testing.T, input string, want []string) {
+	t.Helper()
+	got := parseArgs(input)
+	if len(got) != len(want) {
+		t.Fatalf("parseArgs(%q): len = %d, want %d; got %v", input, len(got), len(want), got)
 	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("parseArgs(%q)[%d] = %q, want %q", input, i, got[i], want[i])
+		}
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := parseArgs(tt.input)
-			if len(got) != len(tt.want) {
-				t.Fatalf("len = %d, want %d; got %v", len(got), len(tt.want), got)
-			}
-			for i := range got {
-				if got[i] != tt.want[i] {
-					t.Errorf("[%d] = %q, want %q", i, got[i], tt.want[i])
-				}
-			}
-		})
-	}
+func TestParseArgs(t *testing.T) {
+	t.Run("simple flags", func(t *testing.T) {
+		assertArgs(t, "--min-size 1024 --threads 4",
+			[]string{"--min-size", "1024", "--threads", "4"})
+	})
+	t.Run("double and single quotes", func(t *testing.T) {
+		assertArgs(t, `--path "/some dir/with spaces" --name 'test file'`,
+			[]string{"--path", "/some dir/with spaces", "--name", "test file"})
+	})
+	t.Run("empty string", func(t *testing.T) {
+		assertArgs(t, "", nil)
+	})
+	t.Run("single flag pair", func(t *testing.T) {
+		assertArgs(t, "--rf-over 1", []string{"--rf-over", "1"})
+	})
+	t.Run("escaped space", func(t *testing.T) {
+		assertArgs(t, `--path /some\ dir/test --flag`,
+			[]string{"--path", "/some dir/test", "--flag"})
+	})
+	t.Run("tab separators", func(t *testing.T) {
+		assertArgs(t, "--flag1\t--flag2\t\t--flag3",
+			[]string{"--flag1", "--flag2", "--flag3"})
+	})
+	t.Run("leading and trailing whitespace", func(t *testing.T) {
+		assertArgs(t, "  --flag1  --flag2  ",
+			[]string{"--flag1", "--flag2"})
+	})
 }
 
 func TestGetEnvBool(t *testing.T) {
@@ -219,7 +231,6 @@ func TestLoadConfig(t *testing.T) {
 }
 
 func TestLoadConfigDefaults(t *testing.T) {
-	// Don't set any env vars — test that defaults are applied
 	cfg := loadConfig()
 
 	if cfg.Schedule != "0 */3 * * *" {
@@ -245,13 +256,14 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestHealthFileCreatedOnHealthy(t *testing.T) {
-	// Skip on Windows — /tmp doesn't exist; this runs in Linux containers
+func TestHealthFile(t *testing.T) {
 	if os.Getenv("OS") == "Windows_NT" {
 		t.Skip("skipping on Windows: /tmp does not exist")
 	}
 
 	setHealthy(true)
+	defer setHealthy(false)
+
 	if _, err := os.Stat(healthFile); err != nil {
 		t.Errorf("health file should exist after setHealthy(true): %v", err)
 	}
@@ -261,10 +273,60 @@ func TestHealthFileCreatedOnHealthy(t *testing.T) {
 		t.Error("health file should not exist after setHealthy(false)")
 	}
 
-	// Restore healthy state
 	setHealthy(true)
-	defer setHealthy(false)
 	if _, err := os.Stat(healthFile); err != nil {
 		t.Errorf("health file should exist after re-setting healthy: %v", err)
 	}
+}
+
+// isDangerousArg mirrors the detection logic in rejectDangerousArgs.
+// rejectDangerousArgs itself calls log.Fatalf, so we test the logic directly.
+func isDangerousArg(arg string) bool {
+	lower := strings.ToLower(arg)
+	return lower == "--command" || strings.HasPrefix(lower, "--command=")
+}
+
+func TestRejectDangerousArgs(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		dangerous bool
+	}{
+		{"safe flags", "--min-size 1024 --threads 4", false},
+		{"empty string", "", false},
+		{"--command bare", "--command rm -rf /", true},
+		{"--command=value", "--command=evil", true},
+		{"case insensitive", "--COMMAND=evil", true},
+		{"mixed case", "--Command something", true},
+		{"buried in middle", "--min-size 1024 --command evil --threads 4", true},
+		{"similar prefix is safe", "--commander 5", false},
+		{"no dashes is safe", "command evil", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			found := slices.ContainsFunc(parseArgs(tt.input), isDangerousArg)
+			if found != tt.dangerous {
+				t.Errorf("parseArgs(%q): dangerous=%v, want %v", tt.input, found, tt.dangerous)
+			}
+		})
+	}
+}
+
+func TestAllowedActions(t *testing.T) {
+	for _, valid := range []string{"group", "remove", "link", "dedupe"} {
+		if !allowedActions[valid] {
+			t.Errorf("expected %q to be allowed", valid)
+		}
+	}
+	for _, invalid := range []string{"", "delete", "exec", "shell", "--command"} {
+		if allowedActions[invalid] {
+			t.Errorf("expected %q to be rejected", invalid)
+		}
+	}
+}
+
+func TestSendDiscordEmptyURL(t *testing.T) {
+	// Verifies the early return path — no panic, no HTTP call.
+	sendDiscord("", "title", "desc", 0)
 }
