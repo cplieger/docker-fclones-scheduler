@@ -4,6 +4,4 @@
 
 ### Changed
 
-- update fclones updates (#120)
-- update service extensions from rootless-internal to rootless-proxy
-- update service extensions and dependency policies
+- Rebuilt with updated publishing pipeline
