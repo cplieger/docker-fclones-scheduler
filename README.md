@@ -161,7 +161,7 @@ All dependencies are updated automatically via [Renovate](https://github.com/ren
 
 | Dependency | Version | Source |
 |------------|---------|--------|
-| rust | `1.93-trixie` | [Rust](https://hub.docker.com/_/rust) |
+| rust | `1.94-trixie` | [Rust](https://hub.docker.com/_/rust) |
 | golang | `1.26-trixie` | [Go](https://hub.docker.com/_/golang) |
 | gcr.io/distroless/static-debian13 | `nonroot` | [Distroless](https://github.com/GoogleContainerTools/distroless) |
 | fclones | `v0.35.0` | [GitHub](https://github.com/pkolaczk/fclones) |
