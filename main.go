@@ -115,7 +115,7 @@ func main() {
 	<-ctx.Done()
 	stop()
 
-	log.Println("Shutting down...")
+	log.Printf("Shutting down (%v)", context.Cause(ctx))
 	c.Stop()
 }
 
@@ -463,15 +463,15 @@ func sendDiscord(webhookURL, title, description string, color int) {
 }
 
 func getEnv(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
 	return fallback
 }
 
 func getEnvBool(key string, fallback bool) bool {
-	if val := os.Getenv(key); val != "" {
-		b, err := strconv.ParseBool(val)
+	if v := os.Getenv(key); v != "" {
+		b, err := strconv.ParseBool(v)
 		if err == nil {
 			return b
 		}
