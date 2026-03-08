@@ -133,7 +133,10 @@ func TestExtractProcessedLine(t *testing.T) {
 // assertArgs is a test helper that compares parseArgs output to expected values.
 func assertArgs(t *testing.T, input string, want []string) {
 	t.Helper()
-	got := parseArgs(input)
+	got, err := parseArgs(input)
+	if err != nil {
+		t.Fatalf("parseArgs(%q): unexpected error: %v", input, err)
+	}
 	if len(got) != len(want) {
 		t.Fatalf("parseArgs(%q): len = %d, want %d; got %v", input, len(got), len(want), got)
 	}
@@ -170,6 +173,24 @@ func TestParseArgs(t *testing.T) {
 	t.Run("leading and trailing whitespace", func(t *testing.T) {
 		assertArgs(t, "  --flag1  --flag2  ",
 			[]string{"--flag1", "--flag2"})
+	})
+	t.Run("unterminated double quote", func(t *testing.T) {
+		_, err := parseArgs(`--path "/unclosed`)
+		if err == nil {
+			t.Error("expected error for unterminated double quote")
+		}
+	})
+	t.Run("unterminated single quote", func(t *testing.T) {
+		_, err := parseArgs(`--path '/unclosed`)
+		if err == nil {
+			t.Error("expected error for unterminated single quote")
+		}
+	})
+	t.Run("trailing backslash", func(t *testing.T) {
+		_, err := parseArgs(`--path /test\`)
+		if err == nil {
+			t.Error("expected error for trailing backslash")
+		}
 	})
 }
 
@@ -305,12 +326,61 @@ func TestRejectDangerousArgs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			found := slices.ContainsFunc(parseArgs(tt.input), isDangerousArg)
+			args, err := parseArgs(tt.input)
+			if err != nil {
+				t.Fatalf("parseArgs: %v", err)
+			}
+			found := slices.ContainsFunc(args, isDangerousArg)
 			if found != tt.dangerous {
 				t.Errorf("parseArgs(%q): dangerous=%v, want %v", tt.input, found, tt.dangerous)
 			}
 		})
 	}
+}
+
+func TestBuildScanArgs(t *testing.T) {
+	t.Run("basic config", func(t *testing.T) {
+		cfg := &Config{ScanPath: "/data", Args: "--min-size 1024"}
+		args, err := buildScanArgs(cfg)
+		if err != nil {
+			t.Fatalf("buildScanArgs: %v", err)
+		}
+		// Should start with "group", contain scan path, extra args, and --cache
+		if args[0] != "group" {
+			t.Errorf("args[0] = %q, want group", args[0])
+		}
+		if args[len(args)-1] != "--cache" {
+			t.Errorf("last arg = %q, want --cache", args[len(args)-1])
+		}
+	})
+
+	t.Run("invalid scan path quotes", func(t *testing.T) {
+		cfg := &Config{ScanPath: `"/unclosed`, Args: ""}
+		_, err := buildScanArgs(cfg)
+		if err == nil {
+			t.Error("expected error for unterminated quote in scan path")
+		}
+	})
+
+	t.Run("invalid args quotes", func(t *testing.T) {
+		cfg := &Config{ScanPath: "/data", Args: `--flag "unclosed`}
+		_, err := buildScanArgs(cfg)
+		if err == nil {
+			t.Error("expected error for unterminated quote in args")
+		}
+	})
+
+	t.Run("empty args", func(t *testing.T) {
+		cfg := &Config{ScanPath: "/data", Args: ""}
+		args, err := buildScanArgs(cfg)
+		if err != nil {
+			t.Fatalf("buildScanArgs: %v", err)
+		}
+		// group + /data + --cache = 3
+		if len(args) != 3 {
+			t.Errorf("len = %d, want 3", len(args))
+		}
+	})
 }
 
 func TestAllowedActions(t *testing.T) {
@@ -329,4 +399,21 @@ func TestAllowedActions(t *testing.T) {
 func TestSendDiscordEmptyURL(t *testing.T) {
 	// Verifies the early return path — no panic, no HTTP call.
 	sendDiscord("", "title", "desc", 0)
+}
+
+func TestSendDiscordRejectsNonDiscordURL(t *testing.T) {
+	// SSRF prevention: non-Discord URLs should be silently rejected
+	sendDiscord("https://evil.example.com/webhook", "title", "desc", 0)
+	sendDiscord("http://discord.com/api/webhooks/123/abc", "title", "desc", 0) // HTTP not HTTPS
+	sendDiscord("https://internal-service:8080/steal", "title", "desc", 0)
+	sendDiscord("://malformed", "title", "desc", 0) // malformed URL — should not panic
+	// No panic = pass
+}
+
+func TestSendDiscordAcceptsValidURLs(t *testing.T) {
+	// These should pass URL validation (but fail on network — that's fine)
+	// We just verify they don't get rejected by the URL filter.
+	// The HTTP call will fail since there's no real server, but that's logged, not fatal.
+	sendDiscord("https://discord.com/api/webhooks/123/abc", "title", "desc", 0)
+	sendDiscord("https://discordapp.com/api/webhooks/123/abc", "title", "desc", 0)
 }

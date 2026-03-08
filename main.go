@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -36,11 +37,13 @@ type Config struct {
 // to prevent command injection via environment variables.
 // See: https://github.com/pkolaczk/fclones#usage
 var allowedActions = map[string]bool{
-	"group":  true,
-	"remove": true,
-	"link":   true,
-	"dedupe": true,
+	actionGroup: true,
+	"remove":    true,
+	"link":      true,
+	"dedupe":    true,
 }
+
+const actionGroup = "group"
 
 // healthFile is created on startup and after successful scans,
 // removed on scan failure. The "health" subcommand checks its existence
@@ -120,7 +123,7 @@ func main() {
 }
 
 func loadConfig() Config {
-	action := getEnv("FCLONES_ACTION", "group")
+	action := getEnv("FCLONES_ACTION", actionGroup)
 	if !allowedActions[action] {
 		log.Fatalf("Invalid FCLONES_ACTION '%s': must be one of: group, remove, link, dedupe", action)
 	}
@@ -144,7 +147,11 @@ func loadConfig() Config {
 
 // rejectDangerousArgs blocks fclones flags that could execute arbitrary commands.
 func rejectDangerousArgs(raw, envVar string) {
-	for _, arg := range parseArgs(raw) {
+	args, err := parseArgs(raw)
+	if err != nil {
+		log.Fatalf("Invalid argument syntax in %s: %v", envVar, err)
+	}
+	for _, arg := range args {
 		lower := strings.ToLower(arg)
 		if lower == "--command" || strings.HasPrefix(lower, "--command=") {
 			log.Fatalf("Dangerous flag '--command' in %s is not allowed", envVar)
@@ -161,6 +168,91 @@ func setHealthy(healthy bool) {
 	} else {
 		os.Remove(healthFile)
 	}
+}
+
+// buildScanArgs constructs the fclones scan command arguments from config.
+func buildScanArgs(cfg *Config) ([]string, error) {
+	args := []string{actionGroup}
+	scanArgs, err := parseArgs(cfg.ScanPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid scan path syntax: %w", err)
+	}
+	args = append(args, scanArgs...)
+
+	if cfg.Args != "" {
+		extraArgs, err := parseArgs(cfg.Args)
+		if err != nil {
+			return nil, fmt.Errorf("invalid FCLONES_ARGS syntax: %w", err)
+		}
+		args = append(args, extraArgs...)
+	}
+
+	// Enable caching - fclones uses $XDG_CACHE_HOME/fclones (or $HOME/.cache/fclones)
+	args = append(args, "--cache")
+	return args, nil
+}
+
+// clearCurrentJob resets the currentJob sentinel under the mutex.
+func clearCurrentJob() {
+	mu.Lock()
+	currentJob = nil
+	mu.Unlock()
+}
+
+// runFclonesAction executes the post-scan action (remove, link, dedupe) on the report file.
+func runFclonesAction(ctx context.Context, cfg *Config, tmpFile string) string {
+	if cfg.Action == actionGroup || cfg.Action == "" {
+		return ""
+	}
+
+	actionCmdArgs := []string{cfg.Action}
+	if cfg.ActionArgs != "" {
+		extraArgs, err := parseArgs(cfg.ActionArgs)
+		if err != nil {
+			log.Printf("Invalid FCLONES_ACTION_ARGS syntax: %v", err)
+		} else {
+			actionCmdArgs = append(actionCmdArgs, extraArgs...)
+		}
+	}
+
+	log.Printf("Performing action: fclones %s", strings.Join(actionCmdArgs, " "))
+
+	actionCmd := exec.CommandContext(ctx, "fclones", actionCmdArgs...)
+	inFile, err := os.Open(tmpFile)
+	if err != nil {
+		log.Printf("Failed to open report for action: %v", err)
+		return ""
+	}
+	defer inFile.Close()
+
+	actionCmd.Stdin = inFile
+	var actionCombined bytes.Buffer
+	actionCmd.Stdout = io.MultiWriter(os.Stdout, &actionCombined)
+	actionCmd.Stderr = io.MultiWriter(os.Stderr, &actionCombined)
+
+	if err := actionCmd.Run(); err != nil {
+		log.Printf("Action failed: %v", err)
+		return fmt.Sprintf("\n\n**Action (%s) Failed**:\n%s", cfg.Action, actionCombined.String())
+	}
+	processedLine := extractProcessedLine(actionCombined.String())
+	return fmt.Sprintf("\n\n**Action (%s) Complete**:\n%s", cfg.Action, processedLine)
+}
+
+// notifyScanComplete sends a Discord notification with scan results.
+func notifyScanComplete(cfg *Config, summary, actionStatus, duplicateList string) {
+	if !cfg.NotifyOnCompletion {
+		return
+	}
+	hasDuplicates := duplicateList != "No duplicates found."
+	if cfg.NotifyOnlyDuplicates && !hasDuplicates {
+		return
+	}
+	// Truncate list for Discord safely
+	if len(duplicateList) > 1600 {
+		duplicateList = duplicateList[:1600] + "\n... (truncated)"
+	}
+	desc := fmt.Sprintf("%s%s\n\n**Duplicates found**:\n```\n%s\n```", summary, actionStatus, duplicateList)
+	sendDiscord(cfg.WebhookURL, "fclones Task Complete", desc, 0x2ecc71)
 }
 
 func runFclonesJob(ctx context.Context, cfg *Config) {
@@ -182,17 +274,12 @@ func runFclonesJob(ctx context.Context, cfg *Config) {
 
 	tmpFile := filepath.Join(os.TempDir(), "fclones_report.txt")
 
-	// 1. SCAN
-	args := []string{"group"}
-	args = append(args, parseArgs(cfg.ScanPath)...)
-
-	if cfg.Args != "" {
-		args = append(args, parseArgs(cfg.Args)...)
+	args, err := buildScanArgs(cfg)
+	if err != nil {
+		log.Printf("%v", err)
+		clearCurrentJob()
+		return
 	}
-
-	// Enable caching - fclones uses $XDG_CACHE_HOME/fclones (or $HOME/.cache/fclones)
-	// Just pass --cache flag without directory argument
-	args = append(args, "--cache")
 
 	log.Printf("Running command: fclones %s", strings.Join(args, " "))
 
@@ -201,16 +288,12 @@ func runFclonesJob(ctx context.Context, cfg *Config) {
 
 	outFile, err := os.Create(tmpFile)
 	if err != nil {
-		mu.Lock()
-		currentJob = nil
-		mu.Unlock()
+		clearCurrentJob()
 		log.Printf("Failed to create temp file: %v", err)
 		return
 	}
 
-	// Write to BOTH stdout (for Docker logs) and file (for parsing)
 	cmd.Stdout = io.MultiWriter(os.Stdout, outFile)
-	// Stderr to logs for progress updates
 	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
 
 	mu.Lock()
@@ -219,14 +302,10 @@ func runFclonesJob(ctx context.Context, cfg *Config) {
 
 	err = cmd.Run()
 	outFile.Close()
-
-	mu.Lock()
-	currentJob = nil
-	mu.Unlock()
+	clearCurrentJob()
 
 	duration := time.Since(startTime)
 
-	// Bail early if shutdown was requested during the scan
 	if ctx.Err() != nil {
 		log.Println("Scan interrupted by shutdown signal")
 		os.Remove(tmpFile)
@@ -236,11 +315,9 @@ func runFclonesJob(ctx context.Context, cfg *Config) {
 	if err != nil {
 		errMsg := fmt.Sprintf("Scan failed after %s: %v\nStderr: %s", duration, err, errBuf.String())
 		log.Println(errMsg)
-
 		if cfg.NotifyOnCompletion {
 			sendDiscord(cfg.WebhookURL, "Scan Failed", errMsg, 0xe74c3c)
 		}
-
 		setHealthy(false)
 		return
 	}
@@ -255,60 +332,11 @@ func runFclonesJob(ctx context.Context, cfg *Config) {
 	stats := parseStats(outputStr)
 	summary := fmt.Sprintf("**Duration**: %s\n**Redundant Data**: %s\n**Files**: %s groups",
 		duration.Round(time.Second), stats.Size, stats.Groups)
-
 	log.Printf("Scan Complete. Duration: %s, Redundant: %s, Groups: %s", duration.Round(time.Second), stats.Size, stats.Groups)
 
 	duplicateList := parseDuplicatesFormatted(outputStr)
-
-	// 2. ACTION
-	actionStatus := ""
-
-	if cfg.Action != "group" && cfg.Action != "" {
-		actionCmdArgs := []string{cfg.Action}
-
-		if cfg.ActionArgs != "" {
-			actionCmdArgs = append(actionCmdArgs, parseArgs(cfg.ActionArgs)...)
-		}
-
-		log.Printf("Performing action: fclones %s", strings.Join(actionCmdArgs, " "))
-
-		actionCmd := exec.CommandContext(ctx, "fclones", actionCmdArgs...)
-
-		inFile, err := os.Open(tmpFile)
-		if err != nil {
-			log.Printf("Failed to open report for action: %v", err)
-		} else {
-			actionCmd.Stdin = inFile
-
-			var actionCombined bytes.Buffer
-			actionCmd.Stdout = io.MultiWriter(os.Stdout, &actionCombined)
-			actionCmd.Stderr = io.MultiWriter(os.Stderr, &actionCombined)
-
-			if err := actionCmd.Run(); err != nil {
-				actionStatus = fmt.Sprintf("\n\n**Action (%s) Failed**:\n%s", cfg.Action, actionCombined.String())
-				log.Printf("Action failed: %v", err)
-			} else {
-				processedLine := extractProcessedLine(actionCombined.String())
-				actionStatus = fmt.Sprintf("\n\n**Action (%s) Complete**:\n%s", cfg.Action, processedLine)
-			}
-
-			inFile.Close()
-		}
-	}
-
-	if cfg.NotifyOnCompletion {
-		hasDuplicates := duplicateList != "No duplicates found."
-
-		if !cfg.NotifyOnlyDuplicates || hasDuplicates {
-			// Truncate list for Discord safely
-			if len(duplicateList) > 1600 {
-				duplicateList = duplicateList[:1600] + "\n... (truncated)"
-			}
-
-			desc := fmt.Sprintf("%s%s\n\n**Duplicates found**:\n```\n%s\n```", summary, actionStatus, duplicateList)
-			sendDiscord(cfg.WebhookURL, "fclones Task Complete", desc, 0x2ecc71)
-		}
-	}
+	actionStatus := runFclonesAction(ctx, cfg, tmpFile)
+	notifyScanComplete(cfg, summary, actionStatus, duplicateList)
 
 	os.Remove(tmpFile)
 	setHealthy(true)
@@ -321,34 +349,33 @@ type FclonesStats struct {
 
 func parseStats(output string) FclonesStats {
 	stats := FclonesStats{Groups: "0", Size: "0 B"}
-	lines := strings.SplitSeq(output, "\n")
 
-	for line := range lines {
-		if strings.HasPrefix(line, "# Redundant:") {
-			if start := strings.Index(line, "("); start != -1 {
-				if end := strings.Index(line, ")"); end != -1 && end > start {
-					stats.Size = line[start+1 : end]
-					continue
-				}
-			}
-
-			parts := strings.Fields(line)
-			if len(parts) >= 4 {
-				stats.Size = parts[2] + " " + parts[3]
-			}
-		}
-
-		if strings.HasPrefix(line, "# Total:") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				if parts[len(parts)-1] == "groups" {
-					stats.Groups = parts[len(parts)-2]
-				}
+	for line := range strings.SplitSeq(output, "\n") {
+		switch {
+		case strings.HasPrefix(line, "# Redundant:"):
+			stats.Size = parseRedundantSize(line)
+		case strings.HasPrefix(line, "# Total:"):
+			if parts := strings.Fields(line); len(parts) >= 2 && parts[len(parts)-1] == "groups" {
+				stats.Groups = parts[len(parts)-2]
 			}
 		}
 	}
 
 	return stats
+}
+
+// parseRedundantSize extracts the human-readable size from a "# Redundant:" line.
+// Prefers the parenthesized form "(1.2 GB)" over the bare "512 MB" form.
+func parseRedundantSize(line string) string {
+	if start := strings.Index(line, "("); start != -1 {
+		if end := strings.Index(line, ")"); end > start {
+			return line[start+1 : end]
+		}
+	}
+	if parts := strings.Fields(line); len(parts) >= 4 {
+		return parts[2] + " " + parts[3]
+	}
+	return "0 B"
 }
 
 func parseDuplicatesFormatted(report string) string {
@@ -428,6 +455,19 @@ func sendDiscord(webhookURL, title, description string, color int) {
 		return
 	}
 
+	// Validate webhook URL to prevent SSRF — only allow HTTPS Discord webhook URLs
+	parsed, err := url.Parse(webhookURL)
+	if err != nil || parsed.Scheme != "https" ||
+		(parsed.Host != "discord.com" && parsed.Host != "discordapp.com" &&
+			!strings.HasSuffix(parsed.Host, ".discord.com")) {
+		host := webhookURL
+		if parsed != nil {
+			host = parsed.Host
+		}
+		log.Printf("Rejected non-Discord webhook URL: %s", host)
+		return
+	}
+
 	payload := DiscordPayload{
 		Embeds: []DiscordEmbed{{
 			Title:       title,
@@ -459,7 +499,10 @@ func sendDiscord(webhookURL, title, description string, color int) {
 		log.Printf("Failed to send Discord notification: %v", err)
 		return
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		log.Printf("Discord webhook returned HTTP %d", resp.StatusCode)
+	}
 }
 
 func getEnv(key, fallback string) string {
@@ -480,7 +523,8 @@ func getEnvBool(key string, fallback bool) bool {
 }
 
 // parseArgs splits a string into arguments respecting quotes (single and double).
-func parseArgs(input string) []string {
+// Returns an error if quotes are not properly terminated.
+func parseArgs(input string) ([]string, error) {
 	var args []string
 	var current strings.Builder
 	inQuote := false
@@ -519,8 +563,14 @@ func parseArgs(input string) []string {
 			current.WriteRune(r)
 		}
 	}
+	if inQuote {
+		return nil, fmt.Errorf("unterminated %c quote in: %s", quoteChar, input)
+	}
+	if escaped {
+		return nil, fmt.Errorf("trailing backslash in: %s", input)
+	}
 	if current.Len() > 0 {
 		args = append(args, current.String())
 	}
-	return args
+	return args, nil
 }
