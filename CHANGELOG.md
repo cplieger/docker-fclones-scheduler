@@ -1,11 +1,7 @@
 # Changelog
 
-## 2026.03.08 (2026-03-08)
-
-### Added
-
-- Add input validation and SSRF protection
+## 2026.03.09 (2026-03-09)
 
 ### Changed
 
-- Refactor(fclones): extract action execution and notification logic
+- Rebuilt with updated publishing pipeline
