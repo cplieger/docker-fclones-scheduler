@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026.03.11 (2026-03-11)
+
+### Added
+
+- Add Go app binaries to gitignore and document slog logging standard
+- Migrate to structured logging and improve shell safety
+
+### Changed
+
+- Refactor(fclones): reorganize code structure and improve cache handling
+- Style(fclones): remove extra blank lines
+- Remove Discord webhook integration and migrate to structured logging
+- Remove Discord webhook integration and migrate to Alloy/Loki alerting
+
 ## 2026.03.10 (2026-03-10)
 
 ### Changed

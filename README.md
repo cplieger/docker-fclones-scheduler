@@ -6,22 +6,22 @@
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Distroless](https://img.shields.io/badge/base-Distroless_nonroot-4285F4?logo=google)
 
-Scheduled duplicate file finder with Discord notifications
+Scheduled duplicate file finder with cron scheduling and health monitoring
 
 ## Overview
 
 Wraps the fclones duplicate file finder in a Go scheduler with cron-based
-scheduling (via robfig/cron), Discord webhook notifications (start, success,
-error, duplicates-only modes), and a CLI health probe. Supports all
-fclones actions (group, link, remove) with configurable arguments. Reports
-scan statistics including duplicates found, space reclaimable, and files
-processed.
+scheduling (via robfig/cron) and a CLI health probe. Supports all fclones
+actions (group, link, remove) with configurable arguments. Reports scan
+statistics including duplicates found, space reclaimable, and files
+processed. All output goes to stdout/stderr for collection by log
+aggregators (Alloy, Promtail, etc.) and alerting via Grafana or similar.
 
 **Example use case:** You have a large media library where downloads,
 imports, or manual copies have created duplicate files wasting disk space.
 Mount your media directory and schedule periodic scans — fclones finds
-duplicates and can replace them with hardlinks or remove them entirely,
-with Discord notifications to keep you informed.
+duplicates and can replace them with hardlinks or remove them entirely.
+Pipe container logs to your observability stack for alerting.
 
 This is a distroless, rootless container — it runs as `nonroot` on
 `gcr.io/distroless/static` with no shell or package manager.
@@ -30,10 +30,10 @@ This is a distroless, rootless container — it runs as `nonroot` on
 ### How It Differs From fclones
 
 The upstream [fclones](https://github.com/pkolaczk/fclones) is a CLI tool
-you run manually. This image adds scheduled execution, Discord notifications,
-health monitoring, and packages everything in a distroless container. The
-fclones binary is included — amd64 uses the prebuilt release, arm64 is
-cross-compiled from source.
+you run manually. This image adds scheduled execution, structured log
+output, health monitoring, and packages everything in a distroless
+container. The fclones binary is included — amd64 uses the prebuilt
+release, arm64 is cross-compiled from source.
 
 ## Container Registries
 
@@ -72,9 +72,6 @@ services:
       FCLONES_ARGS: "--rf-over 1"
       FCLONES_ACTION: "link"  # group (report), link (hardlink), or remove
       FCLONES_ACTION_ARGS: "--priority bottom"
-      DISCORD_WEBHOOK_URL: ""
-      DISCORD_NOTIFY_ON_COMPLETION: "true"
-      DISCORD_NOTIFY_ONLY_IF_DUPLICATES: "true"
 
     volumes:
       - "/path/to/media:/scandir"
@@ -100,8 +97,7 @@ services:
 4. Set `FCLONES_ACTION` to control what happens with duplicates:
    `group` (report only), `link` (replace with hardlinks), or
    `remove` (delete duplicates).
-5. Optionally set `DISCORD_WEBHOOK_URL` for scan notifications. Leave empty to disable.
-6. The `FCLONES_ARGS` and `FCLONES_ACTION_ARGS` are passed directly
+5. The `FCLONES_ARGS` and `FCLONES_ACTION_ARGS` are passed directly
    to the fclones binary — see
    [fclones documentation](https://github.com/pkolaczk/fclones#usage)
    for all available options.
@@ -117,9 +113,6 @@ services:
 | `FCLONES_ARGS` | Extra arguments passed to `fclones group` scan phase | `--rf-over 1` | No |
 | `FCLONES_ACTION` | Dedup action after scan — group (report only), link (hardlink), or remove | `link` | Yes |
 | `FCLONES_ACTION_ARGS` | Extra arguments for the dedup action phase | `--priority bottom` | No |
-| `DISCORD_WEBHOOK_URL` | Discord webhook URL for scan notifications | `` | No |
-| `DISCORD_NOTIFY_ON_COMPLETION` | Send a Discord message when each scan finishes | `true` | No |
-| `DISCORD_NOTIFY_ONLY_IF_DUPLICATES` | - | `true` | No |
 
 
 ## Volumes

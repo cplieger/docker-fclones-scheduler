@@ -2,6 +2,7 @@
 FROM --platform=$BUILDPLATFORM rust:1.94-trixie@sha256:0e6da0c8f06f25e9591f21c0f741cd4ff1086e271c3330f29f6e4e95869c7843 AS fclones-builder
 
 WORKDIR /usr/src/fclones
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && apt-get install -y --no-install-recommends \
     musl-tools \
     cmake \
@@ -16,7 +17,7 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
 # renovate: datasource=github-tags depName=pkolaczk/fclones
 ARG FCLONES_VERSION=v0.35.0
 ARG TARGETARCH
-RUN VERSION=$(echo "$FCLONES_VERSION" | sed 's/^v//') && \
+RUN VERSION="${FCLONES_VERSION#v}" && \
     if [ "$TARGETARCH" = "amd64" ]; then \
       curl -fsSL "https://github.com/pkolaczk/fclones/releases/download/${FCLONES_VERSION}/fclones-${VERSION}-linux-musl-x86_64.tar.gz" \
         | tar xz --strip-components=3 -C /usr/src/fclones; \
@@ -41,10 +42,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:f512d819b8f109f2375e8b51d8cfd8aafe81034bc3e319740128b7d7f70d5036
 
 WORKDIR /app
-COPY --from=fclones-builder /usr/src/fclones/fclones /usr/bin/fclones
-COPY --from=go-builder /app/wrapper /app/wrapper
-ENV FCLONES_CACHE_DIR="/cache" \
-    XDG_CACHE_HOME="/cache" \
+COPY --chmod=755 --from=fclones-builder /usr/src/fclones/fclones /usr/bin/fclones
+COPY --chmod=755 --from=go-builder /app/wrapper /app/wrapper
+ENV XDG_CACHE_HOME="/cache" \
     HOME="/tmp" \
     PATH="/usr/bin:$PATH"
 ENTRYPOINT ["/app/wrapper"]

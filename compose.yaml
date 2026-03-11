@@ -13,9 +13,6 @@ services:
       FCLONES_ARGS: "--rf-over 1"
       FCLONES_ACTION: "link"  # group (report), link (hardlink), or remove
       FCLONES_ACTION_ARGS: "--priority bottom"
-      DISCORD_WEBHOOK_URL: ""
-      DISCORD_NOTIFY_ON_COMPLETION: "true"
-      DISCORD_NOTIFY_ONLY_IF_DUPLICATES: "true"
 
     volumes:
       - "/path/to/media:/scandir"
