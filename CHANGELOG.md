@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026.03.11 (2026-03-11)
+## 2026.03.11-e73cc45 (2026-03-11)
 
 ### Added
 
@@ -13,12 +13,6 @@
 - Style(fclones): remove extra blank lines
 - Remove Discord webhook integration and migrate to structured logging
 - Remove Discord webhook integration and migrate to Alloy/Loki alerting
-
-## 2026.03.10 (2026-03-10)
-
-### Changed
-
-- Minor code improvements and optimizations
 
 ## 2026.03.07-2867a03 (2026-03-08)
 
