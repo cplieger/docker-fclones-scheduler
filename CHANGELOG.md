@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026.03.12-459a44f (2026-03-12)
+
+### Fixed
+
+- Improve startup health state and graceful shutdown handling
+
+### Dependencies
+
+- Update rust:1.94-trixie docker digest to 335533f
+- Update rust:1.94-trixie docker digest to 7e322aa (#132)
+
 ## 2026.03.11-e73cc45 (2026-03-11)
 
 ### Added

@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -398,5 +399,58 @@ func TestAllowedActions(t *testing.T) {
 		if allowedActions[invalid] {
 			t.Errorf("expected %q to be rejected", invalid)
 		}
+	}
+}
+
+func TestReadFileWithLimit(t *testing.T) {
+	t.Run("reads file within limit", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "small.txt")
+		os.WriteFile(path, []byte("hello"), 0o644)
+
+		data, err := readFileWithLimit(path, 100)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(data) != "hello" {
+			t.Errorf("got %q, want %q", data, "hello")
+		}
+	})
+
+	t.Run("rejects file over limit", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "big.txt")
+		os.WriteFile(path, make([]byte, 200), 0o644)
+
+		_, err := readFileWithLimit(path, 100)
+		if err == nil {
+			t.Error("expected error for oversized file")
+		}
+	})
+
+	t.Run("returns error for missing file", func(t *testing.T) {
+		_, err := readFileWithLimit("/nonexistent/file.txt", 100)
+		if err == nil {
+			t.Error("expected error for missing file")
+		}
+	})
+}
+
+func TestParseRedundantSize(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"parenthesized", "# Redundant: 5 files (1.2 GB)", "1.2 GB"},
+		{"bare size", "# Redundant: 512 MB", "512 MB"},
+		{"too few fields", "# Redundant:", "0 B"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseRedundantSize(tt.line)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

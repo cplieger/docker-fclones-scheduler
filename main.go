@@ -72,25 +72,27 @@ func main() {
 	cfg := loadConfig()
 	verifyCacheDir()
 
-	c := cron.New()
-
 	// Validate schedule before setting up signal handling — exit immediately on bad config.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	_, err := c.AddFunc(cfg.Schedule, func() {
-		runFclonesJob(ctx, &cfg)
-	})
-	if err != nil {
-		stop()
+	if _, err := cron.ParseStandard(cfg.Schedule); err != nil {
 		slog.Error("invalid cron schedule", "schedule", cfg.Schedule, "error", err)
 		os.Exit(1)
 	}
 
-	// Mark healthy on startup, remove on exit.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Remove stale health file from a previous run that may have crashed
+	// before its defer ran.
+	setHealthy(false)
+
+	c := cron.New()
+	// Schedule already validated above — AddFunc cannot fail here.
+	if _, err := c.AddFunc(cfg.Schedule, func() { runFclonesJob(ctx, &cfg) }); err != nil {
+		panic("unreachable: cron schedule rejected after validation: " + err.Error())
+	}
+
 	setHealthy(true)
-	defer func() {
-		setHealthy(false)
-		stop()
-	}()
+	defer setHealthy(false)
 
 	c.Start()
 	slog.Info("container started",
@@ -98,13 +100,15 @@ func main() {
 		"target", cfg.ScanPath, "action", cfg.Action)
 
 	slog.Info("triggering startup scan")
-	go runFclonesJob(ctx, &cfg)
+	var wg sync.WaitGroup
+	wg.Go(func() { runFclonesJob(ctx, &cfg) })
 
 	<-ctx.Done()
 	slog.Info("shutting down", "cause", context.Cause(ctx))
 
-	// Wait for any running cron job to finish before exiting.
+	// Wait for cron-scheduled jobs and the startup scan goroutine.
 	<-c.Stop().Done()
+	wg.Wait()
 }
 
 // --- Health ---
@@ -252,7 +256,9 @@ func runFclonesJob(ctx context.Context, cfg *config) {
 		return
 	}
 
-	outputBytes, err := os.ReadFile(tmpPath)
+	// Cap output file read to 50 MB to prevent OOM on huge filesystems.
+	const maxOutputSize = 50 << 20
+	outputBytes, err := readFileWithLimit(tmpPath, maxOutputSize)
 	if err != nil {
 		slog.Warn("failed to read output file", "error", err)
 		outputBytes = []byte{}
@@ -389,6 +395,8 @@ func parseRedundantSize(line string) string {
 	return "0 B"
 }
 
+// parseDuplicatesFormatted formats fclones group output into a human-readable
+// list with "↳" prefixes for duplicate files within each group.
 func parseDuplicatesFormatted(report string) string {
 	var result strings.Builder
 	filesInGroup := 0
@@ -426,6 +434,8 @@ func parseDuplicatesFormatted(report string) string {
 	return result.String()
 }
 
+// extractProcessedLine finds the "Processed ... reclaimed ..." summary line
+// from fclones action output, falling back to the last non-empty line.
 func extractProcessedLine(s string) string {
 	var lastNonEmpty string
 
@@ -442,6 +452,27 @@ func extractProcessedLine(s string) string {
 		return lastNonEmpty
 	}
 	return "(No output captured)"
+}
+
+// --- File Helpers ---
+
+// readFileWithLimit reads a file up to maxBytes. Returns an error if the file
+// exceeds the limit or cannot be read.
+func readFileWithLimit(path string, maxBytes int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxBytes {
+		return nil, fmt.Errorf("file %s is %d bytes, exceeds %d byte limit", path, info.Size(), maxBytes)
+	}
+	return io.ReadAll(f)
 }
 
 // --- Argument Parsing ---
