@@ -169,10 +169,6 @@ All dependencies are updated automatically via [Renovate](https://github.com/ren
 - **Healthchecks**: Every container includes a Docker healthcheck.
 - **Provenance**: Build provenance is attested via GitHub Actions, verifiable with `gh attestation verify`.
 
-## Contributing
-
-Issues, suggestions, and pull requests are welcome.
-
 ## Credits
 
 This project packages [fclones](https://github.com/pkolaczk/fclones) into a container image. All credit for the core functionality goes to the upstream maintainers.
