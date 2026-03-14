@@ -55,6 +55,9 @@ const (
 	// Fixed container paths — configured via volume mounts, not env vars.
 	scanDir  = "/scandir"
 	cacheDir = "/cache"
+
+	noDuplicates   = "No duplicates found."
+	defaultSizeStr = "0 B"
 )
 
 // --- Main ---
@@ -267,7 +270,7 @@ func runFclonesJob(ctx context.Context, cfg *config) {
 
 	stats := parseStats(outputStr)
 	duplicateList := parseDuplicatesFormatted(outputStr)
-	hasDuplicates := duplicateList != "No duplicates found."
+	hasDuplicates := duplicateList != noDuplicates
 
 	slog.Info("scan complete",
 		"duration", duration.Round(time.Second),
@@ -315,20 +318,33 @@ func buildScanArgs(cfg *config) ([]string, error) {
 
 // --- Action ---
 
-// runFclonesAction executes the post-scan action (remove, link, dedupe) on the report file.
-func runFclonesAction(ctx context.Context, cfg *config, reportPath string) {
+// buildActionArgs constructs the fclones action command arguments from config.
+// Returns nil if the action is "group" or empty (no post-scan action needed).
+func buildActionArgs(cfg *config) ([]string, error) {
 	if cfg.Action == actionGroup || cfg.Action == "" {
-		return
+		return nil, nil
 	}
 
-	actionCmdArgs := []string{cfg.Action}
+	args := []string{cfg.Action}
 	if cfg.ActionArgs != "" {
 		extraArgs, err := parseArgs(cfg.ActionArgs)
 		if err != nil {
-			slog.Error("invalid FCLONES_ACTION_ARGS syntax", "error", err)
-			return
+			return nil, fmt.Errorf("invalid FCLONES_ACTION_ARGS syntax: %w", err)
 		}
-		actionCmdArgs = append(actionCmdArgs, extraArgs...)
+		args = append(args, extraArgs...)
+	}
+	return args, nil
+}
+
+// runFclonesAction executes the post-scan action (remove, link, dedupe) on the report file.
+func runFclonesAction(ctx context.Context, cfg *config, reportPath string) {
+	actionCmdArgs, err := buildActionArgs(cfg)
+	if err != nil {
+		slog.Error("invalid FCLONES_ACTION_ARGS syntax", "error", err)
+		return
+	}
+	if actionCmdArgs == nil {
+		return
 	}
 
 	slog.Info("performing action", "command", "fclones "+strings.Join(actionCmdArgs, " "))
@@ -365,7 +381,7 @@ type fclonesStats struct {
 }
 
 func parseStats(output string) fclonesStats {
-	stats := fclonesStats{Groups: "0", Size: "0 B"}
+	stats := fclonesStats{Groups: "0", Size: defaultSizeStr}
 
 	for line := range strings.SplitSeq(output, "\n") {
 		switch {
@@ -392,7 +408,7 @@ func parseRedundantSize(line string) string {
 	if parts := strings.Fields(line); len(parts) >= 4 {
 		return parts[2] + " " + parts[3]
 	}
-	return "0 B"
+	return defaultSizeStr
 }
 
 // parseDuplicatesFormatted formats fclones group output into a human-readable
@@ -428,7 +444,7 @@ func parseDuplicatesFormatted(report string) string {
 	}
 
 	if result.Len() == 0 {
-		return "No duplicates found."
+		return noDuplicates
 	}
 
 	return result.String()

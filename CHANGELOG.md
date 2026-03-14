@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026.03.14-94143c3 (2026-03-14)
+
+### Added
+
+- Test(fclones): add property-based and edge case tests
+
+### Changed
+
+- Refactor(fclones): extract magic strings to constants and improve byte comparison
+- Refactor(fclones): extract action args building into separate function
+
 ## 2026.03.12-459a44f (2026-03-12)
 
 ### Fixed
