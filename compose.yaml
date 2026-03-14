@@ -15,8 +15,8 @@ services:
       FCLONES_ACTION_ARGS: "--priority bottom"
 
     volumes:
-      - "/path/to/media:/scandir"
-      - "/opt/appdata/fclones:/cache"
+      - "\\/path/to/media:/scandir"
+      - "\\/opt/appdata/fclones:/cache"
 
     healthcheck:
       test:

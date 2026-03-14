@@ -74,8 +74,8 @@ services:
       FCLONES_ACTION_ARGS: "--priority bottom"
 
     volumes:
-      - "/path/to/media:/scandir"
-      - "/opt/appdata/fclones:/cache"
+      - "\\/path/to/media:/scandir"
+      - "\\/opt/appdata/fclones:/cache"
 
     healthcheck:
       test:
@@ -157,7 +157,7 @@ docker inspect --format='{{json .State.Health.Log}}' fclones | python3 -m json.t
 | Tests | 123 |
 | [Cyclomatic Complexity](https://en.wikipedia.org/wiki/Cyclomatic_complexity) (avg) | 4.5 |
 | [Cognitive Complexity](https://www.sonarsource.com/docs/CognitiveComplexity.pdf) (avg) | 4.2 |
-| [Mutation Efficacy](https://en.wikipedia.org/wiki/Mutation_testing) | 86.3% (29 runs) |
+| [Mutation Efficacy](https://en.wikipedia.org/wiki/Mutation_testing) | 86.3% (59 runs) |
 | Test Framework | Property-based ([rapid](https://github.com/flyingmutant/rapid)) + table-driven |
 
 Every reachable code mutation is caught by the test suite (100%
