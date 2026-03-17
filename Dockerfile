@@ -1,5 +1,5 @@
 # check=error=true
-FROM --platform=$BUILDPLATFORM rust:1.94-trixie@sha256:7e322aa1b876cbb977e0df46812af6c4e8be2efbfb2ce3712c28a93ba2968726 AS fclones-builder
+FROM --platform=$BUILDPLATFORM rust:1.94-trixie@sha256:c328b1742cd1ecb6c7cfe4960a75e571ace675dbc65cf4c59be7b9252e9382f4 AS fclones-builder
 
 WORKDIR /usr/src/fclones
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -27,7 +27,7 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
       mv target/aarch64-unknown-linux-musl/release/fclones /usr/src/fclones/fclones; \
     fi
 
-FROM --platform=$BUILDPLATFORM golang:1.26-trixie@sha256:ab8c4944b04c6f97c2b5bffce471b7f3d55f2228badc55eae6cce87596d5710b AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-trixie@sha256:432b0a8baf30f1b94143e4ba9d122d3852f05bbff8c0864f2a838f9014192dee AS go-builder
 
 WORKDIR /app
 COPY go.mod go.sum ./

@@ -173,6 +173,34 @@ Not tested: `main()` orchestration and `exec.Command` calls to the
 fclones binary — these are process-level I/O validated by container
 logs and Grafana alerting in production.
 
+## Security Review
+
+**No vulnerabilities found.** All scans clean across 10 tools.
+
+| Tool | Result |
+|------|--------|
+| [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) | No vulnerabilities in call graph |
+| [golangci-lint](https://golangci-lint.run/) (gosec, gocritic) | 0 issues |
+| [trivy](https://trivy.dev/) | 0 vulnerabilities |
+| [grype](https://github.com/anchore/grype) | 0 vulnerabilities |
+| [gitleaks](https://github.com/gitleaks/gitleaks) | No secrets detected |
+| [semgrep](https://semgrep.dev/) | 2 info (false positives) |
+| [hadolint](https://github.com/hadolint/hadolint) | DL3008 in builder stage (discarded) |
+
+No network listener, no HTTP server, no exposed ports. The
+`FCLONES_ACTION` env var is validated against an allowlist and
+the `--command` flag is blocked to prevent command injection.
+Runs as `nonroot` on a distroless base image with no shell.
+
+**Details for advanced users:** Arguments are passed to
+`exec.Command` as explicit arg lists (no shell expansion). Temp
+files use `os.CreateTemp` with unpredictable names. Output reads
+are capped at 50 MB. Semgrep flags the distroless nonroot image
+as "missing USER" (false positive, UID 65534 is baked in) and
+the `/tmp/.healthy` marker (fixed path, single-process
+container). Hadolint DL3008 applies to the Rust builder stage
+only, which is discarded in the final image.
+
 ## Dependencies
 
 All dependencies are updated automatically via [Renovate](https://github.com/renovatebot/renovate) and pinned by digest or version for reproducibility.

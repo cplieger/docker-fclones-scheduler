@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026.03.17-8528746 (2026-03-17)
+
+### Dependencies
+
+- Update golang:1.26-trixie docker digest to 9c51d8b
+- Update rust:1.94-trixie docker digest to c328b17
+- Update third-party dependencies
+
 ## 2026.03.15-57781d1 (2026-03-16)
 
 ### Dependencies
