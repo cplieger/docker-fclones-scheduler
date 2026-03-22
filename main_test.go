@@ -286,6 +286,28 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAllowUnsafe(t *testing.T) {
+	t.Setenv("FCLONES_ARGS", "--transform /usr/bin/strip")
+	t.Setenv("FCLONES_ALLOW_UNSAFE", "true")
+
+	cfg := loadConfig()
+
+	if cfg.Args != "--transform /usr/bin/strip" {
+		t.Errorf("Args = %q, want --transform flag to be accepted with ALLOW_UNSAFE", cfg.Args)
+	}
+}
+
+func TestLoadConfigAllowUnsafeCaseInsensitive(t *testing.T) {
+	t.Setenv("FCLONES_ACTION_ARGS", "--command echo hello")
+	t.Setenv("FCLONES_ALLOW_UNSAFE", "TRUE")
+
+	cfg := loadConfig()
+
+	if cfg.ActionArgs != "--command echo hello" {
+		t.Errorf("ActionArgs = %q, want --command flag accepted with ALLOW_UNSAFE=TRUE", cfg.ActionArgs)
+	}
+}
+
 func TestHealthFile(t *testing.T) {
 	if os.Getenv("OS") == "Windows_NT" {
 		t.Skip("skipping on Windows: /tmp does not exist")
@@ -313,7 +335,12 @@ func TestHealthFile(t *testing.T) {
 // rejectDangerousArgs calls os.Exit, so we test the logic directly.
 func isDangerousArg(arg string) bool {
 	lower := strings.ToLower(arg)
-	return lower == "--command" || strings.HasPrefix(lower, "--command=")
+	for _, flag := range dangerousFlags {
+		if lower == flag || strings.HasPrefix(lower, flag+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRejectDangerousArgs(t *testing.T) {
@@ -331,6 +358,14 @@ func TestRejectDangerousArgs(t *testing.T) {
 		{"buried in middle", "--min-size 1024 --command evil --threads 4", true},
 		{"similar prefix is safe", "--commander 5", false},
 		{"no dashes is safe", "command evil", false},
+		{"--transform bare", "--transform /usr/bin/evil", true},
+		{"--transform=value", "--transform=/usr/bin/evil", true},
+		{"--transform case insensitive", "--TRANSFORM=evil", true},
+		{"--in-place bare", "--in-place", true},
+		{"--in-place=value", "--IN-PLACE=true", true},
+		{"--no-copy bare", "--no-copy", true},
+		{"--no-copy=value", "--NO-COPY=true", true},
+		{"--transformer is safe", "--transformer 5", false},
 	}
 
 	for _, tt := range tests {

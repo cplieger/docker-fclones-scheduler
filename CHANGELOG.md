@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026.03.21-1c2020a (2026-03-22)
+
+### Added
+
+- Enhance security with unsafe flag bypass and TOCTOU protection
+
+### Dependencies
+
+- Update golang:1.26-trixie docker digest to ce3f1c8
+
 ## 2026.03.17-513f6ed (2026-03-18)
 
 ### Dependencies

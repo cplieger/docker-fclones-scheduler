@@ -101,6 +101,11 @@ services:
    to the fclones binary — see
    [fclones documentation](https://github.com/pkolaczk/fclones#usage)
    for all available options.
+6. By default, flags that can execute arbitrary commands (`--command`,
+   `--transform`, `--in-place`, `--no-copy`) are blocked. If you need
+   content-aware deduplication via `--transform` (e.g. stripping
+   metadata before hashing), set `FCLONES_ALLOW_UNSAFE: "true"` to
+   disable the guardrails.
 
 
 ## Environment Variables
@@ -153,10 +158,10 @@ docker inspect --format='{{json .State.Health.Log}}' fclones | python3 -m json.t
 
 | Metric | Value |
 |--------|-------|
-| [Test Coverage](https://go.dev/blog/cover) | 50.6% |
-| Tests | 123 |
-| [Cyclomatic Complexity](https://en.wikipedia.org/wiki/Cyclomatic_complexity) (avg) | 4.5 |
-| [Cognitive Complexity](https://www.sonarsource.com/docs/CognitiveComplexity.pdf) (avg) | 4.2 |
+| [Test Coverage](https://go.dev/blog/cover) | 51.4% |
+| Tests | 133 |
+| [Cyclomatic Complexity](https://en.wikipedia.org/wiki/Cyclomatic_complexity) (avg) | 3.5 |
+| [Cognitive Complexity](https://www.sonarsource.com/docs/CognitiveComplexity.pdf) (avg) | 3.7 |
 | [Mutation Efficacy](https://en.wikipedia.org/wiki/Mutation_testing) | 86.3% (59 runs) |
 | Test Framework | Property-based ([rapid](https://github.com/flyingmutant/rapid)) + table-driven |
 
@@ -164,8 +169,9 @@ Every reachable code mutation is caught by the test suite (100%
 mutation efficacy). Tests cover argument parsing with shell quoting
 and injection prevention, fclones output parsing (stats, duplicates,
 whitespace edge cases), config loading and validation, action
-allowlisting, dangerous flag rejection (`--command` blocked), file
-size limits, and the health file lifecycle. Property-based tests
+allowlisting, dangerous flag rejection (`--command`, `--transform`,
+`--in-place`, `--no-copy` blocked by default; opt-in via
+`FCLONES_ALLOW_UNSAFE`), file size limits, and the health file lifecycle. Property-based tests
 verify that parsing functions never panic on arbitrary input and
 that config loading always produces valid actions.
 
@@ -189,17 +195,22 @@ logs and Grafana alerting in production.
 
 No network listener, no HTTP server, no exposed ports. The
 `FCLONES_ACTION` env var is validated against an allowlist and
-the `--command` flag is blocked to prevent command injection.
-Runs as `nonroot` on a distroless base image with no shell.
+dangerous flags (`--command`, `--transform`, `--in-place`,
+`--no-copy`) are blocked by default to prevent command injection
+via env vars. Set `FCLONES_ALLOW_UNSAFE=true` to disable the
+guardrails if you need `--transform` for content-aware
+deduplication. Runs as `nonroot` on a distroless base image
+with no shell.
 
 **Details for advanced users:** Arguments are passed to
 `exec.Command` as explicit arg lists (no shell expansion). Temp
 files use `os.CreateTemp` with unpredictable names. Output reads
-are capped at 50 MB. Semgrep flags the distroless nonroot image
-as "missing USER" (false positive, UID 65534 is baked in) and
-the `/tmp/.healthy` marker (fixed path, single-process
-container). Hadolint DL3008 applies to the Rust builder stage
-only, which is discarded in the final image.
+are capped at 50 MB. Concurrent scan requests are guarded by a
+mutex. Semgrep flags the distroless nonroot image as "missing
+USER" (false positive, UID 65534 is baked in) and the
+`/tmp/.healthy` marker (fixed path, single-process container).
+Hadolint DL3008 applies to the Rust builder stage only, which is
+discarded in the final image.
 
 ## Dependencies
 

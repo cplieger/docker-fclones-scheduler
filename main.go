@@ -139,8 +139,13 @@ func loadConfig() config {
 
 	args := getEnv("FCLONES_ARGS", "")
 	actionArgs := getEnv("FCLONES_ACTION_ARGS", "")
-	rejectDangerousArgs(args, "FCLONES_ARGS")
-	rejectDangerousArgs(actionArgs, "FCLONES_ACTION_ARGS")
+	if strings.EqualFold(getEnv("FCLONES_ALLOW_UNSAFE", "false"), "true") {
+		slog.Warn("unsafe flags allowed, command injection guardrails disabled",
+			"env", "FCLONES_ALLOW_UNSAFE")
+	} else {
+		rejectDangerousArgs(args, "FCLONES_ARGS")
+		rejectDangerousArgs(actionArgs, "FCLONES_ACTION_ARGS")
+	}
 
 	return config{
 		Schedule:   getEnv("FCLONES_SCHEDULE", "0 */3 * * *"),
@@ -158,6 +163,13 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+// dangerousFlags lists fclones flags that execute arbitrary commands.
+// --command: runs a shell command on each duplicate (action subcommands).
+// --transform: pipes each file through an external program before hashing (group subcommand).
+// --in-place and --no-copy are only meaningful with --transform, but blocking
+// them independently prevents confusion if fclones adds new semantics later.
+var dangerousFlags = []string{"--command", "--transform", "--in-place", "--no-copy"}
+
 // rejectDangerousArgs blocks fclones flags that could execute arbitrary commands.
 func rejectDangerousArgs(raw, envVar string) {
 	args, err := parseArgs(raw)
@@ -167,9 +179,11 @@ func rejectDangerousArgs(raw, envVar string) {
 	}
 	for _, arg := range args {
 		lower := strings.ToLower(arg)
-		if lower == "--command" || strings.HasPrefix(lower, "--command=") {
-			slog.Error("dangerous flag not allowed", "flag", "--command", "env", envVar)
-			os.Exit(1)
+		for _, flag := range dangerousFlags {
+			if lower == flag || strings.HasPrefix(lower, flag+"=") {
+				slog.Error("dangerous flag not allowed", "flag", flag, "env", envVar)
+				os.Exit(1)
+			}
 		}
 	}
 }
@@ -473,7 +487,8 @@ func extractProcessedLine(s string) string {
 // --- File Helpers ---
 
 // readFileWithLimit reads a file up to maxBytes. Returns an error if the file
-// exceeds the limit or cannot be read.
+// exceeds the limit or cannot be read. Uses a single file handle to avoid
+// TOCTOU races between stat and read.
 func readFileWithLimit(path string, maxBytes int64) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -488,7 +503,16 @@ func readFileWithLimit(path string, maxBytes int64) ([]byte, error) {
 	if info.Size() > maxBytes {
 		return nil, fmt.Errorf("file %s is %d bytes, exceeds %d byte limit", path, info.Size(), maxBytes)
 	}
-	return io.ReadAll(f)
+
+	// Read maxBytes+1 to detect files that grew between Stat and ReadAll (TOCTOU).
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("file %s grew past %d byte limit during read", path, maxBytes)
+	}
+	return data, nil
 }
 
 // --- Argument Parsing ---
