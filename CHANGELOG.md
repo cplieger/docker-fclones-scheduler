@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.03.22-2206ed5 (2026-03-23)
+
+### Dependencies
+
+- Update rust:1.94-trixie docker digest to f17e723
+
 ## 2026.03.21-1c2020a (2026-03-22)
 
 ### Added
