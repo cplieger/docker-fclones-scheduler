@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026.04.07-4c68a23 (2026-04-08)
+
+### Changed
+
+- Update Go toolchain configuration
+
+### Dependencies
+
+- Update go to v1.26.2
+- Update golang:1.26-trixie docker digest to 1d414b0 (#170)
+- Update golang:1.26-trixie docker digest to 503c84f (#176)
+- Update golang:1.26-trixie docker digest to 6a60657
+- Update rust:1.94-trixie docker digest to dbc91e2
+- Update third-party dependencies
+
 ## 2026.04.01-878c624 (2026-04-01)
 
 ### Added
