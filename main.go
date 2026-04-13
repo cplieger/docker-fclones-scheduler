@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -94,6 +96,10 @@ func main() {
 		panic("unreachable: cron schedule rejected after validation: " + err.Error())
 	}
 
+	// setHealthy(true) before first scan: container is alive and scheduling.
+	// First scan result will update health to reflect actual scan status.
+	// This avoids a start_period race where Docker kills the container
+	// before the first scan completes.
 	setHealthy(true)
 	defer setHealthy(false)
 
@@ -121,9 +127,13 @@ func setHealthy(ok bool) {
 	if ok {
 		if f, err := os.Create(healthFile); err == nil {
 			f.Close()
+		} else {
+			slog.Warn("failed to create health marker", "error", err)
 		}
 	} else {
-		os.Remove(healthFile)
+		if err := os.Remove(healthFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			slog.Warn("failed to remove health marker", "error", err)
+		}
 	}
 }
 
@@ -228,6 +238,7 @@ func runFclonesJob(ctx context.Context, cfg *config) {
 	tmpFile, err := os.CreateTemp("", "fclones_report_*.txt")
 	if err != nil {
 		slog.Error("failed to create temp file", "error", err)
+		setHealthy(false)
 		clearCurrentJob()
 		return
 	}
@@ -238,16 +249,17 @@ func runFclonesJob(ctx context.Context, cfg *config) {
 		slog.Error("failed to build scan args", "error", err)
 		tmpFile.Close()
 		os.Remove(tmpPath)
+		setHealthy(false)
 		clearCurrentJob()
 		return
 	}
 
 	slog.Info("running command", "command", "fclones "+strings.Join(args, " "))
 
-	var errBuf bytes.Buffer
+	errBuf := &limitedBuffer{max: 1 << 20} // 1 MB stderr cap
 	cmd := exec.CommandContext(ctx, "fclones", args...)
 	cmd.Stdout = io.MultiWriter(os.Stderr, tmpFile)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, errBuf)
 
 	mu.Lock()
 	currentJob = cmd
@@ -260,8 +272,9 @@ func runFclonesJob(ctx context.Context, cfg *config) {
 	duration := time.Since(startTime)
 
 	if ctx.Err() != nil {
-		slog.Info("scan interrupted by shutdown signal")
+		slog.Info("scan interrupted", "cause", context.Cause(ctx))
 		os.Remove(tmpPath)
+		setHealthy(false)
 		return
 	}
 
@@ -293,12 +306,23 @@ func runFclonesJob(ctx context.Context, cfg *config) {
 		"duplicates_found", hasDuplicates)
 
 	if hasDuplicates {
-		slog.Info("duplicate files found", "details", duplicateList)
+		const maxLogSize = 64 * 1024 // 64 KB safe for Loki
+		details := duplicateList
+		truncated := false
+		if len(details) > maxLogSize {
+			details = details[:maxLogSize] + "\n... (truncated)"
+			truncated = true
+		}
+		slog.Info("duplicate files found", "details", details, "truncated", truncated)
 	}
 
-	runFclonesAction(ctx, cfg, tmpPath)
+	actionOK := runFclonesAction(ctx, cfg, tmpPath)
 	os.Remove(tmpPath)
-	setHealthy(true)
+	if actionOK {
+		setHealthy(true)
+	} else {
+		setHealthy(false)
+	}
 }
 
 // clearCurrentJob resets the currentJob sentinel under the mutex.
@@ -351,39 +375,50 @@ func buildActionArgs(cfg *config) ([]string, error) {
 }
 
 // runFclonesAction executes the post-scan action (remove, link, dedupe) on the report file.
-func runFclonesAction(ctx context.Context, cfg *config, reportPath string) {
+// Returns true if the action succeeded or was not needed (group/empty action).
+// The action command is not tracked in currentJob because overlap prevention is handled
+// by the scan job's mutex guard, and cancellation is handled by exec.CommandContext.
+func runFclonesAction(ctx context.Context, cfg *config, reportPath string) bool {
 	actionCmdArgs, err := buildActionArgs(cfg)
 	if err != nil {
 		slog.Error("invalid FCLONES_ACTION_ARGS syntax", "error", err)
-		return
+		return false
 	}
 	if actionCmdArgs == nil {
-		return
+		return true
 	}
 
-	slog.Info("performing action", "command", "fclones "+strings.Join(actionCmdArgs, " "))
+	if ctx.Err() != nil {
+		slog.Info("action skipped, shutting down")
+		return false
+	}
+
+	slog.Info("performing action",
+		"command", "fclones "+strings.Join(actionCmdArgs, " "),
+		"report", reportPath)
 
 	inFile, err := os.Open(reportPath)
 	if err != nil {
 		slog.Error("failed to open report for action", "error", err)
-		return
+		return false
 	}
 	defer inFile.Close()
 
-	var actionOutput bytes.Buffer
+	actionOutput := &limitedBuffer{max: 1 << 20} // 1 MB cap, same as scan stderr
 	actionCmd := exec.CommandContext(ctx, "fclones", actionCmdArgs...)
 	actionCmd.Stdin = inFile
-	actionCmd.Stdout = io.MultiWriter(os.Stderr, &actionOutput)
-	actionCmd.Stderr = io.MultiWriter(os.Stderr, &actionOutput)
+	actionCmd.Stdout = io.MultiWriter(os.Stderr, actionOutput)
+	actionCmd.Stderr = io.MultiWriter(os.Stderr, actionOutput)
 
 	if err := actionCmd.Run(); err != nil {
 		slog.Error("action failed", "action", cfg.Action, "error", err,
 			"output", actionOutput.String())
-		return
+		return false
 	}
 
 	processedLine := extractProcessedLine(actionOutput.String())
 	slog.Info("action complete", "action", cfg.Action, "result", processedLine)
+	return true
 }
 
 // --- Output Parsing ---
@@ -485,6 +520,29 @@ func extractProcessedLine(s string) string {
 }
 
 // --- File Helpers ---
+
+// limitedBuffer is a bytes.Buffer that stops accumulating after max bytes.
+// Excess writes are silently discarded to prevent unbounded memory growth.
+type limitedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (lb *limitedBuffer) Write(p []byte) (int, error) {
+	if lb.buf.Len() >= lb.max {
+		return len(p), nil
+	}
+	remaining := lb.max - lb.buf.Len()
+	if len(p) > remaining {
+		lb.buf.Write(p[:remaining])
+		return len(p), nil
+	}
+	return lb.buf.Write(p)
+}
+
+func (lb *limitedBuffer) String() string {
+	return lb.buf.String()
+}
 
 // readFileWithLimit reads a file up to maxBytes. Returns an error if the file
 // exceeds the limit or cannot be read. Uses a single file handle to avoid

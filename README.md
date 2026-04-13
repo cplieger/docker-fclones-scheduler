@@ -131,11 +131,13 @@ services:
 ## Docker Healthcheck
 
 The container includes a built-in Docker healthcheck. After each scan
-completes, the main process creates or removes a marker file at
-`/tmp/.healthy`. The `health` subcommand checks for this file's existence.
+and action phase completes, the main process creates or removes a marker
+file at `/tmp/.healthy`. The `health` subcommand checks for this file's
+existence.
 
 **When it becomes unhealthy:**
 - The fclones binary exits with a non-zero code (e.g. scan path doesn't exist, permission denied, corrupted cache)
+- The post-scan action fails (e.g. hardlink across filesystems, permission denied during remove/link/dedupe)
 - The scan is interrupted by a shutdown signal
 
 **When it recovers:**

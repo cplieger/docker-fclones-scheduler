@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026.04.13-98ff0b3 (2026-04-13)
+
+### Fixed
+
+- Fixed typo
+
+### Changed
+
+- Refactor(fclones): improve error handling, logging, and resource management
+- Update Go toolchain configuration
+
+### Dependencies
+
+- Update go to v1.26.2
+- Update golang:1.26-trixie docker digest to 1d414b0 (#170)
+- Update golang:1.26-trixie docker digest to 503c84f (#176)
+- Update golang:1.26-trixie docker digest to 6a60657
+- Update golang:1.26-trixie docker digest to c0074c7
+- Update rust:1.94-trixie docker digest to dbc91e2
+- Update rust:1.94-trixie docker digest to e8e2bb5
+- Update third-party dependencies
+
 ## 2026.04.08-a83d7e1 (2026-04-09)
 
 ### Dependencies

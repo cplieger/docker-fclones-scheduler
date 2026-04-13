@@ -27,25 +27,26 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
       mv target/aarch64-unknown-linux-musl/release/fclones /usr/src/fclones/fclones; \
     fi
 
-FROM --platform=$BUILDPLATFORM golang:1.26-trixie@sha256:503c84fd135f0d9bb9fb3be1c9ad0524fdba1d06ff81c79ab1d013cf474abe68 AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-trixie@sha256:c0074c718b473f3827043f86532c4c0ff537e3fe7a81b8219b0d1ccfcc2c9a09 AS go-builder
 ENV GOTOOLCHAIN=auto
 
-WORKDIR /app
+WORKDIR /src
+ARG TARGETOS
+ARG TARGETARCH
 COPY go.mod go.sum ./
 RUN go mod download
 COPY main.go ./
-ARG TARGETOS
-ARG TARGETARCH
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o wrapper main.go
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /wrapper main.go
 
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:e3f945647ffb95b5839c07038d64f9811adf17308b9121d8a2b87b6a22a80a39
 
 WORKDIR /app
 COPY --chmod=755 --from=fclones-builder /usr/src/fclones/fclones /usr/bin/fclones
-COPY --chmod=755 --from=go-builder /app/wrapper /app/wrapper
+COPY --chmod=755 --from=go-builder /wrapper /app/wrapper
 ENV XDG_CACHE_HOME="/cache" \
     HOME="/tmp" \
     PATH="/usr/bin:$PATH"
+USER nonroot:nonroot
 ENTRYPOINT ["/app/wrapper"]
