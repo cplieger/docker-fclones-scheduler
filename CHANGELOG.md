@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.04.14-73e6ba8 (2026-04-16)
+
+### Dependencies
+
+- Update rust:1.94-trixie docker digest to 652612f
+
 ## 2026.04.13-98ff0b3 (2026-04-13)
 
 ### Fixed
