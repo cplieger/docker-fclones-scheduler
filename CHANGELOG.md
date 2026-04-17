@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.04.17-588b64e (2026-04-17)
+
+### Changed
+
+- Minor code improvements and optimizations
+
 ## 2026.04.14-73e6ba8 (2026-04-16)
 
 ### Dependencies
