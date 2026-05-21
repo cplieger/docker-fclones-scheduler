@@ -1,5 +1,5 @@
 # check=error=true
-FROM --platform=$BUILDPLATFORM rust:1.95-trixie@sha256:e4f09e8fe5a2366e7d3dc35e08bd25821151e3ed8fdbd3a6a16b51555f0c551d AS fclones-builder
+FROM --platform=$BUILDPLATFORM rust:1.95-trixie@sha256:0861191076afc8e2dfcf0bec6ad6c2dec8494b3a1e9249729e1989690afed5ec AS fclones-builder
 
 WORKDIR /usr/src/fclones
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -27,7 +27,7 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
       mv target/aarch64-unknown-linux-musl/release/fclones /usr/src/fclones/fclones; \
     fi
 
-FROM --platform=$BUILDPLATFORM golang:1.26-trixie@sha256:982ae929f9a74083a242c6e25d19d7d9ed78c6e97fab639a119e90707ba819e2 AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-trixie@sha256:f34e7161a14638b812ce491bd89c81718f309cac6ec0ffe016e5fbcb4bdc8c06 AS go-builder
 ENV GOTOOLCHAIN=auto
 
 WORKDIR /src
@@ -35,12 +35,13 @@ ARG TARGETOS
 ARG TARGETARCH
 COPY go.mod go.sum ./
 RUN go mod download
-COPY main.go ./
+COPY *.go ./
+COPY internal/ internal/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /wrapper main.go
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /wrapper .
 
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:e3f945647ffb95b5839c07038d64f9811adf17308b9121d8a2b87b6a22a80a39
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:963fa6c544fe5ce420f1f54fb88b6fb01479f054c8056d0f74cc2c6000df5240
 
 WORKDIR /app
 COPY --chmod=755 --from=fclones-builder /usr/src/fclones/fclones /usr/bin/fclones
@@ -49,4 +50,6 @@ ENV XDG_CACHE_HOME="/cache" \
     HOME="/tmp" \
     PATH="/usr/bin:$PATH"
 USER nonroot:nonroot
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
+    CMD ["/app/wrapper", "health"]
 ENTRYPOINT ["/app/wrapper"]

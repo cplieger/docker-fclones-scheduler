@@ -10,8 +10,8 @@ Scheduled duplicate file finder with cron scheduling and health monitoring
 
 ## Overview
 
-Wraps the fclones duplicate file finder in a Go scheduler with cron-based
-scheduling (via robfig/cron) and a CLI health probe. Supports all fclones
+Wraps the fclones duplicate file finder in a Go scheduler with
+interval-based scheduling and a CLI health probe. Supports all fclones
 actions (group, link, remove) with configurable arguments. Reports scan
 statistics including duplicates found, space reclaimable, and files
 processed. All output goes to stdout/stderr for collection by log
@@ -63,37 +63,29 @@ services:
     container_name: fclones
     restart: unless-stopped
     user: "1000:1000"  # match your host user
-    mem_limit: 512m
 
     environment:
       TZ: "Europe/Paris"
-      FCLONES_SCHEDULE: "0 * * * *"  # cron syntax
+      FCLONES_INTERVAL: "1h"  # Go duration (e.g. 1h, 30m, 12h)
       FCLONES_SCAN_PATHS: "/scandir"
       FCLONES_ARGS: "--rf-over 1"
       FCLONES_ACTION: "link"  # group (report), link (hardlink), or remove
       FCLONES_ACTION_ARGS: "--priority bottom"
 
     volumes:
-      - "\\/path/to/media:/scandir"
-      - "\\/opt/appdata/fclones:/cache"
-
-    healthcheck:
-      test:
-        - CMD
-        - /app/wrapper
-        - health
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
+      - "/path/to/media:/scandir"
+      - "/opt/appdata/fclones:/cache"
 ```
 
 ## Deployment
 
 1. Mount the directory you want to scan for duplicates to `/scandir` (or change `FCLONES_SCAN_PATHS`).
 2. Mount a persistent directory to `/cache` for fclones state between scans.
-3. Set `FCLONES_SCHEDULE` to a cron expression for how often to scan
-   (default: every hour).
+3. Set `FCLONES_INTERVAL` to a Go duration string controlling how
+   often to scan (default: `3h`). Examples: `1h`, `30m`, `12h`,
+   `2h30m`. If the value is missing or unparseable the wrapper
+   falls back to the default and logs a warning rather than
+   refusing to start.
 4. Set `FCLONES_ACTION` to control what happens with duplicates:
    `group` (report only), `link` (replace with hardlinks), or
    `remove` (delete duplicates).
@@ -113,10 +105,10 @@ services:
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `TZ` | Container timezone | `Europe/Paris` | No |
-| `FCLONES_SCHEDULE` | Cron expression for scan schedule (standard 5-field) | `0 * * * *` | Yes |
-| `FCLONES_SCAN_PATHS` | Paths inside the container to scan for duplicates. Must match the volume mounts. Multiple paths can be space-separated (e.g. `/media /photos`), each requiring a corresponding volume mount. | `/scandir` | Yes |
+| `FCLONES_INTERVAL` | Scan interval as a Go duration (e.g. `1h`, `30m`, `12h`). Defaults to `3h` on unset or unparseable values. The first scan runs at startup; subsequent scans fire every interval thereafter. | `1h` | No |
+| `FCLONES_SCAN_PATHS` | Paths inside the container to scan for duplicates. Must match the volume mounts. Multiple paths can be space-separated (e.g. `/media /photos`), each requiring a corresponding volume mount. | `/scandir` | No |
 | `FCLONES_ARGS` | Extra arguments passed to `fclones group` scan phase | `--rf-over 1` | No |
-| `FCLONES_ACTION` | Dedup action after scan — group (report only), link (hardlink), or remove | `link` | Yes |
+| `FCLONES_ACTION` | Dedup action after scan — group (report only), link (hardlink), or remove | `link` | No |
 | `FCLONES_ACTION_ARGS` | Extra arguments for the dedup action phase | `--priority bottom` | No |
 
 
@@ -143,8 +135,13 @@ existence.
 **When it recovers:**
 - The next successful scan recreates the marker file and the container reports healthy again. No restart required.
 
-**On startup:** The container marks itself healthy immediately, then
-triggers a startup scan. If that scan fails, it transitions to unhealthy.
+**On startup:** The container starts unhealthy. It triggers a startup
+scan immediately and transitions to healthy once that scan (and any
+post-scan action) completes successfully. On a large filesystem the
+first transition to healthy can take minutes, so size
+`healthcheck.start_period` accordingly (the example compose ships
+`start_period: 15s` which is only sufficient for small or empty scan
+targets).
 
 To check health manually:
 ```bash
@@ -160,15 +157,14 @@ docker inspect --format='{{json .State.Health.Log}}' fclones | python3 -m json.t
 
 | Metric | Value |
 |--------|-------|
-| [Test Coverage](https://go.dev/blog/cover) | 51.4% |
-| Tests | 133 |
-| [Cyclomatic Complexity](https://en.wikipedia.org/wiki/Cyclomatic_complexity) (avg) | 3.5 |
-| [Cognitive Complexity](https://www.sonarsource.com/docs/CognitiveComplexity.pdf) (avg) | 3.7 |
+| [Test Coverage](https://go.dev/blog/cover) | 56.5% |
+| Tests | 191 |
+| [Cyclomatic Complexity](https://en.wikipedia.org/wiki/Cyclomatic_complexity) (avg) | 4.0 |
+| [Cognitive Complexity](https://www.sonarsource.com/docs/CognitiveComplexity.pdf) (avg) | 4.2 |
 | [Mutation Efficacy](https://en.wikipedia.org/wiki/Mutation_testing) | 86.3% (59 runs) |
 | Test Framework | Property-based ([rapid](https://github.com/flyingmutant/rapid)) + table-driven |
 
-Every reachable code mutation is caught by the test suite (100%
-mutation efficacy). Tests cover argument parsing with shell quoting
+Tests cover argument parsing with shell quoting
 and injection prevention, fclones output parsing (stats, duplicates,
 whitespace edge cases), config loading and validation, action
 allowlisting, dangerous flag rejection (`--command`, `--transform`,

@@ -1,5 +1,46 @@
 # Changelog
 
+## 2026.05.21-633944f (2026-05-21)
+
+### Added
+
+- Add file-based healthcheck for distroless container
+- Add file-based healthcheck for distroless containers
+
+### Fixed
+
+- Refactor health probe to enable unit testing
+
+### Security
+
+- Move healthcheck to Dockerfile and harden security
+
+### Changed
+
+- Refactor(fclones): drop cron dependency in favor of interval scheduler
+- Split main into config + scheduler + outcome, type subprocess outcomes
+- Refactor(fclones): decompose monolith into internal packages
+- Increase pids_limit to 200 and document reasoning
+- Simplify tmpfs comment
+- Refactor(fclones): replace dangerous flags slice with named constants
+- Refactor compose (no user-visible change)
+- Structured logfmt output, per-duplicate logs, noise filter
+
+### Dependencies
+
+- Update gcr.io/distroless/static-debian13:nonroot docker digest to 963fa6c
+- Update golang:1.26-trixie Docker digest to 4a7137e
+- Update golang:1.26-trixie docker digest to 38a4ee1
+- Update golang:1.26-trixie docker digest to a085df6
+- Update golang:1.26-trixie docker digest to b95d849
+- Update golang:1.26-trixie docker digest to f34e716
+- Update rust:1.95-trixie docker digest to 0861191
+- Update rust:1.95-trixie docker digest to 377a6d5
+- Update rust:1.95-trixie docker digest to 39d8cb3 (#294)
+- Update rust:1.95-trixie docker digest to a9cfb75
+- Update third-party dependencies
+- fix(deps): update module pgregory.net/rapid to v1.3.0 (#230)
+
 ## 2026.04.23-f018499 (2026-04-23)
 
 ### Dependencies
