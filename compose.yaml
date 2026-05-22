@@ -1,0 +1,18 @@
+services:
+  fclones:
+    image: ghcr.io/cplieger/fclones:latest
+    container_name: fclones
+    restart: unless-stopped
+    user: "1000:1000"  # match your host user
+
+    environment:
+      TZ: "Europe/Paris"
+      FCLONES_INTERVAL: "1h"  # Go duration (e.g. 1h, 30m, 12h)
+      FCLONES_SCAN_PATHS: "/scandir"
+      FCLONES_ARGS: "--rf-over 1"
+      FCLONES_ACTION: "link"  # group (report), link (hardlink), or remove
+      FCLONES_ACTION_ARGS: "--priority bottom"
+
+    volumes:
+      - "/path/to/media:/scandir"
+      - "/opt/appdata/fclones:/cache"
