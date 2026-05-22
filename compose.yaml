@@ -1,6 +1,6 @@
 services:
   fclones:
-    image: ghcr.io/cplieger/fclones:latest
+    image: ghcr.io/cplieger/fclones:latest@sha256:4b27b8d565b7084c55c3cfbfcf2c0ae95c9c581b7b26367ce9253bbc2cac56cd
     container_name: fclones
     restart: unless-stopped
     user: "1000:1000"  # match your host user
