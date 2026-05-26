@@ -6,9 +6,9 @@
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Distroless](https://img.shields.io/badge/base-Distroless_nonroot-4285F4?logo=google)
 
-Scheduled duplicate file finder with cron scheduling and health monitoring
+Find and deduplicate files on a schedule — reclaim wasted disk space automatically.
 
-## Overview
+## What it does
 
 Wraps the fclones duplicate file finder in a Go scheduler with
 interval-based scheduling and a CLI health probe. Supports all fclones
@@ -17,44 +17,22 @@ statistics including duplicates found, space reclaimable, and files
 processed. All output goes to stdout/stderr for collection by log
 aggregators (Alloy, Promtail, etc.) and alerting via Grafana or similar.
 
-**Example use case:** You have a large media library where downloads,
-imports, or manual copies have created duplicate files wasting disk space.
-Mount your media directory and schedule periodic scans — fclones finds
-duplicates and can replace them with hardlinks or remove them entirely.
-Pipe container logs to your observability stack for alerting.
+- Mount your media directory and schedule periodic scans — fclones finds duplicates and can replace them with hardlinks or remove them entirely
+- Pipe container logs to your observability stack for alerting
+- Supports all fclones actions: `group` (report only), `link` (replace with hardlinks), `remove` (delete duplicates)
+- Configurable scan interval, paths, and fclones arguments
+- Built-in Docker healthcheck with automatic recovery
 
-This is a distroless, rootless container — it runs as `nonroot` on
-`gcr.io/distroless/static` with no shell or package manager.
+### Why this design
 
+- **Self-contained scheduler** — wraps fclones in a Go-based interval scheduler so you don't need external cron, systemd timers, or orchestrator-level scheduling
+- **Distroless and rootless** — runs as `nonroot` (UID 65534) on `gcr.io/distroless/static` with no shell or package manager, minimizing attack surface
+- **Dangerous flags blocked by default** — `--command`, `--transform`, `--in-place`, and `--no-copy` are rejected unless you explicitly opt in with `FCLONES_ALLOW_UNSAFE=true`, preventing command injection via environment variables
+- **Structured logs for observability** — all output goes to stdout/stderr in a format ready for log aggregators, enabling alerting on scan failures or duplicate detection without custom exporters
 
-### How It Differs From fclones
+## Quick start
 
-The upstream [fclones](https://github.com/pkolaczk/fclones) is a CLI tool
-you run manually. This image adds scheduled execution, structured log
-output, health monitoring, and packages everything in a distroless
-container. The fclones binary is included — amd64 uses the prebuilt
-release, arm64 is cross-compiled from source.
-
-## Container Registries
-
-This image is published to both GHCR and Docker Hub:
-
-| Registry | Image |
-|----------|-------|
-| GHCR | `ghcr.io/cplieger/fclones` |
-| Docker Hub | `docker.io/cplieger/fclones` |
-
-```bash
-# Pull from GHCR
-docker pull ghcr.io/cplieger/fclones:latest
-
-# Pull from Docker Hub
-docker pull cplieger/fclones:latest
-```
-
-Both registries receive identical images and tags. Use whichever you prefer.
-
-## Quick Start
+The image is published to both GHCR (`ghcr.io/cplieger/fclones`) and Docker Hub (`cplieger/fclones`) — identical contents, use whichever you prefer.
 
 ```yaml
 services:
@@ -77,30 +55,9 @@ services:
       - "/opt/appdata/fclones:/cache"
 ```
 
-## Deployment
+## Configuration reference
 
-1. Mount the directory you want to scan for duplicates to `/scandir` (or change `FCLONES_SCAN_PATHS`).
-2. Mount a persistent directory to `/cache` for fclones state between scans.
-3. Set `FCLONES_INTERVAL` to a Go duration string controlling how
-   often to scan (default: `3h`). Examples: `1h`, `30m`, `12h`,
-   `2h30m`. If the value is missing or unparseable the wrapper
-   falls back to the default and logs a warning rather than
-   refusing to start.
-4. Set `FCLONES_ACTION` to control what happens with duplicates:
-   `group` (report only), `link` (replace with hardlinks), or
-   `remove` (delete duplicates).
-5. The `FCLONES_ARGS` and `FCLONES_ACTION_ARGS` are passed directly
-   to the fclones binary — see
-   [fclones documentation](https://github.com/pkolaczk/fclones#usage)
-   for all available options.
-6. By default, flags that can execute arbitrary commands (`--command`,
-   `--transform`, `--in-place`, `--no-copy`) are blocked. If you need
-   content-aware deduplication via `--transform` (e.g. stripping
-   metadata before hashing), set `FCLONES_ALLOW_UNSAFE: "true"` to
-   disable the guardrails.
-
-
-## Environment Variables
+### Environment variables
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
@@ -110,50 +67,20 @@ services:
 | `FCLONES_ARGS` | Extra arguments passed to `fclones group` scan phase | `--rf-over 1` | No |
 | `FCLONES_ACTION` | Dedup action after scan — group (report only), link (hardlink), or remove | `link` | No |
 | `FCLONES_ACTION_ARGS` | Extra arguments for the dedup action phase | `--priority bottom` | No |
+| `FCLONES_ALLOW_UNSAFE` | Set to `true` to allow dangerous flags (`--command`, `--transform`, `--in-place`, `--no-copy`) | `false` | No |
 
-
-## Volumes
+### Volumes
 
 | Mount | Description |
 |-------|-------------|
 | `/scandir` | Directory to scan for duplicate files. Must match the paths in `FCLONES_SCAN_PATHS`. You can mount multiple directories and list them all in `FCLONES_SCAN_PATHS` (space-separated). |
 | `/cache` | fclones cache and state directory |
 
+## Healthcheck
 
-## Docker Healthcheck
+The built-in healthcheck (`/app/wrapper health`) checks for a marker file created after each successful scan and action phase. The container becomes unhealthy when fclones exits non-zero (e.g. scan path missing, permission denied, corrupted cache) or the action phase fails (e.g. hardlink across filesystems). It recovers automatically on the next successful scan — no restart required. On startup the container begins unhealthy and transitions to healthy after the first successful scan completes, so size `healthcheck.start_period` accordingly for large filesystems where the initial scan may take minutes.
 
-The container includes a built-in Docker healthcheck. After each scan
-and action phase completes, the main process creates or removes a marker
-file at `/tmp/.healthy`. The `health` subcommand checks for this file's
-existence.
-
-**When it becomes unhealthy:**
-- The fclones binary exits with a non-zero code (e.g. scan path doesn't exist, permission denied, corrupted cache)
-- The post-scan action fails (e.g. hardlink across filesystems, permission denied during remove/link/dedupe)
-- The scan is interrupted by a shutdown signal
-
-**When it recovers:**
-- The next successful scan recreates the marker file and the container reports healthy again. No restart required.
-
-**On startup:** The container starts unhealthy. It triggers a startup
-scan immediately and transitions to healthy once that scan (and any
-post-scan action) completes successfully. On a large filesystem the
-first transition to healthy can take minutes, so size
-`healthcheck.start_period` accordingly (the example compose ships
-`start_period: 15s` which is only sufficient for small or empty scan
-targets).
-
-To check health manually:
-```bash
-docker inspect --format='{{json .State.Health.Log}}' fclones | python3 -m json.tool
-```
-
-| Type | Command | Meaning |
-|------|---------|---------|
-| Docker | `/app/wrapper health` | Exit 0 = last scan succeeded |
-
-
-## Code Quality
+## Code quality
 
 | Metric | Value |
 |--------|-------|
@@ -177,7 +104,7 @@ Not tested: `main()` orchestration and `exec.Command` calls to the
 fclones binary — these are process-level I/O validated by container
 logs and Grafana alerting in production.
 
-## Security Review
+## Security
 
 **No vulnerabilities found.** All scans clean across 10 tools.
 
@@ -212,8 +139,6 @@ discarded in the final image.
 
 ## Dependencies
 
-All dependencies are updated automatically via [Renovate](https://github.com/renovatebot/renovate) and pinned by digest or version for reproducibility.
-
 | Dependency | Version | Source |
 |------------|---------|--------|
 | rust | `1.95-trixie` | [Rust](https://hub.docker.com/_/rust) |
@@ -221,18 +146,16 @@ All dependencies are updated automatically via [Renovate](https://github.com/ren
 | gcr.io/distroless/static-debian13 | `nonroot` | [Distroless](https://github.com/GoogleContainerTools/distroless) |
 | fclones | `v0.35.0` | [GitHub](https://github.com/pkolaczk/fclones) |
 
-## Design Principles
-
-- **Always up to date**: Base images, packages, and libraries are updated automatically via Renovate. Unlike many community Docker images that ship outdated or abandoned dependencies, these images receive continuous updates.
-- **Minimal attack surface**: When possible, pure Go apps use `gcr.io/distroless/static:nonroot` (no shell, no package manager, runs as non-root). Apps requiring system packages use Alpine with the minimum necessary privileges.
-- **Digest-pinned**: Every `FROM` instruction pins a SHA256 digest. All GitHub Actions are digest-pinned.
-- **Multi-platform**: Built for `linux/amd64` and `linux/arm64`.
-- **Healthchecks**: Every container includes a Docker healthcheck.
-- **Provenance**: Build provenance is attested via GitHub Actions, verifiable with `gh attestation verify`.
+Updated automatically via [Renovate](https://github.com/renovatebot/renovate) and pinned by digest. Builds carry signed SBOMs and provenance attestations verifiable with `gh attestation verify`.
 
 ## Credits
 
 This project packages [fclones](https://github.com/pkolaczk/fclones) into a container image. All credit for the core functionality goes to the upstream maintainers.
+
+## Contributing
+
+Issues and pull requests are welcome. Please open an issue first for
+larger changes so the approach can be discussed before implementation.
 
 ## Disclaimer
 
