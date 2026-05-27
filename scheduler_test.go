@@ -16,8 +16,8 @@ func TestBuildScanArgs(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
-		cfg     config
 		want    []string
+		cfg     config
 		wantLen int
 		wantErr bool
 	}{
@@ -116,8 +116,8 @@ func TestBuildActionArgs(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
-		cfg     config
 		want    []string
+		cfg     config
 		wantNil bool
 		wantErr bool
 	}{
