@@ -3,6 +3,7 @@ FROM --platform=$BUILDPLATFORM rust:1.96-trixie@sha256:fb328f0f58becb23ba1719940
 
 WORKDIR /usr/src/fclones
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     musl-tools \
     cmake \
