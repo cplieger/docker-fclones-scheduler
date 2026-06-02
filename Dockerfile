@@ -28,7 +28,7 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
       mv target/aarch64-unknown-linux-musl/release/fclones /usr/src/fclones/fclones; \
     fi
 
-FROM --platform=$BUILDPLATFORM golang:1.26-trixie@sha256:0f6b034c99663ea8957e7dae99124e37374cbe7fcb5b5646f19b185f8f976279 AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-trixie@sha256:0f2871c8f4ef178081e49bd44210a72083e8f3bd0e432b7b190e9b72b97ba369 AS go-builder
 ENV GOTOOLCHAIN=auto
 
 WORKDIR /src
