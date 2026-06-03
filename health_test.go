@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cplieger/health"
 	"pgregory.net/rapid"
 )
 
@@ -12,7 +13,7 @@ import (
 // dir, Set(true) creates the marker, Set(false) removes it.
 func TestHealthMarker_SetCreatesAndRemoves(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".healthy")
-	m := newHealthMarker(path)
+	m := health.NewMarker(path)
 
 	m.Set(true)
 	if _, err := os.Stat(path); err != nil {
@@ -29,7 +30,7 @@ func TestHealthMarker_SetCreatesAndRemoves(t *testing.T) {
 // safe to call when the marker already does not exist.
 func TestHealthMarker_Cleanup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".healthy")
-	m := newHealthMarker(path)
+	m := health.NewMarker(path)
 
 	m.Set(true)
 	m.Cleanup()
@@ -41,38 +42,11 @@ func TestHealthMarker_Cleanup(t *testing.T) {
 	m.Cleanup()
 }
 
-// TestHealthMarker_DegradedMode verifies that when the marker directory
-// is not writable, the marker enters degraded mode: Set and Cleanup are
-// no-ops and no file is ever created.
-func TestHealthMarker_DegradedMode(t *testing.T) {
-	// Create a read-only directory to simulate a compose misconfiguration.
-	dir := filepath.Join(t.TempDir(), "ro")
-	if err := os.Mkdir(dir, 0o500); err != nil {
-		t.Fatalf("mkdir ro: %v", err)
-	}
-
-	path := filepath.Join(dir, ".healthy")
-	m := newHealthMarker(path)
-
-	if !m.degraded {
-		// Some environments (root, permissive filesystems like Windows
-		// or containers) allow writes through 0500; skip rather than
-		// fail in those cases.
-		t.Skip("test environment bypasses directory mode; skipping")
-	}
-
-	m.Set(true)
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("degraded marker should never create file: %v", err)
-	}
-	m.Cleanup() // must not panic
-}
-
 // TestHealthMarker_Idempotent ensures repeated Set(true) and Set(false)
 // calls are safe and converge to the expected file state.
 func TestHealthMarker_Idempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".healthy")
-	m := newHealthMarker(path)
+	m := health.NewMarker(path)
 
 	for range 3 {
 		m.Set(true)
@@ -94,15 +68,13 @@ func TestHealthMarker_Idempotent(t *testing.T) {
 func TestHealthMarker_Property(t *testing.T) {
 	dir := t.TempDir()
 	rapid.Check(t, func(rt *rapid.T) {
-		// A fresh subdir per iteration so markers from earlier iterations
-		// don't leak into later ones.
 		nonce := rapid.StringMatching(`[a-z0-9]{8}`).Draw(rt, "nonce")
 		subdir := filepath.Join(dir, nonce)
 		if err := os.Mkdir(subdir, 0o755); err != nil {
 			rt.Fatalf("mkdir subdir: %v", err)
 		}
 		path := filepath.Join(subdir, ".healthy")
-		m := newHealthMarker(path)
+		m := health.NewMarker(path)
 
 		calls := rapid.SliceOfN(rapid.Bool(), 1, 30).Draw(rt, "calls")
 		for _, ok := range calls {
@@ -119,28 +91,20 @@ func TestHealthMarker_Property(t *testing.T) {
 	})
 }
 
-// TestProbeHealthDir_Writable confirms the probe succeeds on a normal
-// writable temp dir and leaves no artifact behind.
-func TestProbeHealthDir_Writable(t *testing.T) {
-	dir := t.TempDir()
-	if err := probeHealthDir(filepath.Join(dir, ".healthy")); err != nil {
-		t.Fatalf("probeHealthDir on writable dir: %v", err)
-	}
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("readdir: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("probe left artifacts behind: %v", entries)
+// TestProbeCheck_Healthy verifies ProbeCheck returns 0 when marker exists.
+func TestProbeCheck_Healthy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".healthy")
+	m := health.NewMarker(path)
+	m.Set(true)
+	if code := health.ProbeCheck(path); code != 0 {
+		t.Fatalf("ProbeCheck = %d, want 0 (healthy)", code)
 	}
 }
 
-// TestProbeHealthDir_NonExistent confirms a missing parent directory is
-// reported as an error rather than masked.
-func TestProbeHealthDir_NonExistent(t *testing.T) {
-	err := probeHealthDir(filepath.Join(t.TempDir(), "nope", ".healthy"))
-	if err == nil {
-		t.Fatal("expected error for non-existent parent dir")
+// TestProbeCheck_Unhealthy verifies ProbeCheck returns 1 when marker is absent.
+func TestProbeCheck_Unhealthy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".healthy")
+	if code := health.ProbeCheck(path); code != 1 {
+		t.Fatalf("ProbeCheck = %d, want 1 (unhealthy)", code)
 	}
 }
