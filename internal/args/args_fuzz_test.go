@@ -1,6 +1,9 @@
 package args
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func FuzzParse(f *testing.F) {
 	f.Add(`simple args`)
@@ -14,7 +17,31 @@ func FuzzParse(f *testing.F) {
 	f.Add(``)
 
 	f.Fuzz(func(t *testing.T, input string) {
-		// Parse must not panic on any input.
-		_, _ = Parse(input)
+		result, err := Parse(input)
+		if err != nil {
+			// Errors are expected for unterminated quotes / trailing backslash
+			if strings.Contains(input, `"`) || strings.Contains(input, `'`) || strings.HasSuffix(input, `\`) {
+				return // valid error case
+			}
+			// If no quotes or trailing backslash, should not error
+			t.Fatalf("unexpected error for input %q: %v", input, err)
+		}
+		// On success, no token should be empty
+		for i, tok := range result {
+			if tok == "" {
+				t.Fatalf("token %d is empty for input %q", i, input)
+			}
+		}
+		// All non-whitespace content from input should appear in tokens
+		// (modulo quote/escape characters)
+		joined := strings.Join(result, "")
+		for _, r := range input {
+			if r == '"' || r == '\'' || r == '\\' || r == ' ' || r == '\t' {
+				continue
+			}
+			if !strings.ContainsRune(joined, r) {
+				t.Fatalf("rune %q from input lost in output for input %q -> %v", string(r), input, result)
+			}
+		}
 	})
 }
