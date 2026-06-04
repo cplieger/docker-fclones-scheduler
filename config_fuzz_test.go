@@ -21,11 +21,9 @@ func FuzzRejectDangerousArgs(f *testing.F) {
 		dangerous := []string{"--command", "--transform", "--in-place", "--no-copy"}
 		for _, flag := range dangerous {
 			// Check if the flag appears as a standalone token after parsing
-			if err == nil && (strings.Contains(lower, flag) || strings.Contains(lower, flag+"=")) {
-				// Parse and check tokens — the function uses args.Parse internally
-				// A nil error means it decided the flag wasn't actually present
-				// after shell-like parsing, which is fine
-			}
+			// If err == nil and the flag appears in the input, args.Parse decided
+			// it wasn't actually a flag (after shell-like parsing) — fine.
+			_ = err == nil && (strings.Contains(lower, flag) || strings.Contains(lower, flag+"="))
 		}
 		// If error returned, it should mention "dangerous" or "not allowed" or be a parse error
 		if err != nil {

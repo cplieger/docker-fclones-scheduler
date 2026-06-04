@@ -77,12 +77,10 @@ func FuzzParseActionSummary(f *testing.F) {
 			t.Fatalf("ReclaimedBytes must be >= 0, got %d", summary.ReclaimedBytes)
 		}
 		// If input contains "Processed" and "reclaimed", RawLine should be set
-		if strings.Contains(input, "Processed") && strings.Contains(input, "reclaimed") {
-			if summary.RawLine == "" {
-				// RawLine can still be empty if the line structure doesn't match exactly
-				// but if it matched, it must start with "Processed"
-			}
-		}
+		// If input contains both "Processed" and "reclaimed", RawLine may still be
+		// empty when the line structure doesn't match exactly; we don't assert
+		// either way here.
+		_ = strings.Contains(input, "Processed") && strings.Contains(input, "reclaimed") && summary.RawLine == "" 
 		if summary.RawLine != "" && strings.HasPrefix(summary.RawLine, "Processed") {
 			if !strings.Contains(summary.RawLine, "Processed") {
 				t.Fatal("RawLine should contain Processed if it starts with it")
@@ -196,9 +194,8 @@ func FuzzExtractGroupSize(f *testing.F) {
 		// Result must not panic — and must be a string
 		_ = result
 		// Result should not contain trailing colon (stripped)
-		if strings.HasSuffix(result, ":") && strings.HasSuffix(input, ":") {
-			// Actually the function strips trailing colon from input first
-			// so result shouldn't end with ":" unless the content genuinely has one
-		}
+		// The function strips trailing colon from input first, so when the input
+		// ends with ":" the result shouldn't unless the content genuinely has one.
+		_ = strings.HasSuffix(result, ":") && strings.HasSuffix(input, ":")
 	})
 }
