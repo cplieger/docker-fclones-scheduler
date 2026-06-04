@@ -23,7 +23,7 @@ func FuzzParseStats(f *testing.F) {
 		}
 		// If input has no "# Total:" line with "groups", Groups must be "0"
 		hasTotal := false
-		for _, line := range strings.Split(input, "\n") {
+		for line := range strings.SplitSeq(input, "\n") {
 			if strings.HasPrefix(line, "# Total:") {
 				parts := strings.Fields(line)
 				if len(parts) >= 2 && parts[len(parts)-1] == "groups" {
