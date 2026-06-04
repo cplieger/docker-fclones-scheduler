@@ -1,5 +1,5 @@
 # check=error=true
-FROM --platform=$BUILDPLATFORM rust:1.96-trixie@sha256:fb328f0f58becb23ba1719940a2c94ece8b0b48afa837d05b79ef64bc1e18f6e AS fclones-builder
+FROM rust:1.96-trixie@sha256:fb328f0f58becb23ba1719940a2c94ece8b0b48afa837d05b79ef64bc1e18f6e AS fclones-builder
 
 WORKDIR /usr/src/fclones
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -17,7 +17,6 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
     CXX_aarch64_unknown_linux_musl=aarch64-linux-gnu-g++
 # renovate: datasource=github-tags depName=pkolaczk/fclones
 ARG FCLONES_VERSION=v0.35.0
-ARG TARGETARCH
 RUN VERSION="${FCLONES_VERSION#v}" && \
     if [ "$TARGETARCH" = "amd64" ]; then \
       curl -fsSL "https://github.com/pkolaczk/fclones/releases/download/${FCLONES_VERSION}/fclones-${VERSION}-linux-musl-x86_64.tar.gz" \
@@ -28,19 +27,17 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
       mv target/aarch64-unknown-linux-musl/release/fclones /usr/src/fclones/fclones; \
     fi
 
-FROM --platform=$BUILDPLATFORM golang:1.26-trixie@sha256:0dcba0d95dbfb072e9917a106b9e07d7cc298097dc83e9307056ef1889de654d AS go-builder
+FROM golang:1.26-trixie@sha256:0dcba0d95dbfb072e9917a106b9e07d7cc298097dc83e9307056ef1889de654d AS go-builder
 ENV GOTOOLCHAIN=auto
 
 WORKDIR /src
-ARG TARGETOS
-ARG TARGETARCH
 COPY go.mod go.sum ./
 RUN go mod download
 COPY *.go ./
 COPY internal/ internal/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /wrapper .
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /wrapper .
 
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:963fa6c544fe5ce420f1f54fb88b6fb01479f054c8056d0f74cc2c6000df5240
 
