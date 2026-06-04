@@ -347,7 +347,7 @@ func TestParseRedundantSize(t *testing.T) {
 		{"bare size", "# Redundant: 512 MB", "512 MB"},
 		{"too few fields", "# Redundant:", "0 B"},
 		{"unmatched paren", "# Redundant: 5 files (1.2 GB", "5 files"},
-		{"empty parens", "# Redundant: 5 files ()", ""},
+		{"empty parens", "# Redundant: 5 files ()", "5 files"},
 		{"nested parens", "# Redundant: 5 files (1.2 GB (approx))", "1.2 GB (approx"},
 	}
 

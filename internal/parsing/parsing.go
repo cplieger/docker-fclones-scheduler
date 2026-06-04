@@ -54,7 +54,9 @@ func ParseStats(output string) Stats {
 func ParseRedundantSize(line string) string {
 	if start := strings.Index(line, "("); start != -1 {
 		if end := strings.Index(line, ")"); end > start {
-			return line[start+1 : end]
+			if s := line[start+1 : end]; s != "" {
+				return s
+			}
 		}
 	}
 	if parts := strings.Fields(line); len(parts) >= 4 {
@@ -189,7 +191,11 @@ func ParseHumanBytes(s string) int64 {
 	default:
 		return 0
 	}
-	return int64(num * float64(mult))
+	result := int64(num * float64(mult))
+	if result < 0 {
+		return 0 // overflow
+	}
+	return result
 }
 
 // HumanBytes formats a byte count as a short SI-unit string for log lines.
