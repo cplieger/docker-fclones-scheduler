@@ -16,6 +16,8 @@ import (
 	"fclones-wrapper/internal/args"
 	"fclones-wrapper/internal/ioutil"
 	"fclones-wrapper/internal/parsing"
+
+	"github.com/cplieger/health"
 )
 
 // commandRunner creates a configured *exec.Cmd for the given context and
@@ -71,7 +73,7 @@ func newScanID() string {
 	return hex.EncodeToString(b[:])
 }
 
-func runFclonesJob(ctx context.Context, marker *healthMarker, cfg *config, trigger string, js *jobSlot, newCmd commandRunner) {
+func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trigger string, js *jobSlot, newCmd commandRunner) {
 	if !js.TryAcquire() {
 		slog.Info("job already running, skipping overlapping request", "trigger", trigger)
 		return
