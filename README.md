@@ -2,7 +2,7 @@
 
 ![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)
 [![GitHub release](https://img.shields.io/github/v/release/cplieger/docker-fclones-scheduler)](https://github.com/cplieger/docker-fclones-scheduler/releases)
-[![Image Size](https://ghcr-badge.egpl.dev/cplieger/fclones/size)](https://github.com/cplieger/docker-fclones-scheduler/pkgs/container/fclones)
+[![Image Size](https://ghcr-badge.egpl.dev/cplieger/docker-fclones-scheduler/size)](https://github.com/cplieger/docker-fclones-scheduler/pkgs/container/fclones)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Distroless](https://img.shields.io/badge/base-Distroless_nonroot-4285F4?logo=google)
 
@@ -32,12 +32,12 @@ aggregators (Alloy, Promtail, etc.) and alerting via Grafana or similar.
 
 ## Quick start
 
-The image is published to both GHCR (`ghcr.io/cplieger/fclones`) and Docker Hub (`cplieger/fclones`) — identical contents, use whichever you prefer.
+The image is published to both GHCR (`ghcr.io/cplieger/docker-fclones-scheduler`) and Docker Hub (`cplieger/docker-fclones-scheduler`) — identical contents, use whichever you prefer.
 
 ```yaml
 services:
   fclones:
-    image: ghcr.io/cplieger/fclones:latest
+    image: ghcr.io/cplieger/docker-fclones-scheduler:latest
     container_name: fclones
     restart: unless-stopped
     user: "1000:1000"  # match your host user

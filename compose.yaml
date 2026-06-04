@@ -1,6 +1,6 @@
 services:
   fclones:
-    image: ghcr.io/cplieger/fclones:latest
+    image: ghcr.io/cplieger/docker-fclones-scheduler:latest
     container_name: fclones
     restart: unless-stopped
     user: "1000:1000"  # match your host user
