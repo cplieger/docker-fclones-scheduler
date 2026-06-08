@@ -5,8 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"fclones-wrapper/internal/parsing"
-
+	"github.com/cplieger/fclones-wrapper/internal/parsing"
 	"pgregory.net/rapid"
 )
 

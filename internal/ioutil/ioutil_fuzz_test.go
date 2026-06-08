@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"fclones-wrapper/internal/ioutil"
+	"github.com/cplieger/fclones-wrapper/internal/ioutil"
 )
 
 func FuzzShouldFilterLine(f *testing.F) {

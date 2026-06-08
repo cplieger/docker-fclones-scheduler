@@ -13,10 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"fclones-wrapper/internal/args"
-	"fclones-wrapper/internal/ioutil"
-	"fclones-wrapper/internal/parsing"
-
+	"github.com/cplieger/fclones-wrapper/internal/args"
+	"github.com/cplieger/fclones-wrapper/internal/ioutil"
+	"github.com/cplieger/fclones-wrapper/internal/parsing"
 	"github.com/cplieger/health"
 )
 

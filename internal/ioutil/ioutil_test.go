@@ -6,8 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"fclones-wrapper/internal/ioutil"
-
+	"github.com/cplieger/fclones-wrapper/internal/ioutil"
 	"pgregory.net/rapid"
 )
 

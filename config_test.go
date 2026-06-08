@@ -9,8 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"fclones-wrapper/internal/args"
-
+	"github.com/cplieger/fclones-wrapper/internal/args"
 	"pgregory.net/rapid"
 )
 
