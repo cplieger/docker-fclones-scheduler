@@ -62,7 +62,7 @@ services:
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `TZ` | Container timezone | `Europe/Paris` | No |
-| `FCLONES_INTERVAL` | Scan interval as a Go duration (e.g. `1h`, `30m`, `12h`). Defaults to `3h` on unset or unparseable values. The first scan runs at startup; subsequent scans fire every interval thereafter. | `1h` | No |
+| `FCLONES_INTERVAL` | Scan interval as a Go duration (e.g. `1h`, `30m`, `12h`). Defaults to `3h` on unset or unparseable values. The first scan runs at startup; subsequent scans fire every interval thereafter. | `3h` | No |
 | `FCLONES_SCAN_PATHS` | Paths inside the container to scan for duplicates. Must match the volume mounts. Multiple paths can be space-separated (e.g. `/media /photos`), each requiring a corresponding volume mount. | `/scandir` | No |
 | `FCLONES_ARGS` | Extra arguments passed to `fclones group` scan phase | `--rf-over 1` | No |
 | `FCLONES_ACTION` | Dedup action after scan — group (report only), link (hardlink), or remove | `link` | No |
