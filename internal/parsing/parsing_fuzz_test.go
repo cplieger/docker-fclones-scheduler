@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"fclones-wrapper/internal/parsing"
+	"github.com/cplieger/fclones-wrapper/internal/parsing"
 )
 
 func FuzzParseStats(f *testing.F) {
@@ -80,7 +80,7 @@ func FuzzParseActionSummary(f *testing.F) {
 		// If input contains both "Processed" and "reclaimed", RawLine may still be
 		// empty when the line structure doesn't match exactly; we don't assert
 		// either way here.
-		_ = strings.Contains(input, "Processed") && strings.Contains(input, "reclaimed") && summary.RawLine == "" 
+		_ = strings.Contains(input, "Processed") && strings.Contains(input, "reclaimed") && summary.RawLine == ""
 		if summary.RawLine != "" && strings.HasPrefix(summary.RawLine, "Processed") {
 			if !strings.Contains(summary.RawLine, "Processed") {
 				t.Fatal("RawLine should contain Processed if it starts with it")

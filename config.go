@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"fclones-wrapper/internal/args"
+	"github.com/cplieger/fclones-wrapper/internal/args"
 )
 
 // --- Configuration ---

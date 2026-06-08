@@ -1,4 +1,4 @@
-module fclones-wrapper
+module github.com/cplieger/fclones-wrapper
 
 go 1.26.4
 
