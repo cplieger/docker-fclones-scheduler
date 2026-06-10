@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -93,20 +94,36 @@ func TestBuildScanArgs(t *testing.T) {
 	}
 }
 
-// --- Tests: releaseJobSlot ---
+// --- Tests: scan overlap lock ---
 
-func TestReleaseJobSlot(t *testing.T) {
+func TestFileLockMutualExclusion(t *testing.T) {
 	t.Parallel()
-	js := &jobSlot{}
-	js.TryAcquire()
+	path := filepath.Join(t.TempDir(), "scan.lock")
 
-	js.Release()
-
-	js.mu.Lock()
-	defer js.mu.Unlock()
-	if js.running {
-		t.Error("running should be false after Release")
+	first, ok, err := tryLock(path)
+	if err != nil {
+		t.Fatalf("first tryLock: unexpected error: %v", err)
 	}
+	if !ok {
+		t.Fatal("first tryLock should acquire the lock")
+	}
+
+	if _, ok, err := tryLock(path); err != nil {
+		t.Fatalf("second tryLock: unexpected error: %v", err)
+	} else if ok {
+		t.Error("second tryLock should fail while the lock is held")
+	}
+
+	first.unlock()
+
+	again, ok, err := tryLock(path)
+	if err != nil {
+		t.Fatalf("third tryLock: unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("tryLock should re-acquire after unlock")
+	}
+	again.unlock()
 }
 
 // --- Tests: buildActionArgs ---

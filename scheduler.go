@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"sync"
 	"syscall"
 	"time"
 
@@ -33,33 +32,6 @@ func defaultCommandRunner(ctx context.Context, name string, cmdArgs ...string) *
 	return cmd
 }
 
-// --- Job Slot ---
-
-// jobSlot guards single-scan concurrency. Only one scan may run at a time.
-type jobSlot struct {
-	mu      sync.Mutex
-	running bool
-}
-
-// TryAcquire atomically claims the single-scan mutex slot.
-// Returns false if a scan is already in flight.
-func (js *jobSlot) TryAcquire() bool {
-	js.mu.Lock()
-	defer js.mu.Unlock()
-	if js.running {
-		return false
-	}
-	js.running = true
-	return true
-}
-
-// Release marks the single-scan slot as free.
-func (js *jobSlot) Release() {
-	js.mu.Lock()
-	js.running = false
-	js.mu.Unlock()
-}
-
 // --- Scan Job ---
 
 // newScanID returns a short random hex token used to correlate log lines
@@ -72,20 +44,26 @@ func newScanID() string {
 	return hex.EncodeToString(b[:])
 }
 
-func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trigger string, js *jobSlot, newCmd commandRunner) {
-	if !js.TryAcquire() {
-		slog.Info("job already running, skipping overlapping request", "trigger", trigger)
-		return
+func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trigger string, newCmd commandRunner) (err error) {
+	lock, ok, lockErr := tryLock(lockFile)
+	if lockErr != nil {
+		slog.Error("cannot acquire scan lock", "trigger", trigger, "path", lockFile, "error", lockErr)
+		return lockErr
 	}
-	defer js.Release()
+	if !ok {
+		slog.Info("job already running, skipping overlapping request", "trigger", trigger)
+		return nil
+	}
+	defer lock.unlock()
 
-	healthy := false
+	// marker reflects this run's outcome: healthy on success, unhealthy on
+	// failure. On shutdown (parent ctx cancelled) we always mark unhealthy.
 	defer func() {
 		if ctx.Err() != nil {
 			marker.Set(false)
 			return
 		}
-		marker.Set(healthy)
+		marker.Set(err == nil)
 	}()
 
 	scanID := newScanID()
@@ -96,13 +74,13 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	scanArgs, err := buildScanArgs(cfg)
 	if err != nil {
 		log.Error("scan failed to start", "reason", "bad_args", "error", err)
-		return
+		return err
 	}
 
 	tmpFile, err := os.CreateTemp("", "fclones_report_*.txt")
 	if err != nil {
 		log.Error("scan failed to start", "reason", "tmpfile", "error", err)
-		return
+		return err
 	}
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath)
@@ -138,12 +116,12 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 			"stderr", errBuf.String(),
 			"stderr_total_bytes", errBuf.Total(),
 			"stderr_truncated", errBuf.Truncated())
-		return
+		return fmt.Errorf("scan timeout exceeded after %s", cfg.PhaseTimeout)
 	case OutcomeShutdown:
 		log.Info("scan interrupted", "reason", "shutdown",
 			"outcome", outcome,
 			"cause", context.Cause(ctx))
-		return
+		return nil
 	case OutcomeExecError:
 		log.Error("scan failed", "reason", "exec_error",
 			"outcome", outcome,
@@ -151,7 +129,7 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 			"stderr", errBuf.String(),
 			"stderr_total_bytes", errBuf.Total(),
 			"stderr_truncated", errBuf.Truncated())
-		return
+		return fmt.Errorf("scan exec failed: %w", runErr)
 	case OutcomeSuccess:
 		// continue to report parsing
 	default:
@@ -188,13 +166,10 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 			log.Info("action skipped",
 				"action", cfg.Action, "reason", "no_duplicates")
 		}
-		healthy = true
-		return
+		return nil
 	}
 
-	if runFclonesAction(ctx, cfg, tmpPath, log, newCmd) {
-		healthy = true
-	}
+	return runFclonesAction(ctx, cfg, tmpPath, log, newCmd)
 }
 
 // countDuplicateFiles returns the total number of duplicate (non-keeper)
@@ -283,20 +258,23 @@ func buildActionArgs(cfg *config) ([]string, error) {
 	return cmdArgs, nil
 }
 
-// runFclonesAction executes the post-scan action (remove, link, dedupe) on the report file.
-func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *slog.Logger, newCmd commandRunner) bool {
+// runFclonesAction executes the post-scan action (remove, link, dedupe) on
+// the report file. It returns nil on success (including the group-only case
+// with no action to run, and shutdown mid-action) and a non-nil error when
+// the action times out or exits non-zero.
+func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *slog.Logger, newCmd commandRunner) error {
 	actionCmdArgs, err := buildActionArgs(cfg)
 	if err != nil {
 		log.Error("invalid FCLONES_ACTION_ARGS syntax", "error", err)
-		return false
+		return err
 	}
 	if actionCmdArgs == nil {
-		return true
+		return nil
 	}
 
 	if ctx.Err() != nil {
 		log.Info("action skipped, shutting down")
-		return false
+		return nil
 	}
 
 	actionCtx, cancel := context.WithTimeout(ctx, cfg.PhaseTimeout)
@@ -309,7 +287,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 	inFile, err := os.Open(reportPath)
 	if err != nil {
 		log.Error("failed to open report for action", "error", err)
-		return false
+		return err
 	}
 	defer inFile.Close()
 
@@ -333,12 +311,12 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 			"stderr", actionStderr.String(),
 			"stderr_total_bytes", actionStderr.Total(),
 			"stderr_truncated", actionStderr.Truncated())
-		return false
+		return fmt.Errorf("action timeout exceeded after %s", cfg.PhaseTimeout)
 	case OutcomeShutdown:
 		log.Info("action interrupted", "reason", "shutdown",
 			"outcome", outcome,
 			"cause", context.Cause(ctx))
-		return false
+		return nil
 	case OutcomeExecError:
 		log.Error("action failed",
 			"reason", "exec_error",
@@ -350,7 +328,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 			"stdout", actionStdout.String(),
 			"stdout_total_bytes", actionStdout.Total(),
 			"stdout_truncated", actionStdout.Truncated())
-		return false
+		return fmt.Errorf("action exec failed: %w", runErr)
 	case OutcomeSuccess:
 		// continue to summary parsing
 	default:
@@ -372,5 +350,5 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 		attrs = append(attrs, "result", summary.RawLine)
 	}
 	log.Info("action complete", attrs...)
-	return true
+	return nil
 }
