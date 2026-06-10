@@ -21,11 +21,12 @@ aggregators (Alloy, Promtail, etc.) and alerting via Grafana or similar.
 - Pipe container logs to your observability stack for alerting
 - Supports all fclones actions: `group` (report only), `link` (replace with hardlinks), `remove` (delete duplicates)
 - Configurable scan interval, paths, and fclones arguments
+- Built-in scheduler, or hand scheduling to an external scheduler (cron, Ofelia, etc.) via the `scan` subcommand
 - Built-in Docker healthcheck with automatic recovery
 
 ### Why this design
 
-- **Self-contained scheduler** — wraps fclones in a Go-based interval scheduler so you don't need external cron, systemd timers, or orchestrator-level scheduling
+- **Scheduler your way** — ships with a self-contained Go interval scheduler so you don't need external cron, systemd timers, or orchestrator-level scheduling. If you already run a central scheduler (Ofelia, cron), set `FCLONES_INTERVAL=off` and trigger scans with `docker exec fclones /app/wrapper scan` instead
 - **Distroless and rootless** — runs as `nonroot` (UID 65534) on `gcr.io/distroless/static` with no shell or package manager, minimizing attack surface
 - **Dangerous flags blocked by default** — `--command`, `--transform`, `--in-place`, and `--no-copy` are rejected unless you explicitly opt in with `FCLONES_ALLOW_UNSAFE=true`, preventing command injection via environment variables
 - **Structured logs for observability** — all output goes to stdout/stderr in a format ready for log aggregators, enabling alerting on scan failures or duplicate detection without custom exporters
@@ -55,6 +56,48 @@ services:
       - "/opt/appdata/fclones:/cache"
 ```
 
+## Scheduling modes
+
+The container runs in one of two modes, selected by `FCLONES_INTERVAL`.
+
+### Built-in scheduler (default)
+
+Set `FCLONES_INTERVAL` to a Go duration (`1h`, `30m`, `12h`, …). The container runs a scan at startup and then every interval. This is the zero-dependency default; nothing else is required.
+
+### External scheduler
+
+Set `FCLONES_INTERVAL=off` (aliases: `disabled`, `0`). The container stays running but idle, and you trigger each scan out-of-band by exec'ing the `scan` subcommand:
+
+```bash
+docker exec fclones /app/wrapper scan
+```
+
+The scan runs once and exits; its exit code is non-zero on failure, and it updates the same health marker the long-running container reports. This lets a central scheduler own the cadence. Example with [Ofelia](https://github.com/mcuadros/ofelia) labels:
+
+```yaml
+services:
+  fclones:
+    image: ghcr.io/cplieger/docker-fclones-scheduler:latest
+    container_name: fclones
+    restart: unless-stopped
+    user: "1000:1000"
+    environment:
+      TZ: "Europe/Paris"
+      FCLONES_INTERVAL: "off"   # disable built-in loop; Ofelia drives it
+      FCLONES_SCAN_PATHS: "/scandir"
+      FCLONES_ACTION: "link"
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.fclones-scan.schedule: "@every 6h"
+      ofelia.job-exec.fclones-scan.command: "/app/wrapper scan"
+      ofelia.job-exec.fclones-scan.no-overlap: "true"
+    volumes:
+      - "/path/to/media:/scandir"
+      - "/opt/appdata/fclones:/cache"
+```
+
+Overlapping scans are prevented in both modes by an advisory file lock (`flock`) on `/cache/.fclones.lock`, so a manual `docker exec` scan that races a scheduled one will skip rather than corrupt the shared fclones cache. Ofelia's `no-overlap` is still recommended to avoid queuing redundant triggers.
+
 ## Configuration reference
 
 ### Environment variables
@@ -62,7 +105,7 @@ services:
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `TZ` | Container timezone | `Europe/Paris` | No |
-| `FCLONES_INTERVAL` | Scan interval as a Go duration (e.g. `1h`, `30m`, `12h`). Defaults to `3h` on unset or unparseable values. The first scan runs at startup; subsequent scans fire every interval thereafter. | `3h` | No |
+| `FCLONES_INTERVAL` | Built-in scan interval as a Go duration (e.g. `1h`, `30m`, `12h`). The first scan runs at startup; subsequent scans fire every interval thereafter. Set to `off` (or `disabled`/`0`) to disable the built-in scheduler and trigger scans externally — see [Scheduling modes](#scheduling-modes). Falls back to `3h` on an unset or unparseable (non-sentinel) value. | `3h` | No |
 | `FCLONES_SCAN_PATHS` | Paths inside the container to scan for duplicates. Must match the volume mounts. Multiple paths can be space-separated (e.g. `/media /photos`), each requiring a corresponding volume mount. | `/scandir` | No |
 | `FCLONES_ARGS` | Extra arguments passed to `fclones group` scan phase | `--rf-over 1` | No |
 | `FCLONES_ACTION` | Dedup action after scan — group (report only), link (hardlink), or remove | `link` | No |
@@ -78,31 +121,7 @@ services:
 
 ## Healthcheck
 
-The built-in healthcheck (`/app/wrapper health`) checks for a marker file created after each successful scan and action phase. The container becomes unhealthy when fclones exits non-zero (e.g. scan path missing, permission denied, corrupted cache) or the action phase fails (e.g. hardlink across filesystems). It recovers automatically on the next successful scan — no restart required. On startup the container begins unhealthy and transitions to healthy after the first successful scan completes, so size `healthcheck.start_period` accordingly for large filesystems where the initial scan may take minutes.
-
-## Code quality
-
-| Metric | Value |
-|--------|-------|
-| [Test Coverage](https://go.dev/blog/cover) | 56.5% |
-| Tests | 191 |
-| [Cyclomatic Complexity](https://en.wikipedia.org/wiki/Cyclomatic_complexity) (avg) | 4.0 |
-| [Cognitive Complexity](https://www.sonarsource.com/docs/CognitiveComplexity.pdf) (avg) | 4.2 |
-| [Mutation Efficacy](https://en.wikipedia.org/wiki/Mutation_testing) | 86.3% (59 runs) |
-| Test Framework | Property-based ([rapid](https://github.com/flyingmutant/rapid)) + table-driven |
-
-Tests cover argument parsing with shell quoting
-and injection prevention, fclones output parsing (stats, duplicates,
-whitespace edge cases), config loading and validation, action
-allowlisting, dangerous flag rejection (`--command`, `--transform`,
-`--in-place`, `--no-copy` blocked by default; opt-in via
-`FCLONES_ALLOW_UNSAFE`), file size limits, and the health file lifecycle. Property-based tests
-verify that parsing functions never panic on arbitrary input and
-that config loading always produces valid actions.
-
-Not tested: `main()` orchestration and `exec.Command` calls to the
-fclones binary — these are process-level I/O validated by container
-logs and Grafana alerting in production.
+The built-in healthcheck (`/app/wrapper health`) checks for a marker file created after each successful scan and action phase. The container becomes unhealthy when fclones exits non-zero (e.g. scan path missing, permission denied, corrupted cache) or the action phase fails (e.g. hardlink across filesystems). It recovers automatically on the next successful scan — no restart required. In built-in mode the container begins unhealthy and transitions to healthy after the first successful scan completes, so size `healthcheck.start_period` accordingly for large filesystems where the initial scan may take minutes. In external mode the container starts healthy (idle, nothing has failed) and each triggered `scan` updates the marker.
 
 ## Security
 
@@ -130,8 +149,10 @@ with no shell.
 **Details for advanced users:** Arguments are passed to
 `exec.Command` as explicit arg lists (no shell expansion). Temp
 files use `os.CreateTemp` with unpredictable names. Output reads
-are capped at 50 MB. Concurrent scan requests are guarded by a
-mutex. Semgrep flags the distroless nonroot image as "missing
+are capped at 50 MB. Concurrent scans are guarded by an advisory
+file lock (`flock` on `/cache/.fclones.lock`), which serialises
+both the built-in ticker and externally triggered `scan`
+invocations. Semgrep flags the distroless nonroot image as "missing
 USER" (false positive, UID 65534 is baked in) and the
 `/tmp/.healthy` marker (fixed path, single-process container).
 Hadolint DL3008 applies to the Rust builder stage only, which is
@@ -141,7 +162,7 @@ discarded in the final image.
 
 | Dependency | Version | Source |
 |------------|---------|--------|
-| rust | `1.95-trixie` | [Rust](https://hub.docker.com/_/rust) |
+| rust | `1.96-trixie` | [Rust](https://hub.docker.com/_/rust) |
 | golang | `1.26-trixie` | [Go](https://hub.docker.com/_/golang) |
 | gcr.io/distroless/static-debian13 | `nonroot` | [Distroless](https://github.com/GoogleContainerTools/distroless) |
 | fclones | `v0.35.0` | [GitHub](https://github.com/pkolaczk/fclones) |

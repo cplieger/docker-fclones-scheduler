@@ -22,6 +22,13 @@ type config struct {
 	ActionArgs   string
 	Interval     time.Duration
 	PhaseTimeout time.Duration
+
+	// ScheduleEnabled reports whether the built-in interval scheduler runs.
+	// When false (FCLONES_INTERVAL=off/disabled/0), the container idles and
+	// scans are triggered out-of-band via the `scan` subcommand (e.g. an
+	// external scheduler such as Ofelia running `docker exec`). Interval is
+	// not consulted in that mode.
+	ScheduleEnabled bool
 }
 
 // action represents a validated fclones subcommand.
@@ -59,6 +66,13 @@ const (
 	// Fixed container paths — configured via volume mounts, not env vars.
 	scanDir  = "/scandir"
 	cacheDir = "/cache"
+
+	// lockFile guards against overlapping scans. flock(2) on this file
+	// serialises runs both in-process (the built-in ticker racing the
+	// startup scan) and cross-process (an external `scan` invocation racing
+	// a manual `docker exec` or the scheduled one). fclones shares the
+	// /cache directory across runs, so concurrent scans could corrupt it.
+	lockFile = cacheDir + "/.fclones.lock"
 
 	// Memory caps. stderr is bounded so a chatty fclones cannot OOM the
 	// container; the output report read is bounded against very large
@@ -134,28 +148,43 @@ func loadConfig() (config, error) {
 		return config{}, fmt.Errorf("invalid FCLONES_SCAN_TIMEOUT %q: %w", timeoutStr, err)
 	}
 
-	// FCLONES_INTERVAL is a Go duration (e.g., "1h", "30m", "12h"). On
-	// any parse failure the loader falls back to defaultInterval and
-	// logs a warning rather than refusing to start; this keeps the
-	// container scanning on a reasonable cadence even with a malformed
-	// env block.
+	// FCLONES_INTERVAL is a Go duration (e.g., "1h", "30m", "12h") that
+	// sets the built-in scan cadence. The sentinels "off", "disabled", or
+	// any zero duration ("0", "0s") disable the built-in scheduler; the
+	// container then idles and scans are triggered via the `scan`
+	// subcommand by an external scheduler. On any other parse failure the
+	// loader falls back to defaultInterval and logs a warning rather than
+	// refusing to start, keeping the container scanning on a reasonable
+	// cadence even with a malformed env block.
 	interval := defaultInterval
-	if raw := os.Getenv("FCLONES_INTERVAL"); raw != "" {
-		if d, perr := time.ParseDuration(raw); perr == nil && d > 0 {
-			interval = d
-		} else {
-			slog.Warn("cannot parse FCLONES_INTERVAL, using default",
-				"value", raw, "default", defaultInterval)
+	scheduleEnabled := true
+	if raw := strings.TrimSpace(os.Getenv("FCLONES_INTERVAL")); raw != "" {
+		switch strings.ToLower(raw) {
+		case "off", "disabled":
+			scheduleEnabled = false
+		default:
+			if d, perr := time.ParseDuration(raw); perr == nil {
+				if d > 0 {
+					interval = d
+				} else {
+					// Zero duration ("0", "0s") means disable scheduling.
+					scheduleEnabled = false
+				}
+			} else {
+				slog.Warn("cannot parse FCLONES_INTERVAL, using default",
+					"value", raw, "default", defaultInterval)
+			}
 		}
 	}
 
 	return config{
-		Interval:     interval,
-		ScanPath:     scanPaths,
-		Args:         argsStr,
-		Action:       parsedAction,
-		ActionArgs:   actionArgs,
-		PhaseTimeout: scanTimeout,
+		Interval:        interval,
+		ScheduleEnabled: scheduleEnabled,
+		ScanPath:        scanPaths,
+		Args:            argsStr,
+		Action:          parsedAction,
+		ActionArgs:      actionArgs,
+		PhaseTimeout:    scanTimeout,
 	}, nil
 }
 

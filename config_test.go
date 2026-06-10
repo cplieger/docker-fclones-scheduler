@@ -43,6 +43,9 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.Interval != time.Hour {
 		t.Errorf("Interval = %s, want 1h", cfg.Interval)
 	}
+	if !cfg.ScheduleEnabled {
+		t.Error("ScheduleEnabled = false, want true for a duration interval")
+	}
 	if cfg.ScanPath != "/data" {
 		t.Errorf("ScanPath = %q, want %q", cfg.ScanPath, "/data")
 	}
@@ -70,6 +73,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.Interval != defaultInterval {
 		t.Errorf("Interval = %s, want default %s", cfg.Interval, defaultInterval)
 	}
+	if !cfg.ScheduleEnabled {
+		t.Error("ScheduleEnabled = false, want true when interval is unset (default cadence)")
+	}
 	if cfg.ScanPath != scanDir {
 		t.Errorf("ScanPath = %q, want %q", cfg.ScanPath, scanDir)
 	}
@@ -78,6 +84,41 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.Args != "" {
 		t.Errorf("Args = %q, want empty", cfg.Args)
+	}
+}
+
+func TestLoadConfigScheduleDisabled(t *testing.T) {
+	for _, value := range []string{"off", "OFF", "disabled", "Disabled", "0", "0s", "0h"} {
+		t.Run(value, func(t *testing.T) {
+			setCleanFclonesEnv(t)
+			t.Setenv("FCLONES_INTERVAL", value)
+
+			cfg, err := loadConfig()
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			if cfg.ScheduleEnabled {
+				t.Errorf("FCLONES_INTERVAL=%q: ScheduleEnabled = true, want false", value)
+			}
+		})
+	}
+}
+
+func TestLoadConfigScheduleEnabledOnGarbage(t *testing.T) {
+	// A non-sentinel unparseable value must NOT disable scheduling; it
+	// falls back to the default cadence so the container keeps scanning.
+	setCleanFclonesEnv(t)
+	t.Setenv("FCLONES_INTERVAL", "not-a-duration")
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.ScheduleEnabled {
+		t.Error("ScheduleEnabled = false, want true on unparseable non-sentinel value")
+	}
+	if cfg.Interval != defaultInterval {
+		t.Errorf("Interval = %s, want default %s", cfg.Interval, defaultInterval)
 	}
 }
 
