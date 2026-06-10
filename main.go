@@ -18,7 +18,7 @@ func main() {
 	// CLI health probe for Docker healthcheck (distroless has no curl/wget).
 	// Checks for a marker file instead of making an HTTP request — no port needed.
 	if len(os.Args) > 1 && os.Args[1] == "health" {
-		health.RunProbe(healthMarkerPath)
+		health.RunProbe(health.DefaultPath)
 	}
 
 	if err := run(context.Background()); err != nil {
@@ -49,7 +49,7 @@ func run(ctx context.Context) error {
 
 	// Remove stale health file from a previous run that may have crashed
 	// before its defer ran. The first successful scan will flip it to healthy.
-	marker := health.NewMarker(healthMarkerPath)
+	marker := health.NewMarker(health.DefaultPath)
 	marker.Set(false)
 	defer marker.Cleanup()
 
