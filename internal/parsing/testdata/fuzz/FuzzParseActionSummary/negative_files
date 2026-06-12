@@ -1,0 +1,2 @@
+go test fuzz v1
+string("Processed -1 files and reclaimed 1 B space")

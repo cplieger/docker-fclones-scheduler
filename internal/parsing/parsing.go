@@ -149,7 +149,7 @@ func ParseActionSummary(stdout string) ActionSummary {
 			summary.RawLine = strings.TrimSpace(line[idx:])
 			fields := strings.Fields(summary.RawLine)
 			if len(fields) >= 7 {
-				if n, err := strconv.Atoi(fields[1]); err == nil {
+				if n, err := strconv.Atoi(fields[1]); err == nil && n >= 0 {
 					summary.Files = n
 				}
 				summary.ReclaimedBytes = ParseHumanBytes(fields[5] + " " + fields[6])
