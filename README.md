@@ -1,10 +1,12 @@
 # docker-fclones-scheduler
 
-![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)
+[![CI](https://github.com/cplieger/docker-fclones-scheduler/actions/workflows/ci.yaml/badge.svg)](https://github.com/cplieger/docker-fclones-scheduler/actions/workflows/ci.yaml)
 [![GitHub release](https://img.shields.io/github/v/release/cplieger/docker-fclones-scheduler)](https://github.com/cplieger/docker-fclones-scheduler/releases)
 [![Image Size](https://ghcr-badge.egpl.dev/cplieger/docker-fclones-scheduler/size)](https://github.com/cplieger/docker-fclones-scheduler/pkgs/container/fclones)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Distroless](https://img.shields.io/badge/base-Distroless_nonroot-4285F4?logo=google)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/docker-fclones-scheduler/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/docker-fclones-scheduler)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
 Find and deduplicate files on a schedule — reclaim wasted disk space automatically.
 
