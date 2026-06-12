@@ -22,7 +22,7 @@ type fileLock struct {
 // another holder currently owns the lock (a scan is already in flight). On
 // ok the caller must release the lock with unlock.
 func tryLock(path string) (l *fileLock, ok bool, err error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0o644)
 	if err != nil {
 		return nil, false, err
 	}
