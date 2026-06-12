@@ -126,7 +126,7 @@ The built-in healthcheck (`/app/wrapper health`) checks for a marker file create
 
 ## Security
 
-**No vulnerabilities found.** All scans clean across 10 tools.
+**No vulnerabilities found.** All scans clean.
 
 | Tool | Result |
 |------|--------|
@@ -161,12 +161,12 @@ discarded in the final image.
 
 ## Dependencies
 
-| Dependency | Version | Source |
-|------------|---------|--------|
-| rust | `1.96-trixie` | [Rust](https://hub.docker.com/_/rust) |
-| golang | `1.26-trixie` | [Go](https://hub.docker.com/_/golang) |
-| gcr.io/distroless/static-debian13 | `nonroot` | [Distroless](https://github.com/GoogleContainerTools/distroless) |
-| fclones | `v0.35.0` | [GitHub](https://github.com/pkolaczk/fclones) |
+| Dependency | Source |
+|------------|--------|
+| rust | [Rust](https://hub.docker.com/_/rust) |
+| golang | [Go](https://hub.docker.com/_/golang) |
+| Distroless static nonroot | [Distroless](https://github.com/GoogleContainerTools/distroless) |
+| fclones | [GitHub](https://github.com/pkolaczk/fclones) |
 
 Updated automatically via [Renovate](https://github.com/renovatebot/renovate) and pinned by digest. Builds carry signed SBOMs and provenance attestations verifiable with `gh attestation verify`.
 
