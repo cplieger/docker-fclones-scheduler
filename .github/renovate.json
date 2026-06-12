@@ -1,11 +1,4 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>cplieger/.github"],
-  "packageRules": [
-    {
-      "description": "fclones binary: suppress staleness warning (stable project)",
-      "matchDepNames": ["pkolaczk/fclones"],
-      "abandonmentThreshold": null
-    }
-  ]
+  "extends": ["github>cplieger/.github"]
 }
