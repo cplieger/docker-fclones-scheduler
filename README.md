@@ -6,6 +6,8 @@
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Distroless](https://img.shields.io/badge/base-Distroless_nonroot-4285F4?logo=google)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/docker-fclones-scheduler/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/docker-fclones-scheduler)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-fclones-scheduler/badges/coverage.json)](https://github.com/cplieger/docker-fclones-scheduler/actions/workflows/coverage.yml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13204/badge)](https://www.bestpractices.dev/projects/13204)
 
 Find and deduplicate files on a schedule — reclaim wasted disk space automatically.
 
