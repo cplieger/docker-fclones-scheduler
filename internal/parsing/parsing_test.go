@@ -528,3 +528,77 @@ func TestProperty_BuildScanArgsStructure(t *testing.T) {
 		}
 	})
 }
+
+// TestParseRedundantSize_parenAtIndexOne guards the "(" found/not-found boundary
+// in ParseRedundantSize. The lookup is `start := strings.Index(line, "(")` gated
+// by `start != -1`. Mutating that sentinel to `start != 1` (INVERT_NEGATIVES /
+// ARITHMETIC_BASE on the -1 literal) makes the function skip the parenthesised
+// branch precisely when "(" sits at index 1, falling back to the bare-fields
+// path. A "(" at any other index (as in every other test case) hides the
+// mutation, so this case pins the sentinel value itself.
+func TestParseRedundantSize_parenAtIndexOne(t *testing.T) {
+	t.Parallel()
+
+	// given a line whose "(" is at index 1 and a "512 MB" payload inside it
+	line := "x(512 MB)"
+
+	// when the redundant size is parsed
+	got := parsing.ParseRedundantSize(line)
+
+	// then the parenthesised payload wins (real code), not the "0 B" fallback
+	// that `start != 1` would force
+	want := "512 MB"
+	if got != want {
+		t.Errorf("ParseRedundantSize(%q) = %q, want %q", line, got, want)
+	}
+}
+
+// TestExtractGroupSize_commaAtIndexOne guards the comma found/not-found boundary
+// in ExtractGroupSize. After trimming the trailing ":" and the " * <per-dup>"
+// suffix, the remaining header is split at its first comma via
+// `idx := strings.Index(h, ",")` gated by `idx != -1`. Mutating that sentinel to
+// `idx != 1` (INVERT_NEGATIVES / ARITHMETIC_BASE on the -1 literal) skips the
+// hash-stripping step exactly when the comma is at index 1, i.e. when the hash
+// is a single character. Every other test uses a multi-character hash, so the
+// comma never lands at index 1 and the mutation survives.
+func TestExtractGroupSize_commaAtIndexOne(t *testing.T) {
+	t.Parallel()
+
+	// given a group header with a single-character hash "a" (comma at index 1)
+	header := "a,100 B,2 * 50 B:"
+
+	// when the per-duplicate size is extracted
+	got := parsing.ExtractGroupSize(header)
+
+	// then the leading hash is stripped (real code); `idx != 1` would leave it,
+	// yielding "a,100 B,2"
+	want := "100 B,2"
+	if got != want {
+		t.Errorf("ExtractGroupSize(%q) = %q, want %q", header, got, want)
+	}
+}
+
+// TestParseActionSummary_exactlySevenFields guards the `len(fields) >= 7`
+// boundary in ParseActionSummary. The metric-extraction block reads fields[1]
+// (file count) and fields[5..6] (reclaimed size), so it requires at least seven
+// whitespace-separated tokens. Mutating `>= 7` to `> 7` (CONDITIONALS_BOUNDARY)
+// drops the metrics for a line with exactly seven fields. Every other test uses
+// the eight-field "...reclaimed X Y space" form, so only this trailing-"space"-
+// free line exercises the boundary.
+func TestParseActionSummary_exactlySevenFields(t *testing.T) {
+	t.Parallel()
+
+	// given a "Processed" line with exactly seven fields (no trailing "space")
+	stdout := "Processed 5 files and reclaimed 512 B\n"
+
+	// when the action summary is parsed
+	got := parsing.ParseActionSummary(stdout)
+
+	// then both metrics are extracted (real code); `> 7` would leave them at 0
+	if got.Files != 5 {
+		t.Errorf("ParseActionSummary(%q).Files = %d, want 5", stdout, got.Files)
+	}
+	if got.ReclaimedBytes != 512 {
+		t.Errorf("ParseActionSummary(%q).ReclaimedBytes = %d, want 512", stdout, got.ReclaimedBytes)
+	}
+}

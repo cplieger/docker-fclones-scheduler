@@ -383,3 +383,25 @@ func TestReadFileWithLimitEmptyFileZeroLimit(t *testing.T) {
 		t.Errorf("expected empty, got %d bytes", len(got))
 	}
 }
+
+// TestFilteringWriterWritesLeadingBlankLine guards the newline-search boundary
+// in Write: a buffer whose very first byte is '\n' (idx == 0) must still be
+// recognised as a complete line and forwarded, not buffered. Mutating the
+// `idx < 0` no-newline guard to `idx <= 0` would treat a leading newline as
+// "no newline found", swallowing the entire write.
+func TestFilteringWriterWritesLeadingBlankLine(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	fw := ioutil.NewFilteringWriter(&out)
+
+	if _, err := fw.Write([]byte("\nkeep this\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	got := out.String()
+	want := "\nkeep this\n"
+	if got != want {
+		t.Errorf("Write(%q) wrote %q, want %q", "\nkeep this\n", got, want)
+	}
+}
