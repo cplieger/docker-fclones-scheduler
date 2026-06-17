@@ -1,15 +1,15 @@
 package ioutil
 
-// Boundary-characterization tests for the two surviving CONDITIONALS_BOUNDARY
-// gremlins mutants in LimitedBuffer.Write:
+// Behavioral-contract tests for the boundary cases of LimitedBuffer.Write.
 //
-//   ioutil.go:96  `lb.buf.Len() >= lb.Max`  ->  `>`
-//   ioutil.go:100 `len(p) > remaining`      ->  `>=`
-//
-// Both are EQUIVALENT mutants; these tests pin the exact boundary contract so a
-// future change to the buffer's invariant would be caught, but they do not (and
-// cannot) "kill" the mutants — see the per-test reasoning. Internal test package
-// so the analysis lives beside the code under test.
+// Round 1 found two surviving CONDITIONALS_BOUNDARY mutants here
+// (`lb.buf.Len() >= lb.Max` and `len(p) > remaining`); both were EQUIVALENT.
+// Round 2 ELIMINATED them by rewriting Write as a `min`/`max` clamp (see
+// ioutil.go) -- the two mutable comparisons are gone (both now live inside the
+// min/max builtins, which CONDITIONALS_BOUNDARY does not mutate). These tests
+// remain as the at-cap and exact-fill characterization that locks the rewrite's
+// contract. Internal test package so the analysis lives beside the code under
+// test.
 
 import "testing"
 
@@ -29,15 +29,11 @@ func gk_docker_fclones_scheduler_u1_assertWrite(t *testing.T, lb *LimitedBuffer,
 	}
 }
 
-// TestGkDockerFclonesSchedulerU1_WriteAtCapBoundaryDiscards pins ioutil.go:96.
-//
-// Once buf.Len() == Max, a further non-empty Write must be fully discarded
-// (buffer frozen, returns full input length, Total keeps counting, Truncated
-// flips true). The original `>= Max` early-returns here. The mutated `> Max` is
-// false (buf.Len() never exceeds Max), so it falls through with remaining == 0
-// and writes p[:0] (nothing) -- yielding the identical frozen buffer and return
-// value. Hence the mutant is EQUIVALENT: this test passes under both operators
-// and only locks the at-cap discard contract.
+// TestGkDockerFclonesSchedulerU1_WriteAtCapBoundaryDiscards locks the at-cap
+// path. Once buf.Len() == Max, a further non-empty Write must be fully
+// discarded -- buffer frozen, returns the full input length, Total keeps
+// counting, Truncated flips true. After the round-2 rewrite this is the
+// room == 0 case where `min(len(p), room)` is 0, so nothing is stored.
 func TestGkDockerFclonesSchedulerU1_WriteAtCapBoundaryDiscards(t *testing.T) {
 	t.Parallel()
 	lb := &LimitedBuffer{Max: 8}
@@ -59,15 +55,12 @@ func TestGkDockerFclonesSchedulerU1_WriteAtCapBoundaryDiscards(t *testing.T) {
 	}
 }
 
-// TestGkDockerFclonesSchedulerU1_WriteFillsExactRemaining pins ioutil.go:100.
-//
-// Into a partially-filled buffer (Len 3, Max 10 => remaining 7), a Write of
-// exactly `remaining` (7) bytes must store all of them, bringing buf to exactly
-// Max with nothing discarded. The original `len(p) > remaining` is false here
-// and writes the full p; the mutated `len(p) >= remaining` is true and writes
-// p[:remaining], but p[:7] == p when len(p) == 7 -- the same full p. Hence the
-// mutant is EQUIVALENT: this test passes under both operators and only locks the
-// exact-fill contract.
+// TestGkDockerFclonesSchedulerU1_WriteFillsExactRemaining locks the exact-fill
+// path. Into a partially-filled buffer (Len 3, Max 10 => remaining 7), a Write
+// of exactly `remaining` (7) bytes must store all of them, bringing buf to
+// exactly Max with nothing discarded. After the round-2 rewrite this is the
+// case where room >= len(p), so `min(len(p), room)` == len(p) and the whole
+// input is stored.
 func TestGkDockerFclonesSchedulerU1_WriteFillsExactRemaining(t *testing.T) {
 	t.Parallel()
 	lb := &LimitedBuffer{Max: 10}

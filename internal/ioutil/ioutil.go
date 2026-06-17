@@ -90,18 +90,16 @@ type LimitedBuffer struct {
 	totalIn int
 }
 
-// Write implements io.Writer with bounded accumulation.
+// Write implements io.Writer with bounded accumulation. It always reports the
+// full input length as written (the buffer is a capped sink that never errors)
+// while storing at most the bytes that still fit under Max. The available room
+// is clamped to a non-negative value, so a buffer already at Max -- or a Max
+// lowered below the current length -- stores nothing.
 func (lb *LimitedBuffer) Write(p []byte) (int, error) {
 	lb.totalIn += len(p)
-	if lb.buf.Len() >= lb.Max {
-		return len(p), nil
-	}
-	remaining := lb.Max - lb.buf.Len()
-	if len(p) > remaining {
-		lb.buf.Write(p[:remaining])
-		return len(p), nil
-	}
-	return lb.buf.Write(p)
+	room := max(0, lb.Max-lb.buf.Len())
+	lb.buf.Write(p[:min(len(p), room)])
+	return len(p), nil
 }
 
 // String returns the accumulated buffer content.
