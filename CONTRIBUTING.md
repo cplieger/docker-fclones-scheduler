@@ -59,7 +59,7 @@ intact when touching `config.go` or `scheduler.go`:
 
 - Logs are slog logfmt to stderr (`key=value`). The `sloglint` linter is set
   to `kv-only`, so always use key/value pairs — `slog.Info("scan complete",
-  "groups", n)`, never a formatted string.
+"groups", n)`, never a formatted string.
 - `main()` orchestration and the `exec.Command` calls to the `fclones` binary
   are intentionally not unit-tested (process-level I/O, validated by container
   logs and alerting). New logic in `internal/` or in config/arg parsing is

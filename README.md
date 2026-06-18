@@ -106,22 +106,22 @@ Overlapping scans are prevented in both modes by an advisory file lock (`flock`)
 
 ### Environment variables
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `TZ` | Container timezone | `Europe/Paris` | No |
-| `FCLONES_INTERVAL` | Built-in scan interval as a Go duration (e.g. `1h`, `30m`, `12h`). The first scan runs at startup; subsequent scans fire every interval thereafter. Set to `off` (or `disabled`/`0`) to disable the built-in scheduler and trigger scans externally — see [Scheduling modes](#scheduling-modes). Falls back to `3h` on an unset or unparseable (non-sentinel) value. | `3h` | No |
-| `FCLONES_SCAN_PATHS` | Paths inside the container to scan for duplicates. Must match the volume mounts. Multiple paths can be space-separated (e.g. `/media /photos`), each requiring a corresponding volume mount. | `/scandir` | No |
-| `FCLONES_ARGS` | Extra arguments passed to `fclones group` scan phase | `--rf-over 1` | No |
-| `FCLONES_ACTION` | Dedup action after scan — group (report only), link (hardlink), or remove | `link` | No |
-| `FCLONES_ACTION_ARGS` | Extra arguments for the dedup action phase | `--priority bottom` | No |
-| `FCLONES_ALLOW_UNSAFE` | Set to `true` to allow dangerous flags (`--command`, `--transform`, `--in-place`, `--no-copy`) | `false` | No |
+| Variable               | Description                                                                                                                                                                                                                                                                                                                                                          | Default             | Required |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | -------- |
+| `TZ`                   | Container timezone                                                                                                                                                                                                                                                                                                                                                   | `Europe/Paris`      | No       |
+| `FCLONES_INTERVAL`     | Built-in scan interval as a Go duration (e.g. `1h`, `30m`, `12h`). The first scan runs at startup; subsequent scans fire every interval thereafter. Set to `off` (or `disabled`/`0`) to disable the built-in scheduler and trigger scans externally — see [Scheduling modes](#scheduling-modes). Falls back to `3h` on an unset or unparseable (non-sentinel) value. | `3h`                | No       |
+| `FCLONES_SCAN_PATHS`   | Paths inside the container to scan for duplicates. Must match the volume mounts. Multiple paths can be space-separated (e.g. `/media /photos`), each requiring a corresponding volume mount.                                                                                                                                                                         | `/scandir`          | No       |
+| `FCLONES_ARGS`         | Extra arguments passed to `fclones group` scan phase                                                                                                                                                                                                                                                                                                                 | `--rf-over 1`       | No       |
+| `FCLONES_ACTION`       | Dedup action after scan — group (report only), link (hardlink), or remove                                                                                                                                                                                                                                                                                            | `link`              | No       |
+| `FCLONES_ACTION_ARGS`  | Extra arguments for the dedup action phase                                                                                                                                                                                                                                                                                                                           | `--priority bottom` | No       |
+| `FCLONES_ALLOW_UNSAFE` | Set to `true` to allow dangerous flags (`--command`, `--transform`, `--in-place`, `--no-copy`)                                                                                                                                                                                                                                                                       | `false`             | No       |
 
 ### Volumes
 
-| Mount | Description |
-|-------|-------------|
+| Mount      | Description                                                                                                                                                                          |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `/scandir` | Directory to scan for duplicate files. Must match the paths in `FCLONES_SCAN_PATHS`. You can mount multiple directories and list them all in `FCLONES_SCAN_PATHS` (space-separated). |
-| `/cache` | fclones cache and state directory |
+| `/cache`   | fclones cache and state directory                                                                                                                                                    |
 
 ## Healthcheck
 
@@ -131,15 +131,15 @@ The built-in healthcheck (`/app/wrapper health`) checks for a marker file create
 
 **No vulnerabilities found.** All scans clean.
 
-| Tool | Result |
-|------|--------|
-| [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) | No vulnerabilities in call graph |
-| [golangci-lint](https://golangci-lint.run/) (gosec, gocritic) | 0 issues |
-| [trivy](https://trivy.dev/) | 0 vulnerabilities |
-| [grype](https://github.com/anchore/grype) | 0 vulnerabilities |
-| [gitleaks](https://github.com/gitleaks/gitleaks) | No secrets detected |
-| [semgrep](https://semgrep.dev/) | 2 info (false positives) |
-| [hadolint](https://github.com/hadolint/hadolint) | DL3008 in builder stage (discarded) |
+| Tool                                                                | Result                              |
+| ------------------------------------------------------------------- | ----------------------------------- |
+| [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) | No vulnerabilities in call graph    |
+| [golangci-lint](https://golangci-lint.run/) (gosec, gocritic)       | 0 issues                            |
+| [trivy](https://trivy.dev/)                                         | 0 vulnerabilities                   |
+| [grype](https://github.com/anchore/grype)                           | 0 vulnerabilities                   |
+| [gitleaks](https://github.com/gitleaks/gitleaks)                    | No secrets detected                 |
+| [semgrep](https://semgrep.dev/)                                     | 2 info (false positives)            |
+| [hadolint](https://github.com/hadolint/hadolint)                    | DL3008 in builder stage (discarded) |
 
 No network listener, no HTTP server, no exposed ports. The
 `FCLONES_ACTION` env var is validated against an allowlist and
@@ -164,12 +164,12 @@ discarded in the final image.
 
 ## Dependencies
 
-| Dependency | Source |
-|------------|--------|
-| rust | [Rust](https://hub.docker.com/_/rust) |
-| golang | [Go](https://hub.docker.com/_/golang) |
+| Dependency                | Source                                                           |
+| ------------------------- | ---------------------------------------------------------------- |
+| rust                      | [Rust](https://hub.docker.com/_/rust)                            |
+| golang                    | [Go](https://hub.docker.com/_/golang)                            |
 | Distroless static nonroot | [Distroless](https://github.com/GoogleContainerTools/distroless) |
-| fclones | [GitHub](https://github.com/pkolaczk/fclones) |
+| fclones                   | [GitHub](https://github.com/pkolaczk/fclones)                    |
 
 Updated automatically via [Renovate](https://github.com/renovatebot/renovate) and pinned by digest. Builds carry signed SBOMs and provenance attestations verifiable with `gh attestation verify`.
 
