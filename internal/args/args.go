@@ -1,3 +1,5 @@
+// Package args parses a shell-style argument string into a slice of tokens,
+// honouring single and double quotes and backslash escapes.
 package args
 
 import (
