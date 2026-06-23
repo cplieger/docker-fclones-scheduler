@@ -1,3 +1,5 @@
+// Package main is the fclones-wrapper binary: an interval scheduler that runs
+// fclones against mounted directories to find, hardlink, or remove duplicate files.
 package main
 
 import (
