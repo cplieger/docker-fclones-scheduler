@@ -1,5 +1,5 @@
 # check=error=true
-FROM rust:1.96-trixie@sha256:cbdbd43352e8c040e1b89ce5acb0d66ca23756338e9ab8597e9119f8dbc8e24b AS fclones-builder
+FROM rust:1.96-trixie@sha256:e7336b1e0bb2290b0d7bfd3ce1237bf11e5c2ae937ee3e250e6554b98338bea6 AS fclones-builder
 
 WORKDIR /usr/src/fclones
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
