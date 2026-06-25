@@ -2,6 +2,7 @@ package parsing
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -66,7 +67,7 @@ func ParseRedundantSize(line string) string {
 }
 
 // IsGroupHeader reports whether a line is an fclones group header like
-// "3a2b,1024 B,2 * 512 B:" (comma, star, trailing colon).
+// "3a2b, 512 B * 2:" (comma, star, trailing colon).
 func IsGroupHeader(line string) bool {
 	return strings.Contains(line, ",") &&
 		strings.Contains(line, "*") &&
@@ -76,7 +77,7 @@ func IsGroupHeader(line string) bool {
 // ParseDuplicateGroups parses an fclones custom-format report into structured
 // groups. Each group header looks like:
 //
-//	3a2b,1024 B,2 * 512 B:
+//	3a2b, 512 B * 2:
 //
 // followed by one path per line (one "keeper" and one or more duplicates),
 // terminated by a blank line.
@@ -102,15 +103,19 @@ func ParseDuplicateGroups(report string) []DuplicateGroup {
 			flush()
 			continue
 		}
-		if IsGroupHeader(line) {
-			flush()
-			current.SizePerDup = ExtractGroupSize(line)
-			inGroup = true
-			continue
-		}
 		if !inGroup {
+			if IsGroupHeader(line) {
+				current.SizePerDup = ExtractGroupSize(line)
+				inGroup = true
+			}
 			continue
 		}
+		// Once in a group, every non-blank line is a path until the blank-line
+		// flush ends the group. Header detection is deliberately NOT re-run here:
+		// fclones separates groups with a blank line, so a duplicate filename that
+		// embeds the header delimiters (',', '*', trailing ':') must not be
+		// reclassified as a new group header. Do not add an IsGroupHeader check in
+		// this branch.
 		if current.Keeper == "" {
 			current.Keeper = trimmed
 		} else {
@@ -164,6 +169,24 @@ func ParseActionSummary(stdout string) ActionSummary {
 	return summary
 }
 
+// byteUnitMultipliers maps an upper-cased size unit to its byte multiplier.
+// fclones (via bytesize 1.3.0, the pinned version) renders DECIMAL SI units
+// (KB..EB) by default -- the same system HumanBytes emits, so today both the
+// parse and format sides agree. The IEC binary units (KiB..EiB) are accepted
+// defensively so ParseHumanBytes still parses correctly if a future
+// fclones/bytesize bump switches its output to IEC.
+var byteUnitMultipliers = map[string]int64{
+	"B":   1,
+	"KIB": 1 << 10, "MIB": 1 << 20, "GIB": 1 << 30,
+	"TIB": 1 << 40, "PIB": 1 << 50, "EIB": 1 << 60,
+	"KB": 1_000, "K": 1_000,
+	"MB": 1_000_000, "M": 1_000_000,
+	"GB": 1_000_000_000, "G": 1_000_000_000,
+	"TB": 1_000_000_000_000, "T": 1_000_000_000_000,
+	"PB": 1_000_000_000_000_000, "P": 1_000_000_000_000_000,
+	"EB": 1_000_000_000_000_000_000, "E": 1_000_000_000_000_000_000,
+}
+
 // ParseHumanBytes converts "<num> <unit>" (e.g. "1.5 MB", "512 B") into a
 // byte count. Returns 0 on any parse failure.
 func ParseHumanBytes(s string) int64 {
@@ -175,28 +198,30 @@ func ParseHumanBytes(s string) int64 {
 	if err != nil {
 		return 0
 	}
-	unit := strings.ToUpper(fields[1])
-	var mult int64
-	switch unit {
-	case "B":
-		mult = 1
-	case "KB", "K":
-		mult = 1_000
-	case "MB", "M":
-		mult = 1_000_000
-	case "GB", "G":
-		mult = 1_000_000_000
-	case "TB", "T":
-		mult = 1_000_000_000_000
-	default:
+	mult, ok := byteUnitMultipliers[strings.ToUpper(fields[1])]
+	if !ok {
 		return 0
 	}
-	result := int64(num * float64(mult))
-	if result < 0 {
-		return 0 // overflow
-	}
-	return result
+	return floatToInt64(num * float64(mult))
 }
+
+// floatToInt64 converts a byte-count float64 to int64, returning 0 for NaN,
+// negative, or out-of-int64-range values. The range is checked BEFORE the
+// conversion because converting an out-of-range float64 to int64 is
+// implementation-defined (amd64 wraps to MinInt64, arm64 saturates to
+// MaxInt64), so a post-conversion sign check is not portable. This also
+// rejects the Inf/NaN literals that strconv.ParseFloat accepts.
+func floatToInt64(f float64) int64 {
+	if math.IsNaN(f) || f < 0 || f >= float64(math.MaxInt64) {
+		return 0
+	}
+	return int64(f)
+}
+
+// humanByteSuffixes are the SI-decimal suffixes HumanBytes emits, ordered
+// by ascending magnitude. Package-level (like byteUnitMultipliers) so the
+// table is not rebuilt on every call.
+var humanByteSuffixes = []string{"KB", "MB", "GB", "TB", "PB", "EB"}
 
 // HumanBytes formats a byte count as a short SI-unit string for log lines.
 func HumanBytes(n int64) string {
@@ -205,10 +230,9 @@ func HumanBytes(n int64) string {
 		return fmt.Sprintf("%d B", n)
 	}
 	div, exp := unit, 0
-	for x := n / unit; x >= unit; x /= unit {
+	for x := n / unit; x >= unit && exp < len(humanByteSuffixes)-1; x /= unit {
 		div *= unit
 		exp++
 	}
-	suffix := []string{"KB", "MB", "GB", "TB", "PB"}[exp]
-	return fmt.Sprintf("%.1f %s", float64(n)/float64(div), suffix)
+	return fmt.Sprintf("%.1f %s", float64(n)/float64(div), humanByteSuffixes[exp])
 }

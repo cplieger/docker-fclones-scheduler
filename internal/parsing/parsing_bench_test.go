@@ -38,7 +38,7 @@ func BenchmarkParseDuplicateGroups(b *testing.B) {
 		report := generateReport(tc.groups, tc.filesPerGroup)
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
-			for range b.N {
+			for b.Loop() {
 				parsing.ParseDuplicateGroups(report)
 			}
 		})
@@ -59,7 +59,7 @@ func BenchmarkParseStats(b *testing.B) {
 		report := generateReport(tc.groups, tc.filesPerGroup)
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
-			for range b.N {
+			for b.Loop() {
 				parsing.ParseStats(report)
 			}
 		})

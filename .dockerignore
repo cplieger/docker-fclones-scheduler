@@ -1,0 +1,31 @@
+# Docker build context excludes. Docker does NOT honor .gitignore, so without
+# this file the entire repo directory is uploaded to the daemon on every build --
+# including the gitignored Kiro artifact tree (.code-review can be multiple GB).
+# The go-builder stage only needs go.mod/go.sum, the non-test *.go sources, and internal/.
+
+# Kiro skill artifacts (gitignored, but Docker still ships them)
+**/.code-review/
+**/.judgement/
+**/.refactor/
+**/.steering-maintenance/
+
+# VCS, CI, and repo metadata
+.git/
+.github/
+.gitignore
+.gitattributes
+.editorconfig
+
+# Docs and tooling config not consumed by the build
+*.md
+LICENSE
+compose.yaml
+cliff.toml
+renovate.json
+.golangci.yaml
+.gremlins.yaml
+
+# Test sources aren't compiled by `go build`; excluding them keeps a test-only
+# edit from invalidating the COPY -> go build cache layer. (Revisit if an
+# in-build `go test` stage is ever added.)
+**/*_test.go

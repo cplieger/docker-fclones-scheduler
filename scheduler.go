@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -32,6 +34,51 @@ func defaultCommandRunner(ctx context.Context, name string, cmdArgs ...string) *
 	return cmd
 }
 
+// reportTempPattern is the os.CreateTemp filename pattern for the per-scan fclones
+// report under /cache. cleanStaleReports globs the identical pattern to reclaim
+// orphans, so the two MUST stay in lockstep -- a drift here silently stops the sweep
+// from matching any orphan. Keep both call sites on this one constant.
+const reportTempPattern = "fclones_report_*.txt"
+
+// cleanStaleReports removes orphaned fclones report temp files left in /cache
+// by a previous scan whose `defer os.Remove` never ran -- e.g. the container
+// was SIGKILLed after the 5s WaitDelay grace, OOM-killed, or lost power
+// mid-scan. Because /cache is a persistent volume these orphans accumulate
+// across container restarts. Intended for daemon startup; it takes the same
+// advisory flock that serialises scans before sweeping, so it can never unlink
+// a live report owned by a concurrent scan in any process.
+func cleanStaleReports() {
+	// Take the same advisory flock that serialises scans before sweeping: a
+	// concurrent cross-process `wrapper scan` (e.g. an Ofelia docker exec firing
+	// as the container restarts) may hold a live report file matching the glob.
+	// Acquiring the lock first guarantees no scan is in flight in any process, so
+	// every match is a genuine orphan. If the lock is held, skip the sweep -- the
+	// orphans (if any) are reclaimed on a later startup when no scan races.
+	lock, ok, lockErr := tryLock(lockFile)
+	if lockErr != nil {
+		slog.Warn("cannot acquire scan lock for stale-report sweep, skipping",
+			"path", lockFile, "error", lockErr)
+		return
+	}
+	if !ok {
+		slog.Debug("scan in flight, skipping stale-report sweep")
+		return
+	}
+	defer lock.unlock()
+
+	matches, err := filepath.Glob(filepath.Join(cacheDir, reportTempPattern))
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		if rmErr := os.Remove(m); rmErr != nil {
+			slog.Warn("failed to remove stale report temp file", "path", m, "error", rmErr)
+			continue
+		}
+		slog.Debug("removed stale report temp file", "path", m)
+	}
+}
+
 // --- Scan Job ---
 
 // newScanID returns a short random hex token used to correlate log lines
@@ -44,10 +91,24 @@ func newScanID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// markerAction decides how runFclonesJob's deferred health-marker update
+// behaves once a run finishes. When the parent context was cancelled
+// (ctxErr != nil) the run was interrupted rather than completed, so set is
+// false and the marker is left untouched, preserving the last finished
+// run's state. Otherwise set is true and healthy reports whether the run
+// succeeded (runErr == nil).
+func markerAction(ctxErr, runErr error) (set, healthy bool) {
+	if ctxErr != nil {
+		return false, false
+	}
+	return true, runErr == nil
+}
+
 func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trigger string, newCmd commandRunner) (err error) {
 	lock, ok, lockErr := tryLock(lockFile)
 	if lockErr != nil {
 		slog.Error("cannot acquire scan lock", "trigger", trigger, "path", lockFile, "error", lockErr)
+		marker.Set(false)
 		return lockErr
 	}
 	if !ok {
@@ -57,13 +118,16 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	defer lock.unlock()
 
 	// marker reflects this run's outcome: healthy on success, unhealthy on
-	// failure. On shutdown (parent ctx cancelled) we always mark unhealthy.
+	// failure. On interrupt (parent ctx cancelled) the run neither completed
+	// nor failed, so the marker is left as-is, reflecting the last finished
+	// run. The daemon sets the marker unhealthy explicitly on its own shutdown
+	// path and removes it via marker.Cleanup(); a one-shot `wrapper scan` must
+	// NOT flip a still-running healthy daemon unhealthy just because an
+	// operator or scheduler interrupted a manual scan (it also exits 0).
 	defer func() {
-		if ctx.Err() != nil {
-			marker.Set(false)
-			return
+		if set, healthy := markerAction(ctx.Err(), err); set {
+			marker.Set(healthy)
 		}
-		marker.Set(err == nil)
 	}()
 
 	scanID := newScanID()
@@ -77,7 +141,7 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 		return err
 	}
 
-	tmpFile, err := os.CreateTemp("", "fclones_report_*.txt")
+	tmpFile, err := os.CreateTemp(cacheDir, reportTempPattern)
 	if err != nil {
 		log.Error("scan failed to start", "reason", "tmpfile", "error", err)
 		return err
@@ -90,10 +154,10 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 		"binary", "fclones", "args", scanArgs,
 		"timeout", cfg.PhaseTimeout)
 
-	scanCtx, cancel := context.WithTimeout(ctx, cfg.PhaseTimeout)
+	scanCtx, cancel := phaseContext(ctx, cfg.PhaseTimeout)
 	defer cancel()
 
-	errBuf := &ioutil.LimitedBuffer{Max: stderrCapBytes}
+	errBuf := &ioutil.LimitedBuffer{Max: streamCapBytes}
 	scanFilter := ioutil.NewFilteringWriter(os.Stderr)
 	cmd := newCmd(scanCtx, "fclones", scanArgs...)
 	cmd.Stdout = tmpFile
@@ -136,11 +200,11 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 		panic(fmt.Sprintf("unhandled PhaseOutcome: %d", int(outcome)))
 	}
 
-	outputBytes, err := ioutil.ReadFileWithLimit(tmpPath, outputCapBytes)
-	reportParsed := err == nil
+	outputBytes, readErr := ioutil.ReadFileWithLimit(tmpPath, outputCapBytes)
+	reportParsed := readErr == nil
 	if !reportParsed {
 		log.Error("report too large to parse, observability degraded",
-			"error", err, "cap_bytes", outputCapBytes)
+			"error", readErr, "cap_bytes", outputCapBytes)
 		outputBytes = []byte{}
 	}
 	outputStr := string(outputBytes)
@@ -148,6 +212,8 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	stats := parsing.ParseStats(outputStr)
 	groups := parsing.ParseDuplicateGroups(outputStr)
 	hasDuplicates := len(groups) > 0
+
+	maybeWarnGroupCountDrift(log, reportParsed, stats.Groups, len(groups))
 
 	log.Info("scan complete",
 		"duration_s", int(duration.Round(time.Second).Seconds()),
@@ -161,15 +227,56 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 		logDuplicateGroups(log, groups)
 	}
 
-	if !hasDuplicates {
-		if cfg.Action != actionGroup {
-			log.Info("action skipped",
-				"action", cfg.Action, "reason", "no_duplicates")
-		}
+	if !shouldRunAction(log, cfg, reportParsed, hasDuplicates) {
 		return nil
 	}
 
 	return runFclonesAction(ctx, cfg, tmpPath, log, newCmd)
+}
+
+// maybeWarnGroupCountDrift cross-checks fclones' own group count (from the
+// report's "# Total:" line) against the number of groups we parsed. On a
+// successfully read report a mismatch is the signature of an fclones
+// output-format change our parser no longer recognises; surfacing it avoids
+// silently treating drift as "no duplicates" (which skips the dedup action
+// while the healthcheck stays green). No-op when the report was not parsed or
+// fclones' reported count is non-numeric.
+func maybeWarnGroupCountDrift(log *slog.Logger, reportParsed bool, reportedGroups string, parsed int) {
+	if !reportParsed {
+		return
+	}
+	reported, err := strconv.Atoi(reportedGroups)
+	if err != nil {
+		return
+	}
+	if reported != parsed {
+		log.Warn("group count mismatch, possible fclones format drift",
+			"reported_groups", reported, "parsed_groups", parsed)
+	}
+}
+
+// shouldRunAction reports whether the dedup action phase should run after a
+// scan. It returns false (logging "action skipped") when the report parsed
+// cleanly and found no duplicates. When the report could not be parsed it warns
+// that the action will run without duplicate stats, then returns true so the
+// action still runs against the full report via stdin.
+func shouldRunAction(log *slog.Logger, cfg *config, reportParsed, hasDuplicates bool) bool {
+	if reportParsed && !hasDuplicates {
+		if cfg.Action != actionGroup {
+			log.Info("action skipped",
+				"action", cfg.Action, "reason", "no_duplicates")
+		}
+		return false
+	}
+	if !reportParsed && cfg.Action != actionGroup {
+		// Report exceeded the parse cap, so duplicate stats are unknown; the "scan
+		// complete" line logs duplicates_found=false only because the parse was
+		// skipped. The action still runs on the full report via stdin -- flag the
+		// degraded run.
+		log.Warn("running action without parsed report; duplicate stats unavailable",
+			"action", cfg.Action, "reason", "report_unparseable")
+	}
+	return true
 }
 
 // countDuplicateFiles returns the total number of duplicate (non-keeper)
@@ -191,12 +298,20 @@ func logDuplicateGroups(log *slog.Logger, groups []parsing.DuplicateGroup) {
 
 	emit := min(len(groups), maxLoggedGroups)
 	pairsEmitted := 0
+	detailBytes := 0
 
 pairs:
 	for i := range emit {
 		g := groups[i]
 		for _, dup := range g.Duplicates {
 			if pairsEmitted >= maxLoggedPairs {
+				break pairs
+			}
+			detailBytes += len(g.Keeper) + len(dup)
+			if detailBytes > logDetailCapBytes {
+				log.Info("duplicate detail truncated, byte cap reached",
+					"logged_pairs", pairsEmitted,
+					"cap_bytes", logDetailCapBytes)
 				break pairs
 			}
 			log.Info("duplicate file",
@@ -258,6 +373,18 @@ func buildActionArgs(cfg *config) ([]string, error) {
 	return cmdArgs, nil
 }
 
+// phaseContext derives the per-phase context from the configured timeout. A
+// non-positive timeout (FCLONES_SCAN_TIMEOUT=0) means "no timeout": the phase
+// runs under the parent ctx so a SIGTERM still cancels it, but no deadline
+// applies. A positive timeout bounds the phase. The caller must defer the
+// returned cancel.
+func phaseContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
 // runFclonesAction executes the post-scan action (remove, link, dedupe) on
 // the report file. It returns nil on success (including the group-only case
 // with no action to run, and shutdown mid-action) and a non-nil error when
@@ -277,7 +404,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 		return nil
 	}
 
-	actionCtx, cancel := context.WithTimeout(ctx, cfg.PhaseTimeout)
+	actionCtx, cancel := phaseContext(ctx, cfg.PhaseTimeout)
 	defer cancel()
 
 	log.Info("performing action",
@@ -291,15 +418,17 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 	}
 	defer inFile.Close()
 
-	actionStdout := &ioutil.LimitedBuffer{Max: stderrCapBytes}
-	actionStderr := &ioutil.LimitedBuffer{Max: stderrCapBytes}
+	actionStdout := &ioutil.LimitedBuffer{Max: streamCapBytes}
+	actionStderr := &ioutil.LimitedBuffer{Max: streamCapBytes}
 	actionFilter := ioutil.NewFilteringWriter(os.Stderr)
 	actionCmd := newCmd(actionCtx, "fclones", actionCmdArgs...)
 	actionCmd.Stdin = inFile
 	actionCmd.Stdout = actionStdout
 	actionCmd.Stderr = io.MultiWriter(actionFilter, actionStderr)
 
+	startTime := time.Now()
 	runErr := actionCmd.Run()
+	duration := time.Since(startTime)
 	actionFilter.Flush()
 	outcome := classifyExecOutcome(ctx, actionCtx, runErr)
 	switch outcome {
@@ -307,7 +436,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 		log.Error("action timeout exceeded",
 			"reason", "timeout",
 			"outcome", outcome,
-			"action", cfg.Action, "timeout", cfg.PhaseTimeout,
+			"action", cfg.Action, "timeout", cfg.PhaseTimeout, "duration", duration,
 			"stderr", actionStderr.String(),
 			"stderr_total_bytes", actionStderr.Total(),
 			"stderr_truncated", actionStderr.Truncated())
@@ -321,7 +450,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 		log.Error("action failed",
 			"reason", "exec_error",
 			"outcome", outcome,
-			"action", cfg.Action, "error", runErr,
+			"action", cfg.Action, "duration", duration, "error", runErr,
 			"stderr", actionStderr.String(),
 			"stderr_total_bytes", actionStderr.Total(),
 			"stderr_truncated", actionStderr.Truncated(),
@@ -342,6 +471,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 
 	attrs := []any{
 		"action", cfg.Action,
+		"duration_s", int(duration.Round(time.Second).Seconds()),
 		"files_deduped", summary.Files,
 		"bytes_reclaimed", summary.ReclaimedBytes,
 		"reclaimed_human", parsing.HumanBytes(summary.ReclaimedBytes),

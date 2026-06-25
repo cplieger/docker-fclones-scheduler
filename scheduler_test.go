@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cplieger/fclones-wrapper/internal/parsing"
 	"pgregory.net/rapid"
@@ -124,6 +128,23 @@ func TestFileLockMutualExclusion(t *testing.T) {
 		t.Error("tryLock should re-acquire after unlock")
 	}
 	again.unlock()
+}
+
+func TestTryLockReturnsErrorWhenLockFileCannotBeCreated(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "missing-parent", "scan.lock")
+
+	l, ok, err := tryLock(path)
+
+	if err == nil {
+		t.Fatalf("tryLock(%q) error = nil, want a non-nil error when the parent directory does not exist", path)
+	}
+	if ok {
+		t.Errorf("tryLock(%q) ok = true, want false on open failure", path)
+	}
+	if l != nil {
+		t.Errorf("tryLock(%q) lock = %v, want nil on open failure", path, l)
+	}
 }
 
 // --- Tests: buildActionArgs ---
@@ -290,6 +311,296 @@ func TestProperty_BuildScanArgsStructure(t *testing.T) {
 		}
 		if got[len(got)-1] != "--cache" {
 			rt.Fatalf("buildScanArgs: last arg = %q, want \"--cache\"", got[len(got)-1])
+		}
+	})
+}
+
+func TestNewScanIDFormat(t *testing.T) {
+	t.Parallel()
+	id := newScanID()
+	if len(id) != 8 {
+		t.Fatalf("newScanID() = %q (len %d), want 8 hex chars", id, len(id))
+	}
+	for _, r := range id {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			t.Errorf("newScanID() = %q contains non-lowercase-hex rune %q", id, r)
+		}
+	}
+}
+
+func TestDefaultCommandRunnerGracefulShutdown(t *testing.T) {
+	t.Parallel()
+	cmd := defaultCommandRunner(context.Background(), "fclones", "group", "/scandir")
+	if cmd.WaitDelay != 5*time.Second {
+		t.Errorf("WaitDelay = %s, want 5s", cmd.WaitDelay)
+	}
+	if cmd.Cancel == nil {
+		t.Error("Cancel = nil, want a SIGTERM cancel func")
+	}
+	if len(cmd.Args) != 3 || cmd.Args[0] != "fclones" || cmd.Args[1] != "group" || cmd.Args[2] != "/scandir" {
+		t.Errorf("Args = %v, want [fclones group /scandir]", cmd.Args)
+	}
+}
+
+func TestMarkerAction(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		ctxErr      error
+		runErr      error
+		name        string
+		wantSet     bool
+		wantHealthy bool
+	}{
+		{nil, nil, "clean run sets healthy", true, true},
+		{nil, context.DeadlineExceeded, "failed run sets unhealthy", true, false},
+		{context.Canceled, nil, "interrupted clean run leaves marker untouched", false, false},
+		{context.Canceled, context.DeadlineExceeded, "interrupted failed run leaves marker untouched", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			set, healthy := markerAction(tt.ctxErr, tt.runErr)
+			if set != tt.wantSet {
+				t.Errorf("markerAction set=%v, want %v", set, tt.wantSet)
+			}
+			if set && healthy != tt.wantHealthy {
+				t.Errorf("markerAction healthy=%v, want %v", healthy, tt.wantHealthy)
+			}
+		})
+	}
+}
+
+// --- Tests: logDuplicateGroups ---
+
+func makeDupGroups(n, dupsPerGroup, pathLen int) []parsing.DuplicateGroup {
+	groups := make([]parsing.DuplicateGroup, n)
+	for i := range groups {
+		dups := make([]string, dupsPerGroup)
+		for j := range dups {
+			dups[j] = strings.Repeat("d", pathLen)
+		}
+		groups[i] = parsing.DuplicateGroup{
+			Keeper:     strings.Repeat("k", pathLen),
+			SizePerDup: "1 KB",
+			Duplicates: dups,
+		}
+	}
+	return groups
+}
+
+func TestLogDuplicateGroups(t *testing.T) {
+	t.Parallel()
+
+	const dupFileMsg = `msg="duplicate file"`
+
+	t.Run("emits every pair when under all caps", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		groups := makeDupGroups(3, 2, 8)
+		logDuplicateGroups(log, groups)
+
+		out := buf.String()
+		if got := strings.Count(out, dupFileMsg); got != 6 {
+			t.Errorf("emitted %d duplicate-file lines, want 6", got)
+		}
+		if strings.Contains(out, "truncated") {
+			t.Error("unexpected truncation message for an under-cap input")
+		}
+	})
+
+	t.Run("stops at the byte cap before the pair cap", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		groups := makeDupGroups(1, 100, 1024)
+		logDuplicateGroups(log, groups)
+
+		out := buf.String()
+		if emitted := strings.Count(out, dupFileMsg); emitted == 0 || emitted >= 100 {
+			t.Errorf("emitted %d duplicate-file lines, want a byte-capped count in (0,100)", emitted)
+		}
+		if !strings.Contains(out, "duplicate detail truncated, byte cap reached") {
+			t.Error("missing byte-cap truncation message")
+		}
+		if !strings.Contains(out, "duplicate pairs truncated") {
+			t.Error("missing final pairs-truncated summary")
+		}
+	})
+
+	t.Run("stops at the 500-pair cap", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		groups := makeDupGroups(1, 600, 2)
+		logDuplicateGroups(log, groups)
+
+		out := buf.String()
+		if got := strings.Count(out, dupFileMsg); got != 500 {
+			t.Errorf("emitted %d duplicate-file lines, want 500 (pair cap)", got)
+		}
+		if strings.Contains(out, "byte cap reached") {
+			t.Error("byte cap fired unexpectedly for tiny paths")
+		}
+		if !strings.Contains(out, "duplicate pairs truncated") {
+			t.Error("missing final pairs-truncated summary")
+		}
+	})
+
+	t.Run("stops at the 100-group cap", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		groups := makeDupGroups(150, 1, 2)
+		logDuplicateGroups(log, groups)
+
+		out := buf.String()
+		if got := strings.Count(out, dupFileMsg); got != 100 {
+			t.Errorf("emitted %d duplicate-file lines, want 100 (group cap)", got)
+		}
+		if !strings.Contains(out, "duplicate pairs truncated") {
+			t.Error("missing final pairs-truncated summary")
+		}
+	})
+}
+
+func TestMaybeWarnGroupCountDrift(t *testing.T) {
+	t.Parallel()
+
+	const driftMsg = "group count mismatch, possible fclones format drift"
+
+	t.Run("warns when reported and parsed counts differ", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+		maybeWarnGroupCountDrift(log, true, "5", 3)
+
+		out := buf.String()
+		if !strings.Contains(out, driftMsg) {
+			t.Errorf("maybeWarnGroupCountDrift(true, %q, 3): no drift warning, got %q", "5", out)
+		}
+		if !strings.Contains(out, "reported_groups=5") || !strings.Contains(out, "parsed_groups=3") {
+			t.Errorf("maybeWarnGroupCountDrift(true, %q, 3): warning missing counts, got %q", "5", out)
+		}
+	})
+
+	t.Run("silent when counts match", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+		maybeWarnGroupCountDrift(log, true, "7", 7)
+
+		if out := buf.String(); out != "" {
+			t.Errorf("maybeWarnGroupCountDrift(true, %q, 7) = %q, want no log", "7", out)
+		}
+	})
+
+	t.Run("silent when report was not parsed even on mismatch", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+		maybeWarnGroupCountDrift(log, false, "5", 3)
+
+		if out := buf.String(); out != "" {
+			t.Errorf("maybeWarnGroupCountDrift(false, %q, 3) = %q, want no log", "5", out)
+		}
+	})
+
+	t.Run("silent when reported count is non-numeric", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+		maybeWarnGroupCountDrift(log, true, "not-a-number", 3)
+
+		if out := buf.String(); out != "" {
+			t.Errorf("maybeWarnGroupCountDrift(true, %q, 3) = %q, want no log", "not-a-number", out)
+		}
+	})
+}
+
+func TestShouldRunAction(t *testing.T) {
+	t.Parallel()
+
+	t.Run("skips and logs when parsed report has no duplicates and action is not group", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		got := shouldRunAction(log, &config{Action: actionLink}, true, false)
+
+		if got {
+			t.Error("shouldRunAction(parsed=true, dups=false, action=link) = true, want false")
+		}
+		if !strings.Contains(buf.String(), `msg="action skipped"`) {
+			t.Errorf("expected 'action skipped' log, got %q", buf.String())
+		}
+	})
+
+	t.Run("skips silently when no duplicates and action is group", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		got := shouldRunAction(log, &config{Action: actionGroup}, true, false)
+
+		if got {
+			t.Error("shouldRunAction(parsed=true, dups=false, action=group) = true, want false")
+		}
+		if strings.Contains(buf.String(), "action skipped") {
+			t.Errorf("group action with no dups should not log 'action skipped', got %q", buf.String())
+		}
+	})
+
+	t.Run("runs silently when duplicates were found", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		got := shouldRunAction(log, &config{Action: actionLink}, true, true)
+
+		if !got {
+			t.Error("shouldRunAction(parsed=true, dups=true, action=link) = false, want true")
+		}
+		if buf.Len() != 0 {
+			t.Errorf("expected no log when duplicates found, got %q", buf.String())
+		}
+	})
+
+	t.Run("runs and warns when report unparseable and action is not group", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		got := shouldRunAction(log, &config{Action: actionRemove}, false, false)
+
+		if !got {
+			t.Error("shouldRunAction(parsed=false, action=remove) = false, want true")
+		}
+		if !strings.Contains(buf.String(), "running action without parsed report") {
+			t.Errorf("expected degraded-run warning, got %q", buf.String())
+		}
+	})
+
+	t.Run("runs silently when report unparseable and action is group", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		got := shouldRunAction(log, &config{Action: actionGroup}, false, false)
+
+		if !got {
+			t.Error("shouldRunAction(parsed=false, action=group) = false, want true")
+		}
+		if strings.Contains(buf.String(), "running action without parsed report") {
+			t.Errorf("group action should not warn about unparseable report, got %q", buf.String())
 		}
 	})
 }

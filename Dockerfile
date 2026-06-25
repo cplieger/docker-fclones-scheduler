@@ -3,27 +3,37 @@ FROM rust:1.96-trixie@sha256:6df234c1eb92b0545468fab8c18fc5f9adfb994e7d4f67d81d4
 
 WORKDIR /usr/src/fclones
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# The cross-compilation toolchain and musl target below are used only by the
+# arm64 branch, which builds fclones from source. The amd64 branch downloads a
+# prebuilt musl binary and needs none of them (see the arch split below).
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     musl-tools \
     cmake \
-    git \
     gcc-aarch64-linux-gnu \
     libc6-dev-arm64-cross \
     && rm -rf /var/lib/apt/lists/*
 RUN rustup target add aarch64-unknown-linux-musl
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
-    CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc \
-    CXX_aarch64_unknown_linux_musl=aarch64-linux-gnu-g++
+    CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc
 # renovate: datasource=github-tags depName=pkolaczk/fclones
 ARG FCLONES_VERSION=v0.35.0
+# Integrity pins -- re-verify on every version bump (stale pin fail-closes the build).
+# amd64: sha256 of fclones-<version>-linux-musl-x86_64.tar.gz
+ARG FCLONES_SHA256_AMD64=9eae0466e5b78871cf25822e503ee9efbfa28dc36cc167060c4a4920306389ac
+# arm64: commit that the FCLONES_VERSION tag dereferences to (git tags are mutable; pin the commit)
+ARG FCLONES_COMMIT=a74f90d293e05856d19a4c0ac2b29b46ef16cf23
 RUN VERSION="${FCLONES_VERSION#v}" && \
     ARCH=$(dpkg --print-architecture) && \
     if [ "$ARCH" = "amd64" ]; then \
-      curl -fsSL "https://github.com/pkolaczk/fclones/releases/download/${FCLONES_VERSION}/fclones-${VERSION}-linux-musl-x86_64.tar.gz" \
-        | tar xz --strip-components=3 -C /usr/src/fclones; \
+      curl -fsSL -o /tmp/fclones.tar.gz \
+        "https://github.com/pkolaczk/fclones/releases/download/${FCLONES_VERSION}/fclones-${VERSION}-linux-musl-x86_64.tar.gz" && \
+      printf '%s  /tmp/fclones.tar.gz\n' "${FCLONES_SHA256_AMD64}" | sha256sum -c - && \
+      tar xz --strip-components=3 -C /usr/src/fclones -f /tmp/fclones.tar.gz && \
+      rm -f /tmp/fclones.tar.gz; \
     else \
-      git clone --branch ${FCLONES_VERSION} --depth 1 https://github.com/pkolaczk/fclones.git . && \
+      git clone --branch "${FCLONES_VERSION}" --depth 1 https://github.com/pkolaczk/fclones.git . && \
+      test "$(git rev-parse HEAD)" = "${FCLONES_COMMIT}" && \
       cargo build --release --target aarch64-unknown-linux-musl && \
       mv target/aarch64-unknown-linux-musl/release/fclones /usr/src/fclones/fclones; \
     fi
@@ -33,7 +43,8 @@ ENV GOTOOLCHAIN=auto
 
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 COPY *.go ./
 COPY internal/ internal/
 RUN --mount=type=cache,target=/go/pkg/mod \
@@ -45,6 +56,14 @@ FROM gcr.io/distroless/static-debian13:nonroot@sha256:963fa6c544fe5ce420f1f54fb8
 WORKDIR /app
 COPY --chmod=755 --from=fclones-builder /usr/src/fclones/fclones /usr/bin/fclones
 COPY --chmod=755 --from=go-builder /wrapper /app/wrapper
+# XDG_CACHE_HOME puts fclones' cache on the persistent /cache volume instead of
+# ephemeral container storage.
+# HOME=/tmp gives any operator-chosen UID a writable home for tools that consult $HOME;
+# distroless ships /tmp world-writable (1777) so that succeeds for any UID.
+# The wrapper writes its fclones report to a temp file under /cache
+# (os.CreateTemp(cacheDir, ...)), the operator-mounted volume it already
+# requires to be writable -- not to /tmp.
+# PATH lets the wrapper resolve fclones by name.
 ENV XDG_CACHE_HOME="/cache" \
     HOME="/tmp" \
     PATH="/usr/bin:$PATH"

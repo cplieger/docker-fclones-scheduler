@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+// maxLineBytes bounds the partial-line buffer in FilteringWriter so a
+// no-newline byte flood cannot grow it without limit. It mirrors the 1 MB
+// stderr cap applied to the sibling LimitedBuffer sink.
+const maxLineBytes = 1 << 20 // 1 MB
+
 // FilteringWriter wraps an io.Writer and drops lines matching known-recurring
 // noise from upstream fclones.
 type FilteringWriter struct {
@@ -29,14 +34,25 @@ var filteredPatterns = []string{
 	"info: Found ",
 }
 
-// ShouldFilterLine returns true when a given line should be suppressed.
-func ShouldFilterLine(line string) bool {
+// shouldFilterLine returns true when a given line should be suppressed.
+func shouldFilterLine(line string) bool {
 	for _, p := range filteredPatterns {
 		if strings.Contains(line, p) {
 			return true
 		}
 	}
 	return false
+}
+
+// emit applies the noise filter to a single line and writes it through to the
+// wrapped writer unless it is filtered. It is the single filter-then-write step
+// shared by Write's per-line and flood-flush paths and by Flush.
+func (fw *FilteringWriter) emit(line []byte) error {
+	if shouldFilterLine(string(line)) {
+		return nil
+	}
+	_, err := fw.w.Write(line)
+	return err
 }
 
 // Write implements io.Writer with line-oriented filtering.
@@ -49,13 +65,18 @@ func (fw *FilteringWriter) Write(p []byte) (int, error) {
 		idx := bytes.IndexByte(buf, '\n')
 		if idx < 0 {
 			fw.buf = append(fw.buf, buf...)
+			if len(fw.buf) > maxLineBytes {
+				err := fw.emit(fw.buf)
+				fw.buf = nil
+				if err != nil {
+					return len(p), err
+				}
+			}
 			break
 		}
 		line := buf[:idx+1]
-		if !ShouldFilterLine(string(line)) {
-			if _, err := fw.w.Write(line); err != nil {
-				return len(p), err
-			}
+		if err := fw.emit(line); err != nil {
+			return len(p), err
 		}
 		buf = buf[idx+1:]
 	}
@@ -69,13 +90,9 @@ func (fw *FilteringWriter) Flush() error {
 	if len(fw.buf) == 0 {
 		return nil
 	}
-	line := string(fw.buf)
+	line := fw.buf
 	fw.buf = nil
-	if !ShouldFilterLine(line) {
-		_, err := fw.w.Write([]byte(line))
-		return err
-	}
-	return nil
+	return fw.emit(line)
 }
 
 // Close implements io.Closer by flushing the remaining buffer.
@@ -130,6 +147,10 @@ func ReadFileWithLimit(path string, maxBytes int64) ([]byte, error) {
 		return nil, fmt.Errorf("file %s is %d bytes, exceeds %d byte limit", path, info.Size(), maxBytes)
 	}
 
+	// Read one byte past the limit (maxBytes+1) so an oversized file is detected
+	// rather than silently truncated to maxBytes. The length re-check below turns
+	// that extra byte into an error and also closes the TOCTOU gap where the file
+	// grew between the Stat check above and this read.
 	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {
 		return nil, err

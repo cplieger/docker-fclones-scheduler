@@ -201,6 +201,21 @@ func TestParseDuplicateGroups(t *testing.T) {
 				},
 			},
 		},
+		{
+			// Oracle the fuzz invariants miss: duplicate filenames that embed
+			// the header delimiters (',', '*', trailing ':') must NOT be
+			// reclassified as new group headers. The whole block stays ONE
+			// group with the expected keeper and duplicate count.
+			name:  "duplicate filenames that look like group headers stay one group",
+			input: "realhash, 100 B * 3:\n/path/a, 1 B * 2:\n/path/b, 1 B * 2:\n/path/c, 1 B * 2:\n",
+			want: []parsing.DuplicateGroup{
+				{
+					Keeper:     "/path/a, 1 B * 2:",
+					Duplicates: []string{"/path/b, 1 B * 2:", "/path/c, 1 B * 2:"},
+					SizePerDup: "100 B",
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -399,6 +414,9 @@ func TestHumanBytes(t *testing.T) {
 		{in: 1_234_567, want: "1.2 MB"},
 		{in: 1_000_000_000, want: "1.0 GB"},
 		{in: 591_700_000_000_000, want: "591.7 TB"},
+		{in: 1_000_000_000_000_000, want: "1.0 PB"},
+		{in: 1_500_000_000_000_000, want: "1.5 PB"},
+		{in: 1_000_000_000_000_000_000, want: "1.0 EB"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
@@ -600,5 +618,154 @@ func TestParseActionSummary_exactlySevenFields(t *testing.T) {
 	}
 	if got.ReclaimedBytes != 512 {
 		t.Errorf("ParseActionSummary(%q).ReclaimedBytes = %d, want 512", stdout, got.ReclaimedBytes)
+	}
+}
+
+// TestParseActionSummary_partialParse pins the partial-parse contract.
+func TestParseActionSummary_partialParse(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, input, wantRaw string
+		wantFiles            int
+		wantReclaimed        int64
+	}{
+		{
+			"unknown size unit yields files but zero reclaimed",
+			"Processed 5 files and reclaimed 1.5 ZB space",
+			"Processed 5 files and reclaimed 1.5 ZB space",
+			5, 0,
+		},
+		{
+			"non-numeric size yields files but zero reclaimed",
+			"Processed 7 files and reclaimed lots of space",
+			"Processed 7 files and reclaimed lots of space",
+			7, 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := parsing.ParseActionSummary(tt.input)
+			if got.Files != tt.wantFiles {
+				t.Errorf("Files = %d, want %d", got.Files, tt.wantFiles)
+			}
+			if got.ReclaimedBytes != tt.wantReclaimed {
+				t.Errorf("ReclaimedBytes = %d, want %d", got.ReclaimedBytes, tt.wantReclaimed)
+			}
+			if got.RawLine != tt.wantRaw {
+				t.Errorf("RawLine = %q, want %q", got.RawLine, tt.wantRaw)
+			}
+		})
+	}
+}
+
+func TestParseHumanBytes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want int64
+	}{
+		{"bytes", "512 B", 512},
+		{"kilobytes", "1 KB", 1_000},
+		{"megabytes float", "1.5 MB", 1_500_000},
+		{"gigabytes", "1 GB", 1_000_000_000},
+		{"terabytes float", "1.5 TB", 1_500_000_000_000},
+		{"zero kilobytes", "0 KB", 0},
+		{"single-letter K alias", "5 K", 5_000},
+		{"single-letter M alias", "5 M", 5_000_000},
+		{"single-letter G alias", "2 G", 2_000_000_000},
+		{"single-letter T alias", "3 T", 3_000_000_000_000},
+		{"lowercase unit is uppercased", "5 kb", 5_000},
+		{"invalid unit returns zero", "100 XB", 0},
+		{"non-numeric value returns zero", "abc MB", 0},
+		{"single field returns zero", "100", 0},
+		{"empty returns zero", "", 0},
+		{"overflow rejected (out of int64 range)", "99999999 TB", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parsing.ParseHumanBytes(tt.in); got != tt.want {
+				t.Errorf("ParseHumanBytes(%q) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseHumanBytes_IECUnits(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want int64
+	}{
+		{"kibibytes", "1 KiB", 1024},
+		{"mebibytes", "1 MiB", 1_048_576},
+		{"mebibytes float", "1.5 MiB", 1_572_864},
+		{"gibibytes", "1 GiB", 1_073_741_824},
+		{"tebibytes", "1 TiB", 1_099_511_627_776},
+		{"pebibytes", "1 PiB", 1_125_899_906_842_624},
+		{"exbibytes", "1 EiB", 1_152_921_504_606_846_976},
+		{"lowercase iec is uppercased", "1 gib", 1_073_741_824},
+		{"petabytes decimal", "1 PB", 1_000_000_000_000_000},
+		{"single-letter P alias", "2 P", 2_000_000_000_000_000},
+		{"exabytes decimal", "1 EB", 1_000_000_000_000_000_000},
+		{"single-letter E alias", "2 E", 2_000_000_000_000_000_000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parsing.ParseHumanBytes(tt.in); got != tt.want {
+				t.Errorf("ParseHumanBytes(%q) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseHumanBytes_rejectsNonFiniteAndNegative(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want int64
+	}{
+		{"negative integer rejected", "-5 KB", 0},
+		{"negative float rejected", "-1.5 MB", 0},
+		{"positive infinity rejected", "Inf KB", 0},
+		{"negative infinity rejected", "-Inf KB", 0},
+		{"NaN rejected", "NaN MB", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parsing.ParseHumanBytes(tt.in); got != tt.want {
+				t.Errorf("ParseHumanBytes(%q) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsGroupHeader(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"valid header with comma star and trailing colon", "3a2b, 512 B * 2:", true},
+		{"missing comma", "3a2b 512 B * 2:", false},
+		{"missing star", "3a2b, 512 B 2:", false},
+		{"missing trailing colon", "3a2b, 512 B * 2", false},
+		{"empty string", "", false},
+		{"duplicate path embedding all delimiters is still a header", "/x, 1 B * 2:", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parsing.IsGroupHeader(tt.line); got != tt.want {
+				t.Errorf("IsGroupHeader(%q) = %v, want %v", tt.line, got, tt.want)
+			}
+		})
 	}
 }

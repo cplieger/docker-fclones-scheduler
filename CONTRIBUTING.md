@@ -12,22 +12,27 @@ how to run the checks locally.
 The Go module is `github.com/cplieger/fclones-wrapper`; the built binary is
 `wrapper`. The root `main` package is small and split by concern:
 
-- `main.go` — composition root. `run(ctx)` wires config, the health marker,
-  and two goroutines (a startup scan plus a `time.Ticker` loop). Shutdown is
-  driven by `signal.NotifyContext` (SIGTERM/SIGINT) and a `sync.WaitGroup`
-  that drains in-flight scans.
-- `config.go` — environment loading (`loadConfig`), the `FCLONES_ACTION`
-  allowlist (`parseAction`), and the dangerous-flag rejection
-  (`rejectDangerousArgs`).
-- `scheduler.go` — the two-phase run: `fclones group` scan
+- `main.go` — composition root. Dispatches the `health` and `scan`
+  subcommands and the default long-running daemon, and wires config plus the
+  health marker (`health.NewMarker` from `github.com/cplieger/health`). The
+  daemon splits into `runBuiltin` (a startup scan plus a `time.Ticker` loop)
+  and `runExternal` (idle until signalled); `runScan` is the one-shot
+  `scan`-subcommand path. Shutdown is driven by `signal.NotifyContext`
+  (SIGTERM/SIGINT) and a `sync.WaitGroup` that drains in-flight scans.
+- `config.go` — environment loading (`loadConfig`), logger setup
+  (`setupLogger`), the `FCLONES_ACTION` allowlist (`parseAction`), and the
+  dangerous-flag rejection (`rejectDangerousArgs`).
+- `scheduler.go` — the two-phase run (`runFclonesJob`): `fclones group` scan
   (`buildScanArgs`) then the dedup action (`buildActionArgs` /
-  `runFclonesAction`). `jobSlot` is a mutex that skips a scan if one is
-  already in flight, so a slow scan never overlaps the next tick.
+  `runFclonesAction`).
+- `lock.go` — the advisory file lock (`tryLock`, `flock` on
+  `/cache/.fclones.lock`) that prevents overlapping scans with one mechanism
+  covering both the in-process built-in ticker and cross-process external
+  `scan` invocations; a racing scan skips rather than blocking, so it never
+  overlaps the next tick or corrupts the shared cache.
 - `outcome.go` — `classifyExecOutcome` is the single source of truth for the
   success / timeout / shutdown / exec_error classification used by both
   phases.
-- `health.go` — the marker path backing the `wrapper health` probe (from
-  `github.com/cplieger/health`).
 
 Three leaf packages under `internal/` hold the pure, well-tested logic:
 
@@ -51,7 +56,12 @@ intact when touching `config.go` or `scheduler.go`:
 - `--command`, `--transform`, `--in-place`, and `--no-copy` are rejected in
   `rejectDangerousArgs` unless `FCLONES_ALLOW_UNSAFE=true`. New flag handling
   must preserve this opt-in gate.
-- Memory is bounded on purpose: stderr capture (`stderrCapBytes`), the report
+- When the `FCLONES_VERSION` Renovate PR bumps the minor or major version,
+  diff `fclones group --help` and `fclones <action> --help` for any new flag
+  that executes an external command or mutates files in-place, and extend
+  `dangerousFlags` (`config.go`) accordingly.
+- Memory is bounded on purpose: per-stream capture (`streamCapBytes`, bounding
+  fclones' stderr and the action phase's stdout), the report
   read (`outputCapBytes`, 50 MB), and the duplicate-log detail
   (`logDetailCapBytes`). Don't read subprocess output unbounded.
 

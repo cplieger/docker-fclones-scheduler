@@ -8,6 +8,11 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	// Embed the IANA tz database so TZ (e.g. the default Europe/Paris) is
+	// honored. The distroless static base ships no /usr/share/zoneinfo, so
+	// without this time.Local silently falls back to UTC and timestamps
+	// ignore TZ.
+	_ "time/tzdata"
 
 	"github.com/cplieger/health"
 )
@@ -27,16 +32,27 @@ func main() {
 			// One-shot scan+action, then exit. This is the trigger used by
 			// an external scheduler (e.g. Ofelia `docker exec fclones
 			// /app/wrapper scan`) when the built-in loop is disabled.
+			// runScan/runFclonesJob already logs the failure with full
+			// context, so exit non-zero here without a bare re-log.
 			if err := runScan(context.Background()); err != nil {
-				slog.Error("scan failed", "error", err)
 				os.Exit(1)
 			}
 			return
+		default:
+			// An unrecognized subcommand is almost certainly a typo; fail
+			// loudly instead of silently falling through to the daemon.
+			// Mirrors the sibling schedulers (docker-renovate-scheduler /
+			// docker-rsync-scheduler), which exit non-zero on an unknown
+			// subcommand.
+			setupLogger()
+			slog.Error("unknown subcommand", "command", os.Args[1], "valid", "scan, health")
+			os.Exit(2)
 		}
 	}
 
+	// run/bootstrap already logs each failure once at the layer with the most
+	// context, so exit non-zero here without a bare re-log.
 	if err := run(context.Background()); err != nil {
-		slog.Error("fatal", "error", err)
 		os.Exit(1)
 	}
 }
@@ -49,6 +65,10 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	// Reclaim report temp files orphaned in /cache by a previous hard-killed
+	// scan. Safe here: the daemon has no scan in flight at startup.
+	cleanStaleReports()
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -69,14 +89,15 @@ func run(ctx context.Context) error {
 // bootstrap performs the shared startup prologue for both the long-running
 // daemon (run) and the one-shot scan subcommand (runScan): it installs the
 // logger, loads and validates config, and verifies the cache directory is
-// writable. Each failure is logged with the existing context before the
-// error is returned to the caller, which exits the process non-zero.
+// writable. Each failure is logged exactly once at the layer with the most
+// context — loadConfig logs the specific invalid setting at the leaf, and the
+// cache-dir failure is logged here — so callers exit non-zero without
+// re-logging.
 func bootstrap(ctx context.Context) (config, error) {
 	setupLogger()
 
 	cfg, err := loadConfig()
 	if err != nil {
-		slog.Error("config load failed", "error", err)
 		return config{}, err
 	}
 
@@ -89,15 +110,6 @@ func bootstrap(ctx context.Context) (config, error) {
 	return cfg, nil
 }
 
-// initMarker sets the health marker's boot state for a daemon mode. The
-// built-in scheduler boots unhealthy (healthy=false) and flips healthy after
-// its first successful scan; the external idle loop boots healthy
-// (healthy=true) since nothing has failed yet. Shutdown sets the marker
-// unhealthy in both modes (see runBuiltin/runExternal).
-func initMarker(marker *health.Marker, healthy bool) {
-	marker.Set(healthy)
-}
-
 // runBuiltin runs the self-contained interval scheduler: a startup scan
 // that fires immediately plus a ticker loop that fires every cfg.Interval.
 // The flock in runFclonesJob guards against overlap if a scan runs longer
@@ -107,7 +119,7 @@ func runBuiltin(ctx context.Context, marker *health.Marker, cfg *config) {
 	// Built-in mode starts unhealthy: clear any stale health file from a
 	// previous run that crashed before its defer ran. The first successful
 	// scan flips it to healthy.
-	initMarker(marker, false)
+	marker.Set(false)
 
 	slog.Info("container started (built-in scheduling)",
 		"uid", os.Getuid(), "interval", cfg.Interval,
@@ -146,7 +158,7 @@ func runBuiltin(ctx context.Context, marker *health.Marker, cfg *config) {
 func runExternal(ctx context.Context, marker *health.Marker, cfg *config) {
 	// External (idle) mode starts healthy: an idle, not-yet-triggered
 	// container reads healthy; each `scan` invocation updates it on disk.
-	initMarker(marker, true)
+	marker.Set(true)
 
 	slog.Info("container started (external scheduling)",
 		"uid", os.Getuid(), "target", cfg.ScanPath, "action", cfg.Action,
@@ -154,7 +166,8 @@ func runExternal(ctx context.Context, marker *health.Marker, cfg *config) {
 
 	<-ctx.Done()
 	slog.Info("shutting down", "cause", context.Cause(ctx))
-	marker.Set(false)
+	// No marker.Set(false): unlike runBuiltin there is no in-flight scan to
+	// drain, and run()'s deferred marker.Cleanup() removes the marker on exit.
 }
 
 // runScan performs exactly one scan+action and returns. It is the entry
@@ -162,8 +175,19 @@ func runExternal(ctx context.Context, marker *health.Marker, cfg *config) {
 // the daemon, it does not clean up the marker on exit — the file must
 // persist so the running container's healthcheck reflects this run.
 func runScan(ctx context.Context) error {
+	// Construct the marker before bootstrap so a bootstrap failure -- most
+	// importantly verifyCacheDir when /cache has gone read-only or full --
+	// flips the running container's healthcheck unhealthy, honoring the
+	// documented "becomes unhealthy when /cache is full or read-only" contract.
+	// In external mode the daemon idles and only `wrapper scan` re-runs
+	// bootstrap, so without this a runtime /cache failure exits non-zero for
+	// the external scheduler yet leaves the healthcheck green. NewMarker probes
+	// /tmp (DefaultPath), not /cache, so it still constructs fine here.
+	marker := health.NewMarker(health.DefaultPath)
+
 	cfg, err := bootstrap(ctx)
 	if err != nil {
+		marker.Set(false)
 		return err
 	}
 
@@ -172,6 +196,5 @@ func runScan(ctx context.Context) error {
 
 	// Deliberately no `defer marker.Cleanup()` (unlike run): the marker file
 	// must persist so the running container's healthcheck reflects this run.
-	marker := health.NewMarker(health.DefaultPath)
 	return runFclonesJob(ctx, marker, &cfg, "external", defaultCommandRunner)
 }
