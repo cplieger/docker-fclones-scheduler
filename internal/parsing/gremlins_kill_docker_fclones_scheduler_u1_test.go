@@ -3,10 +3,10 @@ package parsing
 // Boundary-characterization tests for the four surviving CONDITIONALS_BOUNDARY
 // gremlins mutants in parsing.go:
 //
-//   parsing.go:43  `len(parts) >= 2` -> `>`   (ParseStats, "# Total:" branch)
-//   parsing.go:56  `end > start`     -> `>=`  (ParseRedundantSize)
-//   parsing.go:152 `n >= 0`          -> `>`   (ParseActionSummary)
-//   parsing.go:195 `result < 0`      -> `<=`  (ParseHumanBytes)
+//   ParseStats          `len(parts) >= 2` -> `>`   ("# Total:" branch)
+//   ParseRedundantSize  `end > start`     -> `>=`
+//   ParseActionSummary  `n >= 0`          -> `>`
+//   floatToInt64        `f < 0`           -> `<=`  (extracted from ParseHumanBytes)
 //
 // All four are EQUIVALENT mutants; these tests pin the exact boundary contract
 // but do not (and cannot) "kill" the mutants -- see the per-test reasoning. They
@@ -17,14 +17,15 @@ package parsing
 
 import "testing"
 
-// TestGkDockerFclonesSchedulerU1_ParseStatsTotalTwoFieldBoundary pins
-// parsing.go:43. The only `len(parts) >= 2` vs `> 2` difference is at
-// len(parts) == 2, but the guard is `&& parts[last] == "groups"`, and for any
-// line reaching this branch (prefix "# Total:") the second field always begins
-// with "Total:" -- never exactly "groups". So the conjunct is false at the
-// boundary either way and Groups stays the "0" default. A 4-field line
-// ("# Total: 7 groups", the > 2 region) sets Groups to "7" under both
-// operators. Hence parsing.go:43 is EQUIVALENT; this only locks the contract.
+// TestGkDockerFclonesSchedulerU1_ParseStatsTotalTwoFieldBoundary pins the
+// ParseStats # Total: boundary. The only `len(parts) >= 2` vs `> 2` difference
+// is at len(parts) == 2, but the guard is `&& parts[last] == "groups"`, and for
+// any line reaching this branch (prefix "# Total:") the second field always
+// begins with "Total:" -- never exactly "groups". So the conjunct is false at
+// the boundary either way and Groups stays the "0" default. A 4-field line
+// ("# Total: 7 groups", the > 2 region) sets Groups to "7" under both operators.
+// Hence the ParseStats # Total: boundary is EQUIVALENT; this only locks the
+// contract.
 func TestGkDockerFclonesSchedulerU1_ParseStatsTotalTwoFieldBoundary(t *testing.T) {
 	t.Parallel()
 
@@ -38,14 +39,15 @@ func TestGkDockerFclonesSchedulerU1_ParseStatsTotalTwoFieldBoundary(t *testing.T
 	}
 }
 
-// TestGkDockerFclonesSchedulerU1_ParseRedundantSizeCloseBeforeOpen pins
-// parsing.go:56. `end > start` and `end >= start` can only differ at
-// end == start, but `start` is the index of "(" and `end` is the index of ")":
-// a single byte position cannot be both characters, so end == start is
-// unreachable. With ")" before "(" (end < start), both operators are false and
-// the function falls through to the bare-fields path -- here "a ) (" has only
-// three fields, so it returns the "0 B" default. Hence parsing.go:56 is
-// EQUIVALENT; this locks the close-before-open fallback.
+// TestGkDockerFclonesSchedulerU1_ParseRedundantSizeCloseBeforeOpen pins the
+// ParseRedundantSize close-before-open boundary. `end > start` and
+// `end >= start` can only differ at end == start, but `start` is the index of
+// "(" and `end` is the index of ")": a single byte position cannot be both
+// characters, so end == start is unreachable. With ")" before "(" (end < start),
+// both operators are false and the function falls through to the bare-fields
+// path -- here "a ) (" has only three fields, so it returns the "0 B" default.
+// Hence the ParseRedundantSize close-before-open boundary is EQUIVALENT; this
+// locks the close-before-open fallback.
 func TestGkDockerFclonesSchedulerU1_ParseRedundantSizeCloseBeforeOpen(t *testing.T) {
 	t.Parallel()
 
@@ -55,13 +57,13 @@ func TestGkDockerFclonesSchedulerU1_ParseRedundantSizeCloseBeforeOpen(t *testing
 	}
 }
 
-// TestGkDockerFclonesSchedulerU1_ParseActionSummaryZeroAndNegativeFiles pins
-// parsing.go:152. `n >= 0` vs `n > 0` differs only at n == 0, but
-// summary.Files defaults to 0, so assigning 0 (original) and leaving 0 (mutant)
-// are indistinguishable. A negative count (n < 0, below the boundary) is
-// rejected by both operators and likewise leaves Files at 0, while the reclaimed
-// size is parsed regardless. Hence parsing.go:152 is EQUIVALENT; this locks the
-// zero/negative-file-count contract.
+// TestGkDockerFclonesSchedulerU1_ParseActionSummaryZeroAndNegativeFiles pins the
+// ParseActionSummary file-count boundary. `n >= 0` vs `n > 0` differs only at
+// n == 0, but summary.Files defaults to 0, so assigning 0 (original) and leaving
+// 0 (mutant) are indistinguishable. A negative count (n < 0, below the boundary)
+// is rejected by both operators and likewise leaves Files at 0, while the
+// reclaimed size is parsed regardless. Hence the ParseActionSummary file-count
+// boundary is EQUIVALENT; this locks the zero/negative-file-count contract.
 func TestGkDockerFclonesSchedulerU1_ParseActionSummaryZeroAndNegativeFiles(t *testing.T) {
 	t.Parallel()
 
@@ -81,11 +83,12 @@ func TestGkDockerFclonesSchedulerU1_ParseActionSummaryZeroAndNegativeFiles(t *te
 	}
 }
 
-// TestGkDockerFclonesSchedulerU1_ParseHumanBytesZeroResult pins parsing.go:195.
-// `result < 0` vs `result <= 0` differs only at result == 0: the original
-// returns `result` (which is 0) and the mutant returns the literal 0 -- the same
-// value. A positive input ("2 KB") exercises the result > 0 region identically.
-// Hence parsing.go:195 is EQUIVALENT; this locks the zero/positive contract.
+// TestGkDockerFclonesSchedulerU1_ParseHumanBytesZeroResult pins floatToInt64's
+// `f < 0` guard (reached via ParseHumanBytes). `f < 0` vs `f <= 0` differs only
+// at f == 0: the original returns int64(f) (which is 0) and the mutant returns
+// the literal 0 -- the same value. A positive input ("2 KB") exercises the
+// f > 0 region identically. Hence the guard is EQUIVALENT; this locks the
+// zero/positive contract.
 func TestGkDockerFclonesSchedulerU1_ParseHumanBytesZeroResult(t *testing.T) {
 	t.Parallel()
 

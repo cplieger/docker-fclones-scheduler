@@ -8,11 +8,18 @@ services:
     environment:
       TZ: "Europe/Paris"
       FCLONES_INTERVAL: "1h"  # Go duration (1h, 30m, 12h); "off" disables built-in scheduling
-      FCLONES_SCAN_PATHS: "/scandir"
+      FCLONES_SCAN_PATHS: "/scandir"  # must match a volume mount target below
       FCLONES_ARGS: "--rf-over 1"
-      FCLONES_ACTION: "link"  # group (report), link (hardlink), or remove
+      FCLONES_ACTION: "link"  # group (report), link (hardlink), remove (delete), or dedupe (reflink/copy-on-write)
       FCLONES_ACTION_ARGS: "--priority bottom"
 
     volumes:
       - "/path/to/media:/scandir"
       - "/opt/appdata/fclones:/cache"
+
+    # The first built-in scan can take minutes on a large library. The image's
+    # default healthcheck start_period is 15s, so until that first scan finishes
+    # the container reports unhealthy and may fire alerts. Size this to your
+    # library's first-scan time (built-in mode only; external mode starts healthy):
+    # healthcheck:
+    #   start_period: 10m

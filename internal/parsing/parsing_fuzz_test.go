@@ -1,6 +1,7 @@
 package parsing_test
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -40,6 +41,10 @@ func FuzzParseStats(f *testing.F) {
 func FuzzParseDuplicateGroups(f *testing.F) {
 	f.Add("# comment\n\n3a2b,1024 B,2 * 512 B:\n/path/file1\n/path/file2\n")
 	f.Add("# comment\n/path/lonely\n")
+	// Adversarial: duplicate paths that themselves look like group headers
+	// (embed ',', '*' and a trailing ':'). Exercises in-group path handling so
+	// a header-like filename is not mistaken for the start of a new group.
+	f.Add("h, 1 B * 2:\n/x, 1 B * 2:\n/y, 1 B * 2:\n\n")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, input string) {
 		groups := parsing.ParseDuplicateGroups(input)
@@ -52,7 +57,7 @@ func FuzzParseDuplicateGroups(f *testing.F) {
 			if len(g.Duplicates) == 0 {
 				t.Fatalf("group %d: must have at least one duplicate", i)
 			}
-			// No duplicate should equal the keeper
+			// Every duplicate path must be non-empty.
 			for _, d := range g.Duplicates {
 				if d == "" {
 					t.Fatalf("group %d: empty duplicate path", i)
@@ -68,23 +73,17 @@ func FuzzParseActionSummary(f *testing.F) {
 	f.Add("")
 	f.Fuzz(func(t *testing.T, input string) {
 		summary := parsing.ParseActionSummary(input)
-		// Files count must be non-negative
 		if summary.Files < 0 {
 			t.Fatalf("Files must be >= 0, got %d", summary.Files)
 		}
-		// ReclaimedBytes must be non-negative
 		if summary.ReclaimedBytes < 0 {
 			t.Fatalf("ReclaimedBytes must be >= 0, got %d", summary.ReclaimedBytes)
 		}
-		// If input contains "Processed" and "reclaimed", RawLine should be set
-		// If input contains both "Processed" and "reclaimed", RawLine may still be
-		// empty when the line structure doesn't match exactly; we don't assert
-		// either way here.
-		_ = strings.Contains(input, "Processed") && strings.Contains(input, "reclaimed") && summary.RawLine == ""
-		if summary.RawLine != "" && strings.HasPrefix(summary.RawLine, "Processed") {
-			if !strings.Contains(summary.RawLine, "Processed") {
-				t.Fatal("RawLine should contain Processed if it starts with it")
-			}
+		// Files and ReclaimedBytes are only assigned inside the block that
+		// first populates RawLine, so a non-zero metric implies a non-empty RawLine.
+		if (summary.Files > 0 || summary.ReclaimedBytes > 0) && summary.RawLine == "" {
+			t.Fatalf("Files=%d ReclaimedBytes=%d set but RawLine empty: input=%q",
+				summary.Files, summary.ReclaimedBytes, input)
 		}
 	})
 }
@@ -140,6 +139,9 @@ func FuzzHumanBytesRoundTrip(f *testing.F) {
 	f.Add(int64(1500))
 	f.Add(int64(1500000))
 	f.Add(int64(1500000000))
+	f.Add(int64(1_000_000_000_000_000))     // 1 PB
+	f.Add(int64(1_000_000_000_000_000_000)) // 1 EB
+	f.Add(int64(math.MaxInt64))             // exabyte-scale upper bound (regression seed for the EB panic + overflow guard)
 	f.Fuzz(func(t *testing.T, n int64) {
 		if n < 0 {
 			return // skip negative values
@@ -167,6 +169,10 @@ func FuzzHumanBytesRoundTrip(f *testing.F) {
 func FuzzIsGroupHeader(f *testing.F) {
 	f.Add("3a2b,1024 B,2 * 512 B:")
 	f.Add("some random line")
+	// Adversarial: a duplicate-file path that embeds the header delimiters
+	// (',', '*', trailing ':') and is therefore indistinguishable from a real
+	// group header by IsGroupHeader alone.
+	f.Add("/x, 1 B * 2:")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, input string) {
 		result := parsing.IsGroupHeader(input)
@@ -186,16 +192,17 @@ func FuzzIsGroupHeader(f *testing.F) {
 }
 
 func FuzzExtractGroupSize(f *testing.F) {
-	f.Add("3a2b,1024 B,2 * 512 B:")
-	f.Add("hash,100 KB,3 * 100 KB:")
+	f.Add("3a2b, 512 B * 2:")
+	f.Add("hash, 100 KB, 3 * 100 KB:")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, input string) {
 		result := parsing.ExtractGroupSize(input)
-		// Result must not panic — and must be a string
-		_ = result
-		// Result should not contain trailing colon (stripped)
-		// The function strips trailing colon from input first, so when the input
-		// ends with ":" the result shouldn't unless the content genuinely has one.
-		_ = strings.HasSuffix(result, ":") && strings.HasSuffix(input, ":")
+		if result != strings.TrimSpace(result) {
+			t.Fatalf("ExtractGroupSize(%q) = %q, not whitespace-trimmed", input, result)
+		}
+		if len(result) > len(input) {
+			t.Fatalf("ExtractGroupSize(%q) = %q longer than input (%d > %d)",
+				input, result, len(result), len(input))
+		}
 	})
 }

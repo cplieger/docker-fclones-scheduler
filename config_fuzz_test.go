@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/cplieger/fclones-wrapper/internal/args"
 )
 
 func FuzzRejectDangerousArgs(f *testing.F) {
@@ -13,24 +15,29 @@ func FuzzRejectDangerousArgs(f *testing.F) {
 	f.Add("--in-place")
 	f.Add("--no-copy")
 	f.Add("")
-	f.Add("'--command' hidden")
 	f.Fuzz(func(t *testing.T, input string) {
 		err := rejectDangerousArgs(input, "TEST_ENV")
-		lower := strings.ToLower(input)
-		// If any dangerous flag is present (case-insensitive), must error
-		dangerous := []string{"--command", "--transform", "--in-place", "--no-copy"}
-		for _, flag := range dangerous {
-			// Check if the flag appears as a standalone token after parsing
-			// If err == nil and the flag appears in the input, args.Parse decided
-			// it wasn't actually a flag (after shell-like parsing) — fine.
-			_ = err == nil && (strings.Contains(lower, flag) || strings.Contains(lower, flag+"="))
-		}
-		// If error returned, it should mention "dangerous" or "not allowed" or be a parse error
-		if err != nil {
-			msg := err.Error()
-			if !strings.Contains(msg, "not allowed") && !strings.Contains(msg, "syntax") {
-				t.Fatalf("unexpected error message: %v", err)
+		parsed, parseErr := args.Parse(input)
+		if parseErr != nil {
+			if err == nil {
+				t.Fatalf("rejectDangerousArgs(%q) = nil, want error for unparseable input", input)
 			}
+			return
+		}
+		wantReject := false
+		for _, arg := range parsed {
+			lower := strings.ToLower(arg)
+			for _, flag := range []string{"--command", "--transform", "--in-place", "--no-copy"} {
+				if lower == flag || strings.HasPrefix(lower, flag+"=") {
+					wantReject = true
+				}
+			}
+		}
+		switch {
+		case wantReject && err == nil:
+			t.Fatalf("dangerous flag not rejected in %v", parsed)
+		case !wantReject && err != nil:
+			t.Fatalf("clean input rejected: %v", parsed)
 		}
 	})
 }

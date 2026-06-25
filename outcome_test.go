@@ -99,3 +99,31 @@ func TestClassifyExecOutcome(t *testing.T) {
 		})
 	}
 }
+
+func TestPhaseOutcomeString(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		want    string
+		outcome PhaseOutcome
+	}{
+		{"success", OutcomeSuccess},
+		{"timeout", OutcomeTimeout},
+		{"shutdown", OutcomeShutdown},
+		{"exec_error", OutcomeExecError},
+	}
+	for _, tt := range tests {
+		if got := tt.outcome.String(); got != tt.want {
+			t.Errorf("PhaseOutcome(%d).String() = %q, want %q", int(tt.outcome), got, tt.want)
+		}
+	}
+}
+
+func TestPhaseOutcomeStringPanicsOnUnknown(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("PhaseOutcome(99).String(): expected panic on unhandled value, got none")
+		}
+	}()
+	_ = PhaseOutcome(99).String()
+}

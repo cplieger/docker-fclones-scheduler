@@ -221,35 +221,6 @@ func TestProperty_LimitedBufferStringIsStable(t *testing.T) {
 	})
 }
 
-// --- Tests: shouldFilterLine ---
-
-func TestShouldFilterLine(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		line string
-		drop bool
-	}{
-		{"[2026-04-26 11:00:03.020] fclones: warn: File system zfs on device data/media doesn't support FIEMAP ioctl API. This is generally harmless.", true},
-		{"[2026-04-26 11:00:00.098] fclones:  info: Started grouping", true},
-		{"[2026-04-26 11:00:00.098] fclones:  info: Started deduplicating", true},
-		{"[2026-04-26 11:00:02.868] fclones:  info: Scanned 238597 file entries", true},
-		{"[2026-04-26 11:00:03.019] fclones:  info: Found 1148 (291.3 GB) candidates after grouping by size", true},
-		{"[2026-04-26 11:00:03.072] fclones:  info: Processed 6 files and reclaimed 15.1 KB space", false},
-		{"[2026-04-26 11:00:03.072] fclones:  warn: cannot read file /scandir/broken: permission denied", false},
-		{"[2026-04-26 11:00:03.072] fclones: error: cache corruption detected", false},
-		{`time=... level=INFO msg="scan complete" scan_id=abc`, false},
-		{"", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.line, func(t *testing.T) {
-			t.Parallel()
-			if got := ioutil.ShouldFilterLine(tt.line); got != tt.drop {
-				t.Errorf("ShouldFilterLine(%q) = %v, want %v", tt.line, got, tt.drop)
-			}
-		})
-	}
-}
-
 // --- Tests: filteringWriter ---
 
 func TestFilteringWriterDropsFilteredLines(t *testing.T) {
@@ -370,6 +341,20 @@ func TestReadFileWithLimitZeroLimit(t *testing.T) {
 	}
 }
 
+func TestReadFileWithLimitErrorsOnUnreadableDirectory(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	data, err := ioutil.ReadFileWithLimit(dir, 1<<30)
+	if err == nil {
+		t.Fatal("ReadFileWithLimit(<dir>, 1GiB) = nil error, want a read error for a directory")
+	}
+	if data != nil {
+		t.Errorf("ReadFileWithLimit(<dir>) returned %d bytes with the error, want nil data", len(data))
+	}
+}
+
 func TestReadFileWithLimitEmptyFileZeroLimit(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "empty.txt")
@@ -381,6 +366,22 @@ func TestReadFileWithLimitEmptyFileZeroLimit(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("expected empty, got %d bytes", len(got))
+	}
+}
+
+func TestReadFileWithLimitDetectsGrowthDuringRead(t *testing.T) {
+	t.Parallel()
+
+	if _, statErr := os.Stat("/dev/zero"); statErr != nil {
+		t.Skip("/dev/zero not available on this platform")
+	}
+
+	data, err := ioutil.ReadFileWithLimit("/dev/zero", 100)
+	if err == nil {
+		t.Fatal("ReadFileWithLimit(/dev/zero, 100) = nil error, want a growth-detection error")
+	}
+	if data != nil {
+		t.Errorf("ReadFileWithLimit(/dev/zero, 100) returned %d bytes with the error, want nil data", len(data))
 	}
 }
 
@@ -403,5 +404,293 @@ func TestFilteringWriterWritesLeadingBlankLine(t *testing.T) {
 	want := "\nkeep this\n"
 	if got != want {
 		t.Errorf("Write(%q) wrote %q, want %q", "\nkeep this\n", got, want)
+	}
+}
+
+func TestFilteringWriterFlushEmitsBufferedPartialLine(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	fw := ioutil.NewFilteringWriter(&out)
+	fw.Write([]byte("partial line without newline"))
+	fw.Flush()
+	if got := out.String(); got != "partial line without newline" {
+		t.Errorf("after Flush, out = %q, want partial line", got)
+	}
+}
+
+func TestFilteringWriterFlushDropsFilteredLine(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	fw := ioutil.NewFilteringWriter(&out)
+	fw.Write([]byte("[ts] fclones:  info: Started grouping"))
+	fw.Flush()
+	if got := out.String(); got != "" {
+		t.Errorf("after Flush of filtered line, out = %q, want empty", got)
+	}
+}
+
+func TestFilteringWriterFlushEmptyIsNoop(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	fw := ioutil.NewFilteringWriter(&out)
+	if err := fw.Flush(); err != nil {
+		t.Fatalf("Flush on empty buffer: %v", err)
+	}
+}
+
+func TestFilteringWriterCloseFlushesPartialLine(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	fw := ioutil.NewFilteringWriter(&out)
+	fw.Write([]byte("tail line no newline"))
+	fw.Close()
+	if got := out.String(); got != "tail line no newline" {
+		t.Errorf("after Close, out = %q, want tail line", got)
+	}
+}
+
+func TestFilteringWriterFlushPropagatesSinkError(t *testing.T) {
+	t.Parallel()
+
+	sink := &errOnWrite{}
+	fw := ioutil.NewFilteringWriter(sink)
+
+	if _, err := fw.Write([]byte("buffered partial line, no newline")); err != nil {
+		t.Fatalf("Write(partial) buffered the line but returned error %v, want nil", err)
+	}
+
+	err := fw.Flush()
+	if err == nil {
+		t.Fatal("Flush of a buffered non-filtered line into a failing sink = nil error, want the sink error")
+	}
+	if sink.calls != 1 {
+		t.Errorf("sink.Write called %d times during Flush, want 1", sink.calls)
+	}
+}
+
+type errOnWrite struct{ calls int }
+
+func (e *errOnWrite) Write(p []byte) (int, error) {
+	e.calls++
+	return 0, os.ErrClosed
+}
+
+func TestFilteringWriterCapsUnboundedNoNewlineFlood(t *testing.T) {
+	t.Parallel()
+
+	const cap = 1 << 20 // mirrors maxLineBytes
+
+	t.Run("flushes oversized non-filtered partial line and resets buffer", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		fw := ioutil.NewFilteringWriter(&out)
+
+		flood := bytes.Repeat([]byte("x"), cap+1)
+		n, err := fw.Write(flood)
+		if err != nil {
+			t.Fatalf("Write(flood): unexpected error: %v", err)
+		}
+		if n != len(flood) {
+			t.Errorf("Write(flood) = %d, want %d", n, len(flood))
+		}
+		if out.Len() != len(flood) {
+			t.Errorf("sink got %d bytes, want %d (oversized line flushed at cap)", out.Len(), len(flood))
+		}
+
+		// Buffer was reset at the cap: a following newline-terminated line is
+		// emitted on its own, not concatenated with the flushed flood.
+		out.Reset()
+		if _, err := fw.Write([]byte("next\n")); err != nil {
+			t.Fatalf("Write(next): %v", err)
+		}
+		if got := out.String(); got != "next\n" {
+			t.Errorf("after cap reset, sink = %q, want %q", got, "next\n")
+		}
+	})
+
+	t.Run("drops oversized filtered partial line and resets buffer", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		fw := ioutil.NewFilteringWriter(&out)
+
+		// A >1MB no-newline run that contains a filtered pattern: the cap fires
+		// and the line is dropped (not forwarded), buffer reset.
+		flood := append([]byte("info: Scanned "), bytes.Repeat([]byte("9"), cap+1)...)
+		if _, err := fw.Write(flood); err != nil {
+			t.Fatalf("Write(filtered flood): %v", err)
+		}
+		if out.Len() != 0 {
+			t.Errorf("sink got %d bytes, want 0 (filtered oversized line dropped)", out.Len())
+		}
+
+		out.Reset()
+		if _, err := fw.Write([]byte("kept\n")); err != nil {
+			t.Fatalf("Write(kept): %v", err)
+		}
+		if got := out.String(); got != "kept\n" {
+			t.Errorf("after filtered-cap reset, sink = %q, want %q", got, "kept\n")
+		}
+	})
+
+	t.Run("propagates sink error and resets buffer on oversized flush", func(t *testing.T) {
+		t.Parallel()
+		sink := &errOnWrite{}
+		fw := ioutil.NewFilteringWriter(sink)
+
+		flood := bytes.Repeat([]byte("x"), cap+1)
+		n, err := fw.Write(flood)
+		if err == nil {
+			t.Fatal("Write(flood) into failing sink: want error, got nil")
+		}
+		if n != len(flood) {
+			t.Errorf("Write(flood) = %d, want %d even on sink error", n, len(flood))
+		}
+		if sink.calls != 1 {
+			t.Errorf("sink.Write called %d times, want 1", sink.calls)
+		}
+	})
+}
+
+func TestFilteringWriterCapFiresAcrossMultipleWrites(t *testing.T) {
+	t.Parallel()
+	const maxLine = 1 << 20
+	var out bytes.Buffer
+	fw := ioutil.NewFilteringWriter(&out)
+	half := bytes.Repeat([]byte("y"), maxLine/2+1)
+	if _, err := fw.Write(half); err != nil {
+		t.Fatalf("Write(half #1): %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("after first sub-cap write, sink = %d, want 0", out.Len())
+	}
+	if _, err := fw.Write(half); err != nil {
+		t.Fatalf("Write(half #2): %v", err)
+	}
+	if out.Len() != 2*(maxLine/2+1) {
+		t.Errorf("sink = %d, want %d (whole accumulated buffer flushed)", out.Len(), 2*(maxLine/2+1))
+	}
+}
+
+func TestFilteringWriterPropagatesSinkErrorOnCompleteLine(t *testing.T) {
+	t.Parallel()
+
+	sink := &errOnWrite{}
+	fw := ioutil.NewFilteringWriter(sink)
+
+	input := []byte("keep this line\n")
+	n, err := fw.Write(input)
+	if err == nil {
+		t.Fatal("Write of a complete non-filtered line into a failing sink = nil error, want the sink error")
+	}
+	if n != len(input) {
+		t.Errorf("Write = %d, want %d (full input length) even on sink error", n, len(input))
+	}
+	if sink.calls != 1 {
+		t.Errorf("sink.Write called %d times, want 1 (the single complete line)", sink.calls)
+	}
+}
+
+// TestProperty_FilteringWriterChunkInvariant asserts that FilteringWriter's
+// filtered output is independent of how the input byte stream is split across
+// Write calls, for inputs whose lines stay under maxLineBytes (the common
+// fclones-output case). Lines are capped at 40 bytes so the no-newline
+// cap-flush path never fires, under which chunk-invariance would not hold.
+func TestProperty_FilteringWriterChunkInvariant(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		numLines := rapid.IntRange(0, 20).Draw(rt, "numLines")
+		var stream []byte
+		for range numLines {
+			line := rapid.StringMatching(`[a-zA-Z0-9: ]{0,40}`).Draw(rt, "line")
+			stream = append(stream, line...)
+			stream = append(stream, '\n')
+		}
+		if rapid.Bool().Draw(rt, "trailingPartial") {
+			tail := rapid.StringMatching(`[a-zA-Z0-9: ]{0,40}`).Draw(rt, "tail")
+			stream = append(stream, tail...)
+		}
+
+		var refOut bytes.Buffer
+		ref := ioutil.NewFilteringWriter(&refOut)
+		if _, err := ref.Write(stream); err != nil {
+			rt.Fatalf("reference Write: %v", err)
+		}
+		if err := ref.Flush(); err != nil {
+			rt.Fatalf("reference Flush: %v", err)
+		}
+
+		var gotOut bytes.Buffer
+		fw := ioutil.NewFilteringWriter(&gotOut)
+		rest := stream
+		for len(rest) > 0 {
+			cut := rapid.IntRange(1, len(rest)).Draw(rt, "cut")
+			if _, err := fw.Write(rest[:cut]); err != nil {
+				rt.Fatalf("chunked Write: %v", err)
+			}
+			rest = rest[cut:]
+		}
+		if err := fw.Flush(); err != nil {
+			rt.Fatalf("chunked Flush: %v", err)
+		}
+
+		if !bytes.Equal(refOut.Bytes(), gotOut.Bytes()) {
+			rt.Fatalf("chunk-dependent output:\n whole   = %q\n chunked = %q", refOut.Bytes(), gotOut.Bytes())
+		}
+	})
+}
+
+func TestFilteringWriterCapResetsBufferAfterSinkError(t *testing.T) {
+	t.Parallel()
+
+	const cap = 1 << 20 // mirrors maxLineBytes
+
+	sink := &failingThenRecordingSink{}
+	fw := ioutil.NewFilteringWriter(sink)
+
+	flood := bytes.Repeat([]byte("x"), cap+1)
+	if _, err := fw.Write(flood); err == nil {
+		t.Fatal("Write(flood) whose cap-flush hits a first-call-failing sink = nil error, want the sink error")
+	}
+
+	// The cap-flush resets the partial-line buffer even when the sink write
+	// fails, so a following newline-terminated line must be emitted alone --
+	// the >1MB flood must not be re-prefixed onto it.
+	if _, err := fw.Write([]byte("next\n")); err != nil {
+		t.Fatalf("Write(next) after the cap-flush sink error: %v", err)
+	}
+	if got := sink.got.String(); got != "next\n" {
+		t.Errorf("after cap-flush sink error, sink recorded %d bytes, want exactly %q (buffer reset; flood not re-sent)", len(got), "next\n")
+	}
+}
+
+type failingThenRecordingSink struct {
+	got   bytes.Buffer
+	calls int
+}
+
+func (s *failingThenRecordingSink) Write(p []byte) (int, error) {
+	s.calls++
+	if s.calls == 1 {
+		return 0, os.ErrClosed
+	}
+	return s.got.Write(p)
+}
+
+func TestFilteringWriterClosePropagatesSinkError(t *testing.T) {
+	t.Parallel()
+
+	sink := &errOnWrite{}
+	fw := ioutil.NewFilteringWriter(sink)
+
+	if _, err := fw.Write([]byte("buffered partial line, no newline")); err != nil {
+		t.Fatalf("Write(partial) buffered the line but returned error %v, want nil", err)
+	}
+
+	err := fw.Close()
+	if err == nil {
+		t.Fatal("Close of a buffered non-filtered line into a failing sink = nil error, want the sink error propagated from Flush")
+	}
+	if sink.calls != 1 {
+		t.Errorf("sink.Write called %d times during Close, want 1", sink.calls)
 	}
 }
