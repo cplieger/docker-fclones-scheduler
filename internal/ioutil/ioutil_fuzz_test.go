@@ -1,6 +1,7 @@
 package ioutil_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/cplieger/fclones-wrapper/internal/ioutil"
@@ -45,6 +46,7 @@ func FuzzLimitedBuffer(f *testing.F) {
 func FuzzFilteringWriter(f *testing.F) {
 	f.Add("info: Started grouping\nkeep me\n")
 	f.Add("no newline at all")
+	f.Add(strings.Repeat("a", 1<<20+1)) // >maxLineBytes: covers the no-newline flood-flush path
 	f.Add("")
 	f.Add("\n\n\n")
 	f.Add("info: Scanned 5\npartial line")

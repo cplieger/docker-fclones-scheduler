@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cplieger/fclones-wrapper/internal/ioutil"
 	"github.com/cplieger/fclones-wrapper/internal/parsing"
 	"pgregory.net/rapid"
 )
@@ -756,4 +757,162 @@ func TestSweepStaleReports(t *testing.T) {
 	if _, err := os.Stat(keep); err != nil {
 		t.Errorf("non-matching file %q removed by sweep (err=%v), want kept", keep, err)
 	}
+}
+
+func TestSweepStaleReportsContinuesPastUnremovable(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// The unremovable entry sorts BEFORE the removable one (filepath.Glob
+	// returns sorted matches), so the loop must survive the os.Remove failure
+	// to reach and delete the removable file. A non-empty directory whose name
+	// matches the glob makes os.Remove fail with ENOTEMPTY.
+	blocked := filepath.Join(dir, "fclones_report_aaa.txt")
+	if err := os.Mkdir(blocked, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(blocked, "child"), []byte("y"), 0o644); err != nil {
+		t.Fatalf("WriteFile child: %v", err)
+	}
+	removable := filepath.Join(dir, "fclones_report_bbb.txt")
+	if err := os.WriteFile(removable, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	sweepStaleReports(dir)
+
+	if _, err := os.Stat(removable); !os.IsNotExist(err) {
+		t.Errorf("removable match still present after sweep (err=%v); the unremovable sibling aborted the loop", err)
+	}
+	if _, err := os.Stat(blocked); err != nil {
+		t.Errorf("unremovable directory %q gone (err=%v), want it left in place", blocked, err)
+	}
+}
+
+func TestClassifyAndLogOutcome(t *testing.T) {
+	t.Parallel()
+
+	cancelledCtx := func() context.Context {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx
+	}
+	deadlineCtx := func() context.Context {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+		return ctx
+	}
+
+	t.Run("success returns not-done with no error and logs nothing", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		done, err := classifyAndLogOutcome(context.Background(), context.Background(), log,
+			"scan", nil, time.Minute, time.Second,
+			&ioutil.LimitedBuffer{Max: 1024}, nil)
+
+		if done {
+			t.Error("classifyAndLogOutcome(success) done = true, want false")
+		}
+		if err != nil {
+			t.Errorf("classifyAndLogOutcome(success) err = %v, want nil", err)
+		}
+		if buf.Len() != 0 {
+			t.Errorf("classifyAndLogOutcome(success) logged %q, want no output", buf.String())
+		}
+	})
+
+	t.Run("shutdown returns done with nil error and logs interrupted", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		done, err := classifyAndLogOutcome(cancelledCtx(), context.Background(), log,
+			"scan", context.Canceled, time.Minute, time.Second,
+			&ioutil.LimitedBuffer{Max: 1024}, nil)
+
+		if !done {
+			t.Error("classifyAndLogOutcome(shutdown) done = false, want true")
+		}
+		if err != nil {
+			t.Errorf("classifyAndLogOutcome(shutdown) err = %v, want nil (expected shutdown is not an error)", err)
+		}
+		if !strings.Contains(buf.String(), `msg="scan interrupted"`) {
+			t.Errorf("classifyAndLogOutcome(shutdown) log = %q, want it to contain 'scan interrupted'", buf.String())
+		}
+	})
+
+	t.Run("timeout returns done with a timeout error and logs stderr", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+		stderr := &ioutil.LimitedBuffer{Max: 1024}
+		_, _ = stderr.Write([]byte("boom"))
+
+		done, err := classifyAndLogOutcome(context.Background(), deadlineCtx(), log,
+			"scan", context.DeadlineExceeded, 30*time.Second, 31*time.Second,
+			stderr, nil)
+
+		if !done {
+			t.Error("classifyAndLogOutcome(timeout) done = false, want true")
+		}
+		if err == nil || !strings.Contains(err.Error(), "scan timeout exceeded after 30s") {
+			t.Errorf("classifyAndLogOutcome(timeout) err = %v, want 'scan timeout exceeded after 30s'", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, `msg="scan timeout exceeded"`) || !strings.Contains(out, "stderr=boom") {
+			t.Errorf("classifyAndLogOutcome(timeout) log = %q, want the timeout message and captured stderr", out)
+		}
+	})
+
+	t.Run("exec error returns done with an exec error and omits stdout when nil", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+		stderr := &ioutil.LimitedBuffer{Max: 1024}
+		_, _ = stderr.Write([]byte("permission denied"))
+
+		done, err := classifyAndLogOutcome(context.Background(), context.Background(), log,
+			"scan", errors.New("exit status 1"), time.Minute, 2*time.Second,
+			stderr, nil)
+
+		if !done {
+			t.Error("classifyAndLogOutcome(exec_error) done = false, want true")
+		}
+		if err == nil || !strings.Contains(err.Error(), "scan exec failed") {
+			t.Errorf("classifyAndLogOutcome(exec_error) err = %v, want 'scan exec failed'", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, `msg="scan failed"`) || !strings.Contains(out, "stderr=\"permission denied\"") {
+			t.Errorf("classifyAndLogOutcome(exec_error) log = %q, want failure message and stderr", out)
+		}
+		if strings.Contains(out, "stdout=") {
+			t.Errorf("classifyAndLogOutcome(exec_error, stdout=nil) log = %q, must not emit a stdout attr", out)
+		}
+	})
+
+	t.Run("exec error logs stdout and extra attrs for the action phase", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+		stderr := &ioutil.LimitedBuffer{Max: 1024}
+		stdout := &ioutil.LimitedBuffer{Max: 1024}
+		_, _ = stdout.Write([]byte("actionout"))
+
+		done, err := classifyAndLogOutcome(context.Background(), context.Background(), log,
+			"action", errors.New("exit status 1"), time.Minute, time.Second,
+			stderr, stdout, "action", "link")
+
+		if !done || err == nil {
+			t.Fatalf("classifyAndLogOutcome(action exec_error) = (%v, %v), want (true, error)", done, err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "stdout=actionout") {
+			t.Errorf("classifyAndLogOutcome(action, stdout set) log = %q, want a stdout attr", out)
+		}
+		if !strings.Contains(out, "action=link") {
+			t.Errorf("classifyAndLogOutcome(action) log = %q, want the extra action=link attr", out)
+		}
+	})
 }

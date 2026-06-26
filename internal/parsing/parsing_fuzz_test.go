@@ -45,6 +45,16 @@ func FuzzParseDuplicateGroups(f *testing.F) {
 	// (embed ',', '*' and a trailing ':'). Exercises in-group path handling so
 	// a header-like filename is not mistaken for the start of a new group.
 	f.Add("h, 1 B * 2:\n/x, 1 B * 2:\n/y, 1 B * 2:\n\n")
+	// Adversarial: filenames that embed a newline (legal on Unix). fclones
+	// writes scanned paths into a newline-delimited report, so an embedded
+	// newline can split one path across two parser lines or fake the
+	// blank-line group terminator. These seeds lock panic-freedom and the
+	// keeper/duplicate structural invariants under newline injection;
+	// attribution is best-effort and display-only (see scheduler.go), so no
+	// oracle assertion is needed.
+	f.Add("h, 1 B * 2:\n/keeper\n/dup-line1\ndup-line2\n")     // one dup path split across two lines
+	f.Add("h, 1 B * 2:\n/keeper\n/dup-part\n\ntrailing\n")     // embedded blank line fakes the group terminator
+	f.Add("h, 1 B * 2:\n/keeper\n# Total: 0 0 groups\n/dup\n") // embedded '#'-segment masquerades as a comment line
 	f.Add("")
 	f.Fuzz(func(t *testing.T, input string) {
 		groups := parsing.ParseDuplicateGroups(input)
@@ -117,6 +127,12 @@ func FuzzParseHumanBytes(f *testing.F) {
 	f.Add("3.7 TB")
 	f.Add("garbage")
 	f.Add("")
+	// Guard regression seeds: NaN/Inf/overflow/negative all clamp to 0.
+	f.Add("Inf KB")
+	f.Add("-Inf KB")
+	f.Add("NaN MB")
+	f.Add("-5 KB")
+	f.Add("99999999 TB")
 	f.Fuzz(func(t *testing.T, input string) {
 		result := parsing.ParseHumanBytes(input)
 		// Result must be non-negative
