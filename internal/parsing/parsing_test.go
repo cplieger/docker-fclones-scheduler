@@ -11,76 +11,88 @@ import (
 func TestParseStats(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name   string
-		input  string
-		groups string
-		size   string
+		name        string
+		input       string
+		groups      string
+		size        string
+		totalParsed bool
 	}{
 		{
-			name:   "standard output with parenthesized size",
-			input:  "# Redundant: 5 files (1.2 GB)\n# Total: 10 3 groups",
-			groups: "3",
-			size:   "1.2 GB",
+			name:        "standard output with parenthesized size",
+			input:       "# Redundant: 5 files (1.2 GB)\n# Total: 10 3 groups",
+			groups:      "3",
+			size:        "1.2 GB",
+			totalParsed: true,
 		},
 		{
-			name:   "size without parentheses",
-			input:  "# Redundant: 512 MB\n# Total: 5 2 groups",
-			groups: "2",
-			size:   "512 MB",
+			name:        "size without parentheses",
+			input:       "# Redundant: 512 MB\n# Total: 5 2 groups",
+			groups:      "2",
+			size:        "512 MB",
+			totalParsed: true,
 		},
 		{
-			name:   "no duplicates",
-			input:  "# Redundant: 0 files\n# Total: 0 0 groups",
-			groups: "0",
-			size:   "0 files",
+			name:        "no duplicates",
+			input:       "# Redundant: 0 files\n# Total: 0 0 groups",
+			groups:      "0",
+			size:        "0 files",
+			totalParsed: true,
 		},
 		{
-			name:   "real output with commas and extra fields",
-			input:  "# Redundant: 1,234 files (5.6 GB) in 789 groups\n# Total: 2,000 789 groups",
-			groups: "789",
-			size:   "5.6 GB",
+			name:        "real output with commas and extra fields",
+			input:       "# Redundant: 1,234 files (5.6 GB) in 789 groups\n# Total: 2,000 789 groups",
+			groups:      "789",
+			size:        "5.6 GB",
+			totalParsed: true,
 		},
 		{
-			name:   "empty input returns defaults",
-			input:  "",
-			groups: "0",
-			size:   "0 B",
+			name:        "empty input returns defaults",
+			input:       "",
+			groups:      "0",
+			size:        "0 B",
+			totalParsed: false,
 		},
 		{
-			name:   "partial output with Total line only",
-			input:  "# Total: 5 groups\n",
-			groups: "5",
-			size:   "0 B",
+			name:        "partial output with Total line only",
+			input:       "# Total: 5 groups\n",
+			groups:      "5",
+			size:        "0 B",
+			totalParsed: true,
 		},
 		{
-			name:   "Total line without groups suffix",
-			input:  "# Total: 100 files\n",
-			groups: "0",
-			size:   "0 B",
+			name:        "Total line without groups suffix",
+			input:       "# Total: 100 files\n",
+			groups:      "0",
+			size:        "0 B",
+			totalParsed: false,
 		},
 		{
-			name:   "Redundant only without Total",
-			input:  "# Redundant: 3 files (42 MB)\n",
-			groups: "0",
-			size:   "42 MB",
+			name:        "Redundant only without Total",
+			input:       "# Redundant: 3 files (42 MB)\n",
+			groups:      "0",
+			size:        "42 MB",
+			totalParsed: false,
 		},
 		{
-			name:   "Redundant without Total larger size",
-			input:  "# Redundant: 10 files (2.5 GB)\n",
-			groups: "0",
-			size:   "2.5 GB",
+			name:        "Redundant without Total larger size",
+			input:       "# Redundant: 10 files (2.5 GB)\n",
+			groups:      "0",
+			size:        "2.5 GB",
+			totalParsed: false,
 		},
 		{
-			name:   "Total with files suffix not groups",
-			input:  "# Total: 100 files\n",
-			groups: "0",
-			size:   "0 B",
+			name:        "Total with files suffix not groups",
+			input:       "# Total: 100 files\n",
+			groups:      "0",
+			size:        "0 B",
+			totalParsed: false,
 		},
 		{
-			name:   "multiple Redundant lines last wins",
-			input:  "# Redundant: 1 files (100 MB)\n# Redundant: 2 files (200 MB)\n",
-			groups: "0",
-			size:   "200 MB",
+			name:        "multiple Redundant lines last wins",
+			input:       "# Redundant: 1 files (100 MB)\n# Redundant: 2 files (200 MB)\n",
+			groups:      "0",
+			size:        "200 MB",
+			totalParsed: false,
 		},
 	}
 
@@ -93,6 +105,9 @@ func TestParseStats(t *testing.T) {
 			}
 			if stats.Size != tt.size {
 				t.Errorf("Size = %q, want %q", stats.Size, tt.size)
+			}
+			if stats.TotalParsed != tt.totalParsed {
+				t.Errorf("TotalParsed = %v, want %v", stats.TotalParsed, tt.totalParsed)
 			}
 		})
 	}
