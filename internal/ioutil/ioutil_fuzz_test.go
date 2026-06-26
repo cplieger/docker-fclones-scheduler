@@ -1,6 +1,7 @@
 package ioutil_test
 
 import (
+	"bytes"
 	"math"
 	"os"
 	"path/filepath"
@@ -54,12 +55,12 @@ func FuzzFilteringWriter(f *testing.F) {
 	f.Add("\n\n\n")
 	f.Add("info: Scanned 5\npartial line")
 	f.Fuzz(func(t *testing.T, input string) {
-		sink := &lenSink{}
-		fw := ioutil.NewFilteringWriter(sink)
+		var sink bytes.Buffer
+		fw := ioutil.NewFilteringWriter(&sink)
 
 		n, err := fw.Write([]byte(input))
 		if err != nil {
-			t.Fatalf("Write(%q) into a counting sink returned error %v, want nil", input, err)
+			t.Fatalf("Write(%q) into an in-memory sink returned error %v, want nil", input, err)
 		}
 		if n != len(input) {
 			t.Fatalf("Write(%q) returned n=%d, want %d (full input length)", input, n, len(input))
@@ -68,20 +69,53 @@ func FuzzFilteringWriter(f *testing.F) {
 			t.Fatalf("Flush after Write(%q) returned error %v, want nil", input, err)
 		}
 
-		// FilteringWriter only ever drops whole lines, so it must never emit
-		// more bytes than it received -- regardless of how lines split across
+		out := sink.Bytes()
+
+		// Drop-only: FilteringWriter only ever drops whole lines, so it must never
+		// emit more bytes than it received -- regardless of how lines split across
 		// the internal buffer or the no-newline cap-flush path.
-		if sink.n > len(input) {
-			t.Fatalf("filtered output %d bytes exceeds input %d bytes for %q", sink.n, len(input), input)
+		if len(out) > len(input) {
+			t.Fatalf("filtered output %d bytes exceeds input %d bytes for %q", len(out), len(input), input)
+		}
+
+		// Filter efficacy: every COMPLETE (newline-terminated) line emitted must be a
+		// non-filtered line. An independent oracle (NOT shouldFilterLine's own code)
+		// mirrors the positional policy so a wrong edit to either side is caught: a
+		// noise marker is dropped only inside the message body of a genuine
+		// "fclones: <level>:" line whose level matches the marker (info-progress
+		// markers at info, the FIEMAP notice at warn). A filter-disabled mutant of
+		// emit() makes a filtered line survive here even though the byte-bound passes.
+		noiseByLevel := map[string][]string{
+			"info": {"Started grouping", "Started deduplicating", "Scanned ", "Found "},
+			"warn": {"doesn't support FIEMAP ioctl API"},
+		}
+		filtered := func(line string) bool {
+			const prefix = "fclones:"
+			_, after, ok := strings.Cut(line, prefix)
+			if !ok {
+				return false
+			}
+			rest := strings.TrimLeft(after, " ")
+			level, msg, ok := strings.Cut(rest, ":")
+			if !ok {
+				return false
+			}
+			for _, p := range noiseByLevel[strings.TrimSpace(level)] {
+				if strings.Contains(msg, p) {
+					return true
+				}
+			}
+			return false
+		}
+		for _, line := range strings.SplitAfter(string(out), "\n") {
+			if !strings.HasSuffix(line, "\n") {
+				continue // trailing fragment is the unflushed/partial tail, not a complete line
+			}
+			if filtered(line) {
+				t.Fatalf("emitted complete line %q would be filtered for input %q", line, input)
+			}
 		}
 	})
-}
-
-type lenSink struct{ n int }
-
-func (s *lenSink) Write(p []byte) (int, error) {
-	s.n += len(p)
-	return len(p), nil
 }
 
 func FuzzReadFileWithLimit(f *testing.F) {

@@ -29,32 +29,61 @@ func NewFilteringWriter(w io.Writer) *FilteringWriter {
 	return &FilteringWriter{w: w}
 }
 
-// filteredPatterns lists all substrings that mark a line as noise to suppress.
-//
-// Matched with strings.Contains (not HasPrefix): real fclones lines carry a leading
-// "[timestamp] fclones:  <level>:" prefix, so the noise marker appears mid-line. Most
-// patterns embed the "info:" level tag, so (since fclones emits exactly one level token
-// per line) they match only info-level progress lines. The FIEMAP pattern is the
-// exception: it carries NO level tag and so matches at ANY level (warn/error included) --
-// this is deliberate, because fclones emits the harmless "doesn't support FIEMAP ioctl
-// API" notice at warn level. Contains means any future line embedding one of these
-// substrings would also be dropped from logs; scan stats are unaffected (parsed from the
-// stdout report, not filtered stderr). When re-auditing this list on a FCLONES_VERSION
-// bump (see CONTRIBUTING.md), treat any un-anchored (level-tag-free) substring as
-// level-agnostic: it will suppress matching warn AND error lines from the stderr stream
-// that Grafana alerts on, so add such substrings only for genuinely harmless messages.
-var filteredPatterns = []string{
+// infoProgressPatterns mark info-level progress noise (matched against the
+// message body of a genuine fclones info line; see shouldFilterLine).
+var infoProgressPatterns = []string{
+	"Started grouping",
+	"Started deduplicating",
+	"Scanned ",
+	"Found ",
+}
+
+// warnNoisePatterns mark warn-level noise. The FIEMAP notice ("the filesystem
+// doesn't support the FIEMAP ioctl", e.g. on ZFS) is benign and recurrent and
+// is emitted by fclones at warn level, so it is matched against the message
+// body of a genuine fclones warn line -- not anywhere in the raw line -- so a
+// real warn/error line whose body merely echoes the phrase in a scanned
+// filename is NOT suppressed.
+var warnNoisePatterns = []string{
 	"doesn't support FIEMAP ioctl API",
-	"info: Started grouping",
-	"info: Started deduplicating",
-	"info: Scanned ",
-	"info: Found ",
+}
+
+// noisePatternsByLevel maps an fclones log level to the body markers dropped at
+// that level. A marker is matched ONLY against the message body of a line whose
+// level field equals the key (see shouldFilterLine), never against the raw
+// line, so an attacker-controlled scanned filename echoing a marker cannot
+// suppress the line that reports it. Re-audit on a FCLONES_VERSION bump (see
+// CONTRIBUTING.md).
+var noisePatternsByLevel = map[string][]string{
+	"info": infoProgressPatterns,
+	"warn": warnNoisePatterns,
 }
 
 // shouldFilterLine returns true when a given line should be suppressed.
+//
+// It reads the level positionally from the FIRST "fclones:" prefix that fclones
+// itself emits (an attacker cannot inject text ahead of it), then drops the line
+// only when a noise marker registered for that exact level appears in the
+// message body. Both the info-progress markers and the warn-level FIEMAP notice
+// are matched this way, so no marker echoed in a scanned filename can suppress a
+// genuine diagnostic at a different level.
 func shouldFilterLine(line string) bool {
-	for _, p := range filteredPatterns {
-		if strings.Contains(line, p) {
+	const prefix = "fclones:"
+	_, after, ok := strings.Cut(line, prefix)
+	if !ok {
+		return false
+	}
+	rest := strings.TrimLeft(after, " ")
+	level, msg, ok := strings.Cut(rest, ":")
+	if !ok {
+		return false
+	}
+	patterns, ok := noisePatternsByLevel[strings.TrimSpace(level)]
+	if !ok {
+		return false
+	}
+	for _, p := range patterns {
+		if strings.Contains(msg, p) {
 			return true
 		}
 	}

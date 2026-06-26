@@ -634,8 +634,10 @@ func TestFilteringWriterCapsUnboundedNoNewlineFlood(t *testing.T) {
 		fw := ioutil.NewFilteringWriter(&out)
 
 		// A >1MB no-newline run that contains a filtered pattern: the cap fires
-		// and the line is dropped (not forwarded), buffer reset.
-		flood := append([]byte("info: Scanned "), bytes.Repeat([]byte("9"), cap+1)...)
+		// and the line is dropped (not forwarded), buffer reset. The line carries
+		// a genuine "fclones:  info:" prefix so it is filtered under the positional
+		// policy (a bare "info: Scanned " with no fclones prefix is no longer noise).
+		flood := append([]byte("[ts] fclones:  info: Scanned "), bytes.Repeat([]byte("9"), cap+1)...)
 		if _, err := fw.Write(flood); err != nil {
 			t.Fatalf("Write(filtered flood): %v", err)
 		}
