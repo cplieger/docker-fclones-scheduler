@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -91,9 +92,11 @@ func run(ctx context.Context) error {
 		return nil
 	case modeOnce:
 		return runOnce(ctx, marker, &cfg)
-	default:
+	case modeExternal:
 		runExternal(ctx, marker, &cfg)
 		return nil
+	default:
+		panic(fmt.Sprintf("unhandled runMode: %d", int(cfg.Mode)))
 	}
 }
 
@@ -168,6 +171,17 @@ func runBuiltin(ctx context.Context, marker *health.Marker, cfg *config) {
 // orchestrator running it as a batch job). Like runBuiltin it starts unhealthy
 // (a scan is about to run); runFclonesJob's deferred marker update records the
 // outcome. run()'s deferred marker.Cleanup() removes the marker on exit.
+//
+// Unlike the daemon and `scan` paths, an interrupt (SIGTERM/SIGINT) DURING the
+// single run is reported as a non-zero exit. runFclonesJob treats a parent-context
+// cancellation as a clean stop (it returns nil so a graceful daemon shutdown never
+// flips a healthy daemon unhealthy), but for the batch one-shot the exit code IS
+// the job result: a pod evicted / deadline-killed / OOM'd mid-scan must surface as
+// a failed run so the orchestrator (k8s Job, CI step) retries rather than marking it
+// Complete. So when the job returned no error but the context was cancelled before
+// completion, convert that to an error. Scan exec-failure and timeout already exit
+// non-zero via runFclonesJob; this closes the interrupt gap that would otherwise
+// exit 0 on an incomplete run.
 func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
 	// Begins unhealthy: clear any stale health file from a previous run that
 	// crashed before its defer ran. The single scan flips it on success.
@@ -177,7 +191,13 @@ func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
 		"uid", os.Getuid(), "target", cfg.ScanPath, "action", cfg.Action,
 		"phase_timeout", cfg.PhaseTimeout)
 
-	return runFclonesJob(ctx, marker, cfg, "once", defaultCommandRunner)
+	err := runFclonesJob(ctx, marker, cfg, "once", defaultCommandRunner)
+	if err == nil && ctx.Err() != nil {
+		// Interrupted before the single run completed: report a non-zero exit so
+		// a batch orchestrator treats the cut-short run as a failure, not a success.
+		return fmt.Errorf("run-once interrupted before completion: %w", context.Cause(ctx))
+	}
+	return err
 }
 
 // runExternal idles until shutdown. The built-in scheduler is disabled

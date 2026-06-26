@@ -2,6 +2,7 @@ package ioutil_test
 
 import (
 	"bytes"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -443,6 +444,64 @@ func TestReadFileWithLimitDetectsGrowthDuringRead(t *testing.T) {
 	}
 	if data != nil {
 		t.Errorf("ReadFileWithLimit(/dev/zero, 100) returned %d bytes with the error, want nil data", len(data))
+	}
+}
+
+func TestReadFileWithLimitMaxInt64DoesNotWrap(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "small.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// At maxBytes == math.MaxInt64 the guard must NOT do limit++ (that would
+	// wrap to a negative LimitReader bound, which returns immediate EOF and
+	// silently yields empty data). No real file can exceed MaxInt64, so the
+	// full content must come back verbatim.
+	data, err := ioutil.ReadFileWithLimit(path, math.MaxInt64)
+	if err != nil {
+		t.Fatalf("ReadFileWithLimit(path, MaxInt64) = err %v, want nil", err)
+	}
+	if string(data) != "hello" {
+		t.Errorf("ReadFileWithLimit(path, MaxInt64) = %q, want %q (overflow guard must not truncate to empty)", data, "hello")
+	}
+}
+
+func TestReadFileWithLimitNearMaxInt64Boundary(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "small.txt")
+	content := []byte("0123456789")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// MaxInt64-1 takes the limit++ branch (limit becomes MaxInt64); the read
+	// must still succeed and return the file verbatim.
+	data, err := ioutil.ReadFileWithLimit(path, math.MaxInt64-1)
+	if err != nil {
+		t.Fatalf("ReadFileWithLimit(path, MaxInt64-1) = err %v, want nil", err)
+	}
+	if string(data) != string(content) {
+		t.Errorf("ReadFileWithLimit(path, MaxInt64-1) = %q, want %q", data, content)
+	}
+}
+
+func TestReadFileWithLimitNegativeLimitRejected(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "data.txt")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// A negative limit can never be satisfied: info.Size() (>=0) always
+	// exceeds it, so the Stat check rejects before any read. This path is
+	// unreachable by FuzzReadFileWithLimit (its limit mask forces >= 0).
+	data, err := ioutil.ReadFileWithLimit(path, -1)
+	if err == nil {
+		t.Fatal("ReadFileWithLimit(1-byte file, -1) = nil error, want a limit-exceeded error")
+	}
+	if data != nil {
+		t.Errorf("ReadFileWithLimit(path, -1) returned %d bytes with the error, want nil data", len(data))
 	}
 }
 

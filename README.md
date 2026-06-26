@@ -104,7 +104,7 @@ Overlapping scans are prevented in both modes by an advisory file lock (`flock`)
 
 ### Run once
 
-Set `FCLONES_INTERVAL=0` (or `0s`). The container runs exactly one scan and dedup action, then exits — non-zero if the scan failed. This suits a batch or one-shot context (a Kubernetes `Job`, a CI step, or a manual `docker run --rm`) where an external system, not the container, decides when to run again.
+Set `FCLONES_INTERVAL=0` (or `0s`). The container runs exactly one scan and dedup action, then exits — non-zero if the scan failed, timed out, **or was interrupted (SIGTERM/SIGINT) before it finished**. This suits a batch or one-shot context (a Kubernetes `Job`, a CI step, or a manual `docker run --rm`) where an external system, not the container, decides when to run again: a run cut short by an eviction, deadline, or OOM surfaces as a failed run so the orchestrator retries rather than recording success. (In the long-running modes a SIGTERM is a clean shutdown and exits 0; only run-once treats a mid-run interrupt as a failure, because there the exit code is the job result.)
 
 ## Configuration reference
 

@@ -645,3 +645,63 @@ func TestLoadConfigWarnsOnEmptyScanPaths(t *testing.T) {
 		t.Errorf("loadConfig did not warn that scan paths resolved to no targets; logs = %q", logs.String())
 	}
 }
+
+func TestParseInterval(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		raw          string
+		wantInterval time.Duration
+		wantMode     runMode
+	}{
+		{"empty falls back to default built-in", "", defaultInterval, modeBuiltin},
+		{"whitespace only falls back to default built-in", "   ", defaultInterval, modeBuiltin},
+		{"off selects external with default interval", "off", defaultInterval, modeExternal},
+		{"disabled alias selects external", "disabled", defaultInterval, modeExternal},
+		{"uppercase OFF selects external", "OFF", defaultInterval, modeExternal},
+		{"positive duration sets built-in cadence", "90m", 90 * time.Minute, modeBuiltin},
+		{"zero selects run-once with default interval", "0", defaultInterval, modeOnce},
+		{"zero seconds selects run-once", "0s", defaultInterval, modeOnce},
+		{"negative falls back to default built-in", "-1h", defaultInterval, modeBuiltin},
+		{"unparseable falls back to default built-in", "not-a-duration", defaultInterval, modeBuiltin},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotInterval, gotMode := parseInterval(tt.raw)
+			if gotInterval != tt.wantInterval {
+				t.Errorf("parseInterval(%q) interval = %s, want %s", tt.raw, gotInterval, tt.wantInterval)
+			}
+			if gotMode != tt.wantMode {
+				t.Errorf("parseInterval(%q) mode = %s, want %s", tt.raw, gotMode, tt.wantMode)
+			}
+		})
+	}
+}
+
+func TestRunModeString(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		want string
+		mode runMode
+	}{
+		{"built-in", modeBuiltin},
+		{"external", modeExternal},
+		{"once", modeOnce},
+	}
+	for _, tt := range tests {
+		if got := tt.mode.String(); got != tt.want {
+			t.Errorf("runMode(%d).String() = %q, want %q", int(tt.mode), got, tt.want)
+		}
+	}
+}
+
+func TestRunModeStringPanicsOnUnknown(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("runMode(99).String(): expected panic on unhandled value, got none")
+		}
+	}()
+	_ = runMode(99).String()
+}
