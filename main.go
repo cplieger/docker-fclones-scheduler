@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -141,7 +142,7 @@ func runBuiltin(ctx context.Context, marker *health.Marker, cfg *config) {
 		"phase_timeout", cfg.PhaseTimeout)
 
 	var wg sync.WaitGroup
-	wg.Go(func() { _ = runFclonesJob(ctx, marker, cfg, "startup", defaultCommandRunner) })
+	wg.Go(func() { _, _ = runFclonesJob(ctx, marker, cfg, "startup", defaultCommandRunner) })
 	wg.Go(func() {
 		ticker := time.NewTicker(cfg.Interval)
 		defer ticker.Stop()
@@ -150,7 +151,7 @@ func runBuiltin(ctx context.Context, marker *health.Marker, cfg *config) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_ = runFclonesJob(ctx, marker, cfg, "interval", defaultCommandRunner)
+				_, _ = runFclonesJob(ctx, marker, cfg, "interval", defaultCommandRunner)
 			}
 		}
 	})
@@ -163,6 +164,7 @@ func runBuiltin(ctx context.Context, marker *health.Marker, cfg *config) {
 
 	// Wait for the startup scan and any in-flight ticker scan to drain.
 	wg.Wait()
+	slog.Info("shutdown complete")
 }
 
 // runOnce performs exactly one scan+action then returns, so the daemon (PID 1)
@@ -172,16 +174,21 @@ func runBuiltin(ctx context.Context, marker *health.Marker, cfg *config) {
 // (a scan is about to run); runFclonesJob's deferred marker update records the
 // outcome. run()'s deferred marker.Cleanup() removes the marker on exit.
 //
-// Unlike the daemon and `scan` paths, an interrupt (SIGTERM/SIGINT) DURING the
-// single run is reported as a non-zero exit. runFclonesJob treats a parent-context
-// cancellation as a clean stop (it returns nil so a graceful daemon shutdown never
-// flips a healthy daemon unhealthy), but for the batch one-shot the exit code IS
-// the job result: a pod evicted / deadline-killed / OOM'd mid-scan must surface as
-// a failed run so the orchestrator (k8s Job, CI step) retries rather than marking it
-// Complete. So when the job returned no error but the context was cancelled before
-// completion, convert that to an error. Scan exec-failure and timeout already exit
-// non-zero via runFclonesJob; this closes the interrupt gap that would otherwise
-// exit 0 on an incomplete run.
+// run-once exits non-zero on every outcome that did NOT complete a clean scan,
+// because here the exit code IS the batch job result. Three non-success cases,
+// all distinct from the daemon/`scan` paths which exit 0 on them:
+//   - exec failure / timeout: runFclonesJob returns a non-nil error (handled below).
+//   - interrupt (SIGTERM/SIGINT mid-run): runFclonesJob treats a parent-context
+//     cancellation as a clean stop and returns (ran=true, nil) so a graceful daemon
+//     shutdown never flips a healthy daemon unhealthy; for the one-shot, a pod
+//     evicted / deadline-killed / OOM'd mid-scan must instead fail so the
+//     orchestrator retries, so a cancelled context is converted to an error.
+//   - lock-contention skip: another process held the /cache scan lock, so
+//     runFclonesJob returned (ran=false, nil) WITHOUT scanning. The daemon ticker
+//     and `scan` subcommand correctly no-op here, but a one-shot that performed no
+//     scan is not a successful run, so it is reported as a non-zero SKIPPED outcome
+//     (and the marker set unhealthy, since no successful scan recorded one) rather
+//     than a silent exit-0 no-op the orchestrator would mark Complete.
 func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
 	// Begins unhealthy: clear any stale health file from a previous run that
 	// crashed before its defer ran. The single scan flips it on success.
@@ -191,13 +198,29 @@ func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
 		"uid", os.Getuid(), "target", cfg.ScanPath, "action", cfg.Action,
 		"phase_timeout", cfg.PhaseTimeout)
 
-	err := runFclonesJob(ctx, marker, cfg, "once", defaultCommandRunner)
-	if err == nil && ctx.Err() != nil {
+	ran, err := runFclonesJob(ctx, marker, cfg, "once", defaultCommandRunner)
+	switch {
+	case err != nil:
+		// Exec failure or timeout: already logged with full context; exit non-zero.
+		return err
+	case !ran:
+		// The scan lock was held by another process, so no scan or action ran.
+		// runFclonesJob returns before its deferred marker update on this path, so
+		// the marker is untouched; set it unhealthy here so the exit code and the
+		// healthcheck agree (this run accomplished nothing). Report SKIPPED as a
+		// non-zero outcome so a batch orchestrator retries instead of recording a
+		// no-op as success.
+		marker.Set(false)
+		slog.Warn("run-once skipped: another process holds the scan lock; no scan ran",
+			"outcome", "skipped", "lock", lockFile)
+		return errors.New("run-once skipped: scan lock held by another process")
+	case ctx.Err() != nil:
 		// Interrupted before the single run completed: report a non-zero exit so
 		// a batch orchestrator treats the cut-short run as a failure, not a success.
 		return fmt.Errorf("run-once interrupted before completion: %w", context.Cause(ctx))
+	default:
+		return nil
 	}
-	return err
 }
 
 // runExternal idles until shutdown. The built-in scheduler is disabled
@@ -215,6 +238,7 @@ func runExternal(ctx context.Context, marker *health.Marker, cfg *config) {
 
 	<-ctx.Done()
 	slog.Info("shutting down", "cause", context.Cause(ctx))
+	slog.Info("shutdown complete")
 	// No marker.Set(false): unlike runBuiltin there is no in-flight scan to
 	// drain, and run()'s deferred marker.Cleanup() removes the marker on exit.
 }
@@ -250,5 +274,11 @@ func runScan(ctx context.Context) error {
 
 	// Deliberately no `defer marker.Cleanup()` (unlike run): the marker file
 	// must persist so the running container's healthcheck reflects this run.
-	return runFclonesJob(ctx, marker, &cfg, "external", defaultCommandRunner)
+	//
+	// The `scan` subcommand intentionally ignores ran: a lock-skip here is the
+	// documented overlap tolerance (a manual `wrapper scan` racing a scheduled
+	// one skips rather than failing, like the built-in ticker), so a contended
+	// invocation exits 0. Only run-once treats a skip as a non-zero outcome.
+	_, err = runFclonesJob(ctx, marker, &cfg, "external", defaultCommandRunner)
+	return err
 }

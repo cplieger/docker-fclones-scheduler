@@ -202,16 +202,26 @@ func classifyAndLogOutcome(
 	}
 }
 
-func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trigger string, newCmd commandRunner) (err error) {
+// runFclonesJob attempts one scan+action. It returns ran=false ONLY when the
+// scan lock was already held by another process (the advisory-flock overlap
+// skip): no scan or action ran, and the caller decides what a no-op means for
+// its mode. In every other outcome (success, bad args, exec failure, timeout,
+// interrupt) ran=true -- the job acquired the lock and did its work or tried to.
+// err is non-nil on a genuine failure; on the lock-skip and on a clean run it is
+// nil, so callers that care about "did a scan actually happen" must inspect ran,
+// not just err. The built-in ticker ignores ran (overlap is a benign no-op there);
+// run-once consults it so a contended one-shot exits non-zero rather than
+// reporting a no-op as success.
+func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trigger string, newCmd commandRunner) (ran bool, err error) {
 	lock, ok, lockErr := tryLock(lockFile)
 	if lockErr != nil {
 		slog.Error("cannot acquire scan lock", "trigger", trigger, "path", lockFile, "error", lockErr)
 		marker.Set(false)
-		return lockErr
+		return true, lockErr
 	}
 	if !ok {
 		slog.Info("job already running, skipping overlapping request", "trigger", trigger)
-		return nil
+		return false, nil
 	}
 	defer lock.unlock()
 
@@ -234,13 +244,13 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	scanArgs, err := buildScanArgs(cfg)
 	if err != nil {
 		log.Error("scan failed to start", "reason", "bad_args", "error", err)
-		return err
+		return true, err
 	}
 
 	tmpFile, err := os.CreateTemp(cacheDir, reportTempPattern)
 	if err != nil {
 		log.Error("scan failed to start", "reason", "tmpfile", "error", err)
-		return err
+		return true, err
 	}
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath)
@@ -269,7 +279,7 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 
 	if done, phaseErr := classifyAndLogOutcome(ctx, scanCtx, log, "scan", runErr,
 		cfg.PhaseTimeout, duration, errBuf, nil); done {
-		return phaseErr
+		return true, phaseErr
 	}
 	// success: continue to report parsing
 
@@ -304,10 +314,10 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	}
 
 	if !shouldRunAction(log, cfg, reportParsed, hasDuplicates, driftSuspected) {
-		return nil
+		return true, nil
 	}
 
-	return runFclonesAction(ctx, cfg, tmpPath, log, newCmd)
+	return true, runFclonesAction(ctx, cfg, tmpPath, log, newCmd)
 }
 
 // reportedGroupCount parses fclones' own group count from Stats.Groups (the
