@@ -14,8 +14,9 @@ services:
       FCLONES_ACTION_ARGS: "--priority bottom"
 
     volumes:
-      - "/path/to/media:/scandir"
-      - "/opt/appdata/fclones:/cache"
+      # Both mounts must be writable by the UID set in `user:` above.
+      - "/path/to/media:/scandir"      # link/remove/dedupe modify files here (don't mount :ro for those)
+      - "/opt/appdata/fclones:/cache"  # write-probed at startup; container exits if /cache isn't writable
 
     # The first built-in scan can take minutes on a large library. The image's
     # default healthcheck start_period is 15s, so until that first scan finishes

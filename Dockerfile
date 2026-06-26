@@ -61,7 +61,7 @@ COPY internal/ internal/
 # fail-closed coupling to the security re-audit, so a FCLONES_VERSION bump
 # cannot silently ship an un-re-audited denylist.
 ARG FCLONES_VERSION
-RUN grep -q "Audited against fclones ${FCLONES_VERSION};" config.go || { \
+RUN grep -qF "Audited against fclones ${FCLONES_VERSION};" config.go || { \
       echo "config.go dangerous-flag audit comment does not match FCLONES_VERSION=${FCLONES_VERSION}; re-audit dangerousFlags and bump the 'Audited against fclones <version>;' comment in config.go (see CONTRIBUTING.md)" >&2; \
       exit 1; \
     }

@@ -33,6 +33,11 @@ type ActionSummary struct {
 }
 
 // ParseStats extracts statistics from fclones output.
+//
+// The output embeds scanned filenames, which are attacker-influenceable and may contain
+// newlines; a crafted path can therefore inject a line that looks like a "# Total:" or
+// "# Redundant:" stat. The returned Stats are advisory (logging and Grafana alerting
+// only) and never drive file operations, so this is an accepted log-integrity tradeoff.
 func ParseStats(output string) Stats {
 	stats := Stats{Groups: "0", Size: DefaultSizeStr}
 
@@ -178,7 +183,7 @@ func ParseActionSummary(stdout string) ActionSummary {
 // fclones (via bytesize 1.3.0, the pinned version) renders DECIMAL SI units
 // (KB..EB) by default -- the same system HumanBytes emits, so today both the
 // parse and format sides agree. The IEC binary units (KiB..EiB) are accepted
-// defensively so ParseHumanBytes still parses correctly if a future
+// defensively so parseHumanBytes still parses correctly if a future
 // fclones/bytesize bump switches its output to IEC.
 var byteUnitMultipliers = map[string]int64{
 	"B":   1,
