@@ -37,4 +37,10 @@ func TestGkFclonesR2_WriteAfterMaxLoweredStoresNothing(t *testing.T) {
 	if got := lb.String(); got != "0123456789" {
 		t.Errorf("buffer = %q, want %q (frozen; negative room stores nothing)", got, "0123456789")
 	}
+	if got, want := lb.Total(), 14; got != want {
+		t.Errorf("Total() after Max lowered = %d, want %d (10 stored + 4 discarded, counted regardless of cap)", got, want)
+	}
+	if !lb.Truncated() {
+		t.Errorf("Truncated() = false, want true (total 14 exceeds lowered Max 4)")
+	}
 }
