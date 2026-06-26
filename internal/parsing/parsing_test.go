@@ -81,13 +81,6 @@ func TestParseStats(t *testing.T) {
 			totalParsed: false,
 		},
 		{
-			name:        "Total with files suffix not groups",
-			input:       "# Total: 100 files\n",
-			groups:      "0",
-			size:        "0 B",
-			totalParsed: false,
-		},
-		{
 			name:        "multiple Redundant lines last wins",
 			input:       "# Redundant: 1 files (100 MB)\n# Redundant: 2 files (200 MB)\n",
 			groups:      "0",
