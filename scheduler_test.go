@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -479,14 +480,14 @@ func TestMaybeWarnGroupCountDrift(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-		maybeWarnGroupCountDrift(log, true, "5", 3)
+		maybeWarnGroupCountDrift(log, true, 5, true, 3)
 
 		out := buf.String()
 		if !strings.Contains(out, driftMsg) {
-			t.Errorf("maybeWarnGroupCountDrift(true, %q, 3): no drift warning, got %q", "5", out)
+			t.Errorf("maybeWarnGroupCountDrift(reported=5, parsed=3): no drift warning, got %q", out)
 		}
 		if !strings.Contains(out, "reported_groups=5") || !strings.Contains(out, "parsed_groups=3") {
-			t.Errorf("maybeWarnGroupCountDrift(true, %q, 3): warning missing counts, got %q", "5", out)
+			t.Errorf("maybeWarnGroupCountDrift(reported=5, parsed=3): warning missing counts, got %q", out)
 		}
 	})
 
@@ -495,10 +496,10 @@ func TestMaybeWarnGroupCountDrift(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-		maybeWarnGroupCountDrift(log, true, "7", 7)
+		maybeWarnGroupCountDrift(log, true, 7, true, 7)
 
 		if out := buf.String(); out != "" {
-			t.Errorf("maybeWarnGroupCountDrift(true, %q, 7) = %q, want no log", "7", out)
+			t.Errorf("maybeWarnGroupCountDrift(reported=7, parsed=7) = %q, want no log", out)
 		}
 	})
 
@@ -507,22 +508,22 @@ func TestMaybeWarnGroupCountDrift(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-		maybeWarnGroupCountDrift(log, false, "5", 3)
+		maybeWarnGroupCountDrift(log, false, 5, true, 3)
 
 		if out := buf.String(); out != "" {
-			t.Errorf("maybeWarnGroupCountDrift(false, %q, 3) = %q, want no log", "5", out)
+			t.Errorf("maybeWarnGroupCountDrift(reportParsed=false) = %q, want no log", out)
 		}
 	})
 
-	t.Run("silent when reported count is non-numeric", func(t *testing.T) {
+	t.Run("silent when reported count is unavailable", func(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-		maybeWarnGroupCountDrift(log, true, "not-a-number", 3)
+		maybeWarnGroupCountDrift(log, true, 0, false, 3)
 
 		if out := buf.String(); out != "" {
-			t.Errorf("maybeWarnGroupCountDrift(true, %q, 3) = %q, want no log", "not-a-number", out)
+			t.Errorf("maybeWarnGroupCountDrift(reportedOK=false) = %q, want no log", out)
 		}
 	})
 }
@@ -535,7 +536,7 @@ func TestShouldRunAction(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		got := shouldRunAction(log, &config{Action: actionLink}, true, false)
+		got := shouldRunAction(log, &config{Action: actionLink}, true, false, false)
 
 		if got {
 			t.Error("shouldRunAction(parsed=true, dups=false, action=link) = true, want false")
@@ -545,12 +546,27 @@ func TestShouldRunAction(t *testing.T) {
 		}
 	})
 
+	t.Run("runs and warns when parsed report has zero groups but drift is suspected", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		got := shouldRunAction(log, &config{Action: actionLink}, true, false, true)
+
+		if !got {
+			t.Error("shouldRunAction(parsed=true, dups=false, drift=true, action=link) = false, want true")
+		}
+		if !strings.Contains(buf.String(), "group_count_drift") {
+			t.Errorf("expected group_count_drift warning, got %q", buf.String())
+		}
+	})
+
 	t.Run("skips silently when no duplicates and action is group", func(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		got := shouldRunAction(log, &config{Action: actionGroup}, true, false)
+		got := shouldRunAction(log, &config{Action: actionGroup}, true, false, false)
 
 		if got {
 			t.Error("shouldRunAction(parsed=true, dups=false, action=group) = true, want false")
@@ -560,12 +576,27 @@ func TestShouldRunAction(t *testing.T) {
 		}
 	})
 
+	t.Run("ignores drift for group action (nothing to dedup)", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		got := shouldRunAction(log, &config{Action: actionGroup}, true, false, true)
+
+		if got {
+			t.Error("shouldRunAction(parsed=true, dups=false, drift=true, action=group) = true, want false")
+		}
+		if strings.Contains(buf.String(), "group_count_drift") {
+			t.Errorf("group action should not emit a drift warning, got %q", buf.String())
+		}
+	})
+
 	t.Run("runs silently when duplicates were found", func(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		got := shouldRunAction(log, &config{Action: actionLink}, true, true)
+		got := shouldRunAction(log, &config{Action: actionLink}, true, true, false)
 
 		if !got {
 			t.Error("shouldRunAction(parsed=true, dups=true, action=link) = false, want true")
@@ -580,7 +611,7 @@ func TestShouldRunAction(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		got := shouldRunAction(log, &config{Action: actionRemove}, false, false)
+		got := shouldRunAction(log, &config{Action: actionRemove}, false, false, false)
 
 		if !got {
 			t.Error("shouldRunAction(parsed=false, action=remove) = false, want true")
@@ -595,7 +626,7 @@ func TestShouldRunAction(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		got := shouldRunAction(log, &config{Action: actionGroup}, false, false)
+		got := shouldRunAction(log, &config{Action: actionGroup}, false, false, false)
 
 		if !got {
 			t.Error("shouldRunAction(parsed=false, action=group) = false, want true")
@@ -667,4 +698,62 @@ func TestPhaseContext(t *testing.T) {
 			t.Errorf("ctx.Err() = %v, want context.Canceled", ctx.Err())
 		}
 	})
+}
+
+func TestReportedGroupCount(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in        string
+		wantCount int
+		wantOK    bool
+	}{
+		{"5", 5, true},
+		{"0", 0, true},
+		{"", 0, false},
+		{"abc", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			t.Parallel()
+			gotCount, gotOK := reportedGroupCount(tt.in)
+			if gotCount != tt.wantCount || gotOK != tt.wantOK {
+				t.Errorf("reportedGroupCount(%q) = (%d, %v), want (%d, %v)",
+					tt.in, gotCount, gotOK, tt.wantCount, tt.wantOK)
+			}
+		})
+	}
+}
+
+// --- Tests: sweepStaleReports ---
+
+func TestSweepStaleReports(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Two files matching reportTempPattern, created exactly as runFclonesJob
+	// creates them, plus one non-matching file that must survive the sweep.
+	var stale []string
+	for range 2 {
+		f, err := os.CreateTemp(dir, reportTempPattern)
+		if err != nil {
+			t.Fatalf("CreateTemp: %v", err)
+		}
+		_ = f.Close()
+		stale = append(stale, f.Name())
+	}
+	keep := filepath.Join(dir, "keep.dat")
+	if err := os.WriteFile(keep, []byte("state"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	sweepStaleReports(dir)
+
+	for _, p := range stale {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("stale report %q still present after sweep (err=%v), want removed", p, err)
+		}
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("non-matching file %q removed by sweep (err=%v), want kept", keep, err)
+	}
 }
