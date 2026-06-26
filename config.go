@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -49,17 +50,20 @@ var validActions = []action{actionGroup, actionRemove, actionLink, actionDedupe}
 // parseAction validates a raw string and returns the corresponding action.
 // Returns an error if the string is not a recognised fclones subcommand.
 func parseAction(s string) (action, error) {
-	switch action(s) {
-	case actionGroup, actionRemove, actionLink, actionDedupe:
-		return action(s), nil
-	default:
-		names := make([]string, len(validActions))
-		for i, a := range validActions {
-			names[i] = string(a)
-		}
-		return "", fmt.Errorf("invalid action %q (allowed: %s)", s, strings.Join(names, ", "))
+	candidate := action(s)
+	if slices.Contains(validActions, candidate) {
+		return candidate, nil
 	}
+	names := make([]string, len(validActions))
+	for i, a := range validActions {
+		names[i] = string(a)
+	}
+	return "", fmt.Errorf("invalid action %q (allowed: %s)", s, strings.Join(names, ", "))
 }
+
+// Compile-time assertion: action implements fmt.Stringer (mirrors the
+// PhaseOutcome assertion in outcome.go).
+var _ fmt.Stringer = action("")
 
 // String returns the fclones subcommand name for the action.
 func (a action) String() string { return string(a) }
