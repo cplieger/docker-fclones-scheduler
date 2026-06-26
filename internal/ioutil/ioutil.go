@@ -1,3 +1,6 @@
+// Package ioutil provides bounded I/O helpers for capturing fclones
+// subprocess output without unbounded memory growth: a line-filtering
+// writer, a capped accumulation buffer, and a size-limited file reader.
 package ioutil
 
 import (
@@ -64,6 +67,10 @@ func (fw *FilteringWriter) Write(p []byte) (int, error) {
 	for {
 		idx := bytes.IndexByte(buf, '\n')
 		if idx < 0 {
+			// Copy the unconsumed tail into a fresh buffer rather than aliasing
+			// buf (fw.buf = buf): earlier iterations may have re-sliced buf past
+			// already-emitted lines, so aliasing would pin their backing array.
+			// fw.buf is nil here, so append allocates a tight copy of just the tail.
 			fw.buf = append(fw.buf, buf...)
 			if len(fw.buf) > maxLineBytes {
 				err := fw.emit(fw.buf)

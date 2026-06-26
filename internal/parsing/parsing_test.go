@@ -536,8 +536,6 @@ func TestProperty_BuildScanArgsStructure(t *testing.T) {
 			argTokens[i] = rapid.StringMatching(`--[a-z\-]{1,10}`).Draw(rt, "flag")
 			argTokens[i+1] = rapid.StringMatching(`[a-zA-Z0-9]{1,10}`).Draw(rt, "value")
 		}
-		_ = strings.Join(argTokens, " ")
-		_ = scanPath
 		// This property test validates that ParseStats doesn't panic on structured input
 		input := "# Redundant: " + scanPath + "\n# Total: " + strings.Join(argTokens, " ") + " groups\n"
 		stats := parsing.ParseStats(input)
@@ -765,6 +763,61 @@ func TestIsGroupHeader(t *testing.T) {
 			t.Parallel()
 			if got := parsing.IsGroupHeader(tt.line); got != tt.want {
 				t.Errorf("IsGroupHeader(%q) = %v, want %v", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseDuplicateGroups_commentPrefixedPathLinesAreSkipped(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  []parsing.DuplicateGroup
+	}{
+		{
+			name:  "hash-prefixed line after keeper is skipped and group survives",
+			input: "h, 100 B * 2:\n/keeper\n#hashline\n/dup\n",
+			want: []parsing.DuplicateGroup{
+				{Keeper: "/keeper", Duplicates: []string{"/dup"}, SizePerDup: "100 B"},
+			},
+		},
+		{
+			name:  "hash-prefixed duplicate path is silently omitted",
+			input: "h, 100 B * 2:\n/keeper\n/dup1\n#dup2\n/dup3\n",
+			want: []parsing.DuplicateGroup{
+				{Keeper: "/keeper", Duplicates: []string{"/dup1", "/dup3"}, SizePerDup: "100 B"},
+			},
+		},
+		{
+			name:  "hash-prefixed keeper line collapses the group to nothing",
+			input: "h, 100 B * 2:\n#keeperline\n/realdup\n",
+			want:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := parsing.ParseDuplicateGroups(tt.input)
+			if len(got) != len(tt.want) {
+				t.Fatalf("ParseDuplicateGroups(%q) len = %d, want %d (got %+v)", tt.input, len(got), len(tt.want), got)
+			}
+			for i := range got {
+				if got[i].Keeper != tt.want[i].Keeper {
+					t.Errorf("group %d Keeper = %q, want %q", i, got[i].Keeper, tt.want[i].Keeper)
+				}
+				if got[i].SizePerDup != tt.want[i].SizePerDup {
+					t.Errorf("group %d SizePerDup = %q, want %q", i, got[i].SizePerDup, tt.want[i].SizePerDup)
+				}
+				if len(got[i].Duplicates) != len(tt.want[i].Duplicates) {
+					t.Fatalf("group %d Duplicates len = %d, want %d", i, len(got[i].Duplicates), len(tt.want[i].Duplicates))
+				}
+				for j := range got[i].Duplicates {
+					if got[i].Duplicates[j] != tt.want[i].Duplicates[j] {
+						t.Errorf("group %d Duplicates[%d] = %q, want %q", i, j, got[i].Duplicates[j], tt.want[i].Duplicates[j])
+					}
+				}
 			}
 		})
 	}

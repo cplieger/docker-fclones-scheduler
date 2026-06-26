@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"slices"
@@ -601,6 +602,69 @@ func TestShouldRunAction(t *testing.T) {
 		}
 		if strings.Contains(buf.String(), "running action without parsed report") {
 			t.Errorf("group action should not warn about unparseable report, got %q", buf.String())
+		}
+	})
+}
+
+func TestPhaseContext(t *testing.T) {
+	t.Parallel()
+
+	t.Run("positive timeout sets a deadline near now+timeout", func(t *testing.T) {
+		t.Parallel()
+		start := time.Now()
+		ctx, cancel := phaseContext(context.Background(), 30*time.Second)
+		defer cancel()
+
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("phaseContext(bg, 30s): no deadline set, want a deadline")
+		}
+		if d := deadline.Sub(start); d < 29*time.Second || d > 31*time.Second {
+			t.Errorf("phaseContext(bg, 30s) deadline in %s, want ~30s from start", d)
+		}
+	})
+
+	t.Run("zero timeout sets no deadline", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := phaseContext(context.Background(), 0)
+		defer cancel()
+
+		if deadline, ok := ctx.Deadline(); ok {
+			t.Errorf("phaseContext(bg, 0) deadline = %v, want no deadline (0 = unbounded phase)", deadline)
+		}
+	})
+
+	t.Run("negative timeout sets no deadline", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := phaseContext(context.Background(), -1*time.Hour)
+		defer cancel()
+
+		if deadline, ok := ctx.Deadline(); ok {
+			t.Errorf("phaseContext(bg, -1h) deadline = %v, want no deadline (non-positive = unbounded)", deadline)
+		}
+	})
+
+	t.Run("zero timeout still cancels when the parent is cancelled", func(t *testing.T) {
+		t.Parallel()
+		parent, cancelParent := context.WithCancel(context.Background())
+		ctx, cancel := phaseContext(parent, 0)
+		defer cancel()
+
+		select {
+		case <-ctx.Done():
+			t.Fatal("phaseContext child Done before parent cancelled")
+		default:
+		}
+
+		cancelParent()
+
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Second):
+			t.Error("phaseContext(parent, 0) child not cancelled after parent cancel; SIGTERM would not stop an unbounded phase")
+		}
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Errorf("ctx.Err() = %v, want context.Canceled", ctx.Err())
 		}
 	})
 }
