@@ -101,6 +101,7 @@ func FuzzParseActionSummary(f *testing.F) {
 func FuzzParseRedundantSize(f *testing.F) {
 	f.Add("# Redundant: 5 files (1.2 GB)")
 	f.Add("# Redundant: 512 MB")
+	f.Add("# Redundant: 512")
 	f.Add("# Redundant:")
 	f.Fuzz(func(t *testing.T, input string) {
 		result := parsing.ParseRedundantSize(input)

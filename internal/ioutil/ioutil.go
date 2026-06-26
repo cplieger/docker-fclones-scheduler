@@ -32,11 +32,17 @@ func NewFilteringWriter(w io.Writer) *FilteringWriter {
 // filteredPatterns lists all substrings that mark a line as noise to suppress.
 //
 // Matched with strings.Contains (not HasPrefix): real fclones lines carry a leading
-// "[timestamp] fclones:  <level>:" prefix, so the noise marker appears mid-line. Each
-// pattern includes the "info:" level tag so it only matches info-level progress lines.
-// Contains means any future info-level line embedding one of these substrings would also
-// be dropped from logs; scan stats are unaffected (parsed from the stdout report, not
-// filtered stderr). Re-audit this list on a FCLONES_VERSION bump (see CONTRIBUTING.md).
+// "[timestamp] fclones:  <level>:" prefix, so the noise marker appears mid-line. Most
+// patterns embed the "info:" level tag, so (since fclones emits exactly one level token
+// per line) they match only info-level progress lines. The FIEMAP pattern is the
+// exception: it carries NO level tag and so matches at ANY level (warn/error included) --
+// this is deliberate, because fclones emits the harmless "doesn't support FIEMAP ioctl
+// API" notice at warn level. Contains means any future line embedding one of these
+// substrings would also be dropped from logs; scan stats are unaffected (parsed from the
+// stdout report, not filtered stderr). When re-auditing this list on a FCLONES_VERSION
+// bump (see CONTRIBUTING.md), treat any un-anchored (level-tag-free) substring as
+// level-agnostic: it will suppress matching warn AND error lines from the stderr stream
+// that Grafana alerts on, so add such substrings only for genuinely harmless messages.
 var filteredPatterns = []string{
 	"doesn't support FIEMAP ioctl API",
 	"info: Started grouping",
