@@ -39,7 +39,7 @@ func ParseStats(output string) Stats {
 	for line := range strings.SplitSeq(output, "\n") {
 		switch {
 		case strings.HasPrefix(line, "# Redundant:"):
-			stats.Size = ParseRedundantSize(line)
+			stats.Size = parseRedundantSize(line)
 		case strings.HasPrefix(line, "# Total:"):
 			if parts := strings.Fields(line); len(parts) >= 2 && parts[len(parts)-1] == "groups" {
 				stats.Groups = parts[len(parts)-2]
@@ -50,9 +50,9 @@ func ParseStats(output string) Stats {
 	return stats
 }
 
-// ParseRedundantSize extracts the human-readable size from a "# Redundant:" line.
+// parseRedundantSize extracts the human-readable size from a "# Redundant:" line.
 // Prefers the parenthesized form "(1.2 GB)" over the bare "512 MB" form.
-func ParseRedundantSize(line string) string {
+func parseRedundantSize(line string) string {
 	if start := strings.Index(line, "("); start != -1 {
 		if end := strings.Index(line, ")"); end > start {
 			if s := line[start+1 : end]; s != "" {
@@ -66,9 +66,9 @@ func ParseRedundantSize(line string) string {
 	return DefaultSizeStr
 }
 
-// IsGroupHeader reports whether a line is an fclones group header like
+// isGroupHeader reports whether a line is an fclones group header like
 // "3a2b, 512 B * 2:" (comma, star, trailing colon).
-func IsGroupHeader(line string) bool {
+func isGroupHeader(line string) bool {
 	return strings.Contains(line, ",") &&
 		strings.Contains(line, "*") &&
 		strings.HasSuffix(line, ":")
@@ -104,8 +104,8 @@ func ParseDuplicateGroups(report string) []DuplicateGroup {
 			continue
 		}
 		if !inGroup {
-			if IsGroupHeader(line) {
-				current.SizePerDup = ExtractGroupSize(line)
+			if isGroupHeader(line) {
+				current.SizePerDup = extractGroupSize(line)
 				inGroup = true
 			}
 			continue
@@ -114,7 +114,7 @@ func ParseDuplicateGroups(report string) []DuplicateGroup {
 		// flush ends the group. Header detection is deliberately NOT re-run here:
 		// fclones separates groups with a blank line, so a duplicate filename that
 		// embeds the header delimiters (',', '*', trailing ':') must not be
-		// reclassified as a new group header. Do not add an IsGroupHeader check in
+		// reclassified as a new group header. Do not add an isGroupHeader check in
 		// this branch.
 		if current.Keeper == "" {
 			current.Keeper = trimmed
@@ -126,8 +126,8 @@ func ParseDuplicateGroups(report string) []DuplicateGroup {
 	return groups
 }
 
-// ExtractGroupSize pulls the single-file size from a group header.
-func ExtractGroupSize(header string) string {
+// extractGroupSize pulls the single-file size from a group header.
+func extractGroupSize(header string) string {
 	h := strings.TrimSuffix(header, ":")
 	if idx := strings.LastIndex(h, " * "); idx != -1 {
 		h = h[:idx]
@@ -162,7 +162,7 @@ func ParseActionSummary(stdout string) ActionSummary {
 				if n, err := strconv.Atoi(fields[1]); err == nil && n >= 0 {
 					summary.Files = n
 				}
-				summary.ReclaimedBytes = ParseHumanBytes(fields[5] + " " + fields[6])
+				summary.ReclaimedBytes = parseHumanBytes(fields[5] + " " + fields[6])
 			}
 			return summary
 		}
@@ -192,9 +192,9 @@ var byteUnitMultipliers = map[string]int64{
 	"EB": 1_000_000_000_000_000_000, "E": 1_000_000_000_000_000_000,
 }
 
-// ParseHumanBytes converts "<num> <unit>" (e.g. "1.5 MB", "512 B") into a
+// parseHumanBytes converts "<num> <unit>" (e.g. "1.5 MB", "512 B") into a
 // byte count. Returns 0 on any parse failure.
-func ParseHumanBytes(s string) int64 {
+func parseHumanBytes(s string) int64 {
 	fields := strings.Fields(s)
 	if len(fields) != 2 {
 		return 0
