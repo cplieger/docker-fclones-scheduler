@@ -274,11 +274,7 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	reportedGroups, reportedOK := reportedGroupCount(stats.Groups)
 	maybeWarnGroupCountDrift(log, reportParsed, reportedGroups, reportedOK, len(groups))
 
-	// driftSuspected: the report parsed and fclones reported duplicate groups,
-	// but our parser extracted none -- an output-format drift. shouldRunAction
-	// then still runs the action (fclones re-parses the full report from stdin)
-	// rather than silently skipping dedup while the run reports healthy.
-	driftSuspected := reportParsed && !hasDuplicates && reportedOK && reportedGroups > 0
+	driftSuspected := suspectDrift(reportParsed, hasDuplicates, stats.TotalParsed, reportedOK, reportedGroups)
 
 	log.Info("scan complete",
 		logKeyDurationS, int(duration.Round(time.Second).Seconds()),
@@ -327,13 +323,38 @@ func maybeWarnGroupCountDrift(log *slog.Logger, reportParsed bool, reported int,
 	}
 }
 
+// suspectDrift reports whether the scan report indicates fclones found
+// duplicates our parser missed -- fclones output-format drift. It fires only
+// when the report parsed but our parser extracted no duplicate groups, AND
+// fclones' own report disagrees in one of two ways:
+//
+//   - it reported a positive group count (reportedGroups > 0), or
+//   - we could not read its group count at all: the "# Total:" line is absent
+//     or its format changed (!totalParsed), or the count token is non-numeric
+//     (!reportedOK).
+//
+// The second case is the drift mode a bare "reportedGroups > 0" check misses:
+// when the "# Total:" line itself drifts, ParseStats falls back to a "0" group
+// count indistinguishable from a genuine zero, so dedup would be silently
+// skipped while the run reports healthy. Treating an unreadable count as drift
+// runs the action against the full report via stdin instead (fclones re-parses
+// its own report). A genuinely empty scan still emits a well-formed
+// "# Total: 0 ... groups" line, so totalParsed is true and the action is
+// correctly skipped -- no redundant action spawn on normal no-duplicate runs.
+func suspectDrift(reportParsed, hasDuplicates, totalParsed, reportedOK bool, reportedGroups int) bool {
+	if !reportParsed || hasDuplicates {
+		return false
+	}
+	return reportedGroups > 0 || !totalParsed || !reportedOK
+}
+
 // shouldRunAction reports whether the dedup action phase should run after a
 // scan. It returns false (logging "action skipped") when the report parsed
-// cleanly and found no duplicates -- UNLESS drift is suspected (fclones reported
-// duplicate groups but our parser extracted none), in which case it still runs
-// the action against the full report via stdin rather than silently skipping
-// dedup. When the report could not be parsed it warns that the action will run
-// without duplicate stats, then returns true so the action still runs.
+// cleanly and found no duplicates -- UNLESS drift is suspected (see
+// suspectDrift), in which case it still runs the action against the full report
+// via stdin rather than silently skipping dedup. When the report could not be
+// parsed it warns that the action will run without duplicate stats, then
+// returns true so the action still runs.
 func shouldRunAction(log *slog.Logger, cfg *config, reportParsed, hasDuplicates, driftSuspected bool) bool {
 	if reportParsed && !hasDuplicates {
 		if cfg.Action == actionGroup {
@@ -341,13 +362,15 @@ func shouldRunAction(log *slog.Logger, cfg *config, reportParsed, hasDuplicates,
 			return false
 		}
 		if driftSuspected {
-			// fclones reported duplicate groups but our parser extracted none
-			// (output-format drift). Run the action against the full report via
-			// stdin anyway -- fclones re-parses its own report, so the action is
-			// correct even when our parser missed the groups. Same fallback the
-			// report-unparseable case below uses; without it, drift would
-			// silently stop reclaiming space while the run still reports healthy.
-			log.Warn("running action despite zero parsed groups; fclones reported duplicates (possible format drift)",
+			// Output-format drift: our parser extracted no duplicate groups but
+			// fclones' own report disagrees -- it reported groups, or we could
+			// not read its group count (see suspectDrift). Run the action against
+			// the full report via stdin anyway -- fclones re-parses its own
+			// report, so the action is correct even when our parser missed the
+			// groups. Same fallback the report-unparseable case below uses;
+			// without it, drift would silently stop reclaiming space while the
+			// run still reports healthy.
+			log.Warn("running action despite zero parsed groups; possible fclones format drift",
 				"action", cfg.Action, "reason", "group_count_drift")
 			return true
 		}

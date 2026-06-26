@@ -14,6 +14,12 @@ const DefaultSizeStr = "0 B"
 type Stats struct {
 	Groups string
 	Size   string
+	// TotalParsed reports whether a recognizable "# Total: ... N groups" line
+	// was found. It is false when that line is absent or its format changed;
+	// the count token in Groups may still be non-numeric when it is true.
+	// Callers use it to tell "fclones reported 0 groups" apart from "we could
+	// not read the group count at all" -- the latter is output-format drift.
+	TotalParsed bool
 }
 
 // DuplicateGroup is a parsed fclones report group: one keeper file plus its
@@ -48,6 +54,7 @@ func ParseStats(output string) Stats {
 		case strings.HasPrefix(line, "# Total:"):
 			if parts := strings.Fields(line); len(parts) >= 2 && parts[len(parts)-1] == "groups" {
 				stats.Groups = parts[len(parts)-2]
+				stats.TotalParsed = true
 			}
 		}
 	}

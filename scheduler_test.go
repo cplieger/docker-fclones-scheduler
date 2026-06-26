@@ -725,6 +725,80 @@ func TestReportedGroupCount(t *testing.T) {
 	}
 }
 
+func TestSuspectDrift(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		reportParsed   bool
+		hasDuplicates  bool
+		totalParsed    bool
+		reportedOK     bool
+		reportedGroups int
+		want           bool
+	}{
+		{
+			name:           "duplicates found is never drift",
+			reportParsed:   true,
+			hasDuplicates:  true,
+			totalParsed:    true,
+			reportedOK:     true,
+			reportedGroups: 0,
+			want:           false,
+		},
+		{
+			name:         "unparsed report is not drift (handled separately)",
+			reportParsed: false,
+			totalParsed:  false,
+			reportedOK:   true,
+			want:         false,
+		},
+		{
+			name:           "genuine empty scan: total parsed, zero groups",
+			reportParsed:   true,
+			hasDuplicates:  false,
+			totalParsed:    true,
+			reportedOK:     true,
+			reportedGroups: 0,
+			want:           false,
+		},
+		{
+			name:           "partial drift: fclones reported groups, parser found none",
+			reportParsed:   true,
+			hasDuplicates:  false,
+			totalParsed:    true,
+			reportedOK:     true,
+			reportedGroups: 5,
+			want:           true,
+		},
+		{
+			name:          "full drift: Total line absent or reformatted",
+			reportParsed:  true,
+			hasDuplicates: false,
+			totalParsed:   false,
+			reportedOK:    true,
+			want:          true,
+		},
+		{
+			name:          "count drift: Total line present but count non-numeric",
+			reportParsed:  true,
+			hasDuplicates: false,
+			totalParsed:   true,
+			reportedOK:    false,
+			want:          true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := suspectDrift(tt.reportParsed, tt.hasDuplicates, tt.totalParsed, tt.reportedOK, tt.reportedGroups)
+			if got != tt.want {
+				t.Errorf("suspectDrift(parsed=%v, dups=%v, totalParsed=%v, reportedOK=%v, groups=%d) = %v, want %v",
+					tt.reportParsed, tt.hasDuplicates, tt.totalParsed, tt.reportedOK, tt.reportedGroups, got, tt.want)
+			}
+		})
+	}
+}
+
 // --- Tests: sweepStaleReports ---
 
 func TestSweepStaleReports(t *testing.T) {
