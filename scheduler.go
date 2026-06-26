@@ -48,6 +48,10 @@ const reportTempPattern = "fclones_report_*.txt"
 // not a meaningful phase duration.
 const logKeyDurationS = "duration_s"
 
+// logKeyOutcome is the slog attribute key carrying the classified phaseOutcome
+// on every terminal (non-success) phase log line (timeout, exec-error, shutdown).
+const logKeyOutcome = "outcome"
+
 // cleanStaleReports removes orphaned fclones report temp files left in /cache
 // by a previous scan whose `defer os.Remove` never ran -- e.g. the container
 // was SIGKILLed after the 5s WaitDelay grace, OOM-killed, or lost power
@@ -122,9 +126,29 @@ func markerAction(ctxErr, runErr error) (set, healthy bool) {
 	return true, runErr == nil
 }
 
+// streamAttrs returns the captured-output slog attributes shared by the timeout
+// and exec-error terminal outcomes: the stderr trio (value, total bytes,
+// truncated) plus the stdout trio when stdout was captured (the scan phase
+// streams stdout to the report file and passes nil). Factoring it out of both
+// branches keeps the two terminal outcomes provably emitting one key shape.
+func streamAttrs(stderr, stdout *ioutil.LimitedBuffer) []any {
+	attrs := []any{
+		"stderr", stderr.String(),
+		"stderr_total_bytes", stderr.Total(),
+		"stderr_truncated", stderr.Truncated(),
+	}
+	if stdout != nil {
+		attrs = append(attrs,
+			"stdout", stdout.String(),
+			"stdout_total_bytes", stdout.Total(),
+			"stdout_truncated", stdout.Truncated())
+	}
+	return attrs
+}
+
 // classifyAndLogOutcome classifies a finished subprocess run and logs any terminal
 // (non-success) outcome with the attribute shape shared by the scan and action phases,
-// returning (done, err): done is true for every outcome except OutcomeSuccess, and err is the
+// returning (done, err): done is true for every outcome except outcomeSuccess, and err is the
 // value the phase should return (nil for an expected shutdown). Keeping both phases on this one
 // path stops their log keys, return semantics, and truncation attrs from drifting. The action
 // phase passes its captured stdout buffer (the scan sends stdout to the report file, so it passes
@@ -139,51 +163,42 @@ func classifyAndLogOutcome(
 	extra ...any,
 ) (done bool, err error) {
 	switch outcome := classifyExecOutcome(parent, phaseCtx, runErr); outcome {
-	case OutcomeSuccess:
+	case outcomeSuccess:
 		return false, nil
-	case OutcomeShutdown:
-		log.Info(phase+" interrupted", "reason", outcome.String(),
-			"outcome", outcome, "cause", context.Cause(parent))
+	case outcomeShutdown:
+		attrs := make([]any, 0, 6+len(extra))
+		attrs = append(attrs,
+			"reason", outcome.String(), logKeyOutcome, outcome,
+			"cause", context.Cause(parent),
+		)
+		attrs = append(attrs, extra...)
+		log.Info(phase+" interrupted", attrs...)
 		return true, nil
-	case OutcomeTimeout:
-		attrs := []any{
-			"reason", outcome.String(), "outcome", outcome,
+	case outcomeTimeout:
+		attrs := make([]any, 0, 10+len(extra))
+		attrs = append(attrs,
+			"reason", outcome.String(), logKeyOutcome, outcome,
 			"timeout", timeout, "duration", duration,
 			logKeyDurationS, int(duration.Round(time.Second).Seconds()),
-			"stderr", stderr.String(),
-			"stderr_total_bytes", stderr.Total(),
-			"stderr_truncated", stderr.Truncated(),
-		}
-		if stdout != nil {
-			attrs = append(attrs,
-				"stdout", stdout.String(),
-				"stdout_total_bytes", stdout.Total(),
-				"stdout_truncated", stdout.Truncated())
-		}
+		)
+		attrs = append(attrs, streamAttrs(stderr, stdout)...)
 		attrs = append(attrs, extra...)
 		log.Error(phase+" timeout exceeded", attrs...)
 		return true, fmt.Errorf("%s timeout exceeded after %s", phase, timeout)
-	case OutcomeExecError:
-		attrs := []any{
-			"reason", outcome.String(), "outcome", outcome,
+	case outcomeExecError:
+		attrs := make([]any, 0, 10+len(extra))
+		attrs = append(attrs,
+			"reason", outcome.String(), logKeyOutcome, outcome,
 			"duration", duration,
 			logKeyDurationS, int(duration.Round(time.Second).Seconds()),
 			"error", runErr,
-			"stderr", stderr.String(),
-			"stderr_total_bytes", stderr.Total(),
-			"stderr_truncated", stderr.Truncated(),
-		}
-		if stdout != nil {
-			attrs = append(attrs,
-				"stdout", stdout.String(),
-				"stdout_total_bytes", stdout.Total(),
-				"stdout_truncated", stdout.Truncated())
-		}
+		)
+		attrs = append(attrs, streamAttrs(stderr, stdout)...)
 		attrs = append(attrs, extra...)
 		log.Error(phase+" failed", attrs...)
 		return true, fmt.Errorf("%s exec failed: %w", phase, runErr)
 	default:
-		panic(fmt.Sprintf("unhandled PhaseOutcome: %d", int(outcome)))
+		panic(fmt.Sprintf("unhandled phaseOutcome: %d", int(outcome)))
 	}
 }
 

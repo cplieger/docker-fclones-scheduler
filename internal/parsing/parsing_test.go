@@ -94,6 +94,13 @@ func TestParseStats(t *testing.T) {
 			size:        "200 MB",
 			totalParsed: false,
 		},
+		{
+			name:        "Total line with no count fields returns defaults",
+			input:       "# Total:",
+			groups:      "0",
+			size:        "0 B",
+			totalParsed: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -340,6 +347,20 @@ func TestParseActionSummary(t *testing.T) {
 			wantReclaimed:  0,
 			wantRawContain: "last line",
 		},
+		{
+			name:           "zero files with non-zero reclaim parses both independently",
+			input:          "Processed 0 files and reclaimed 4 B space",
+			wantFiles:      0,
+			wantReclaimed:  4,
+			wantRawContain: "Processed 0 files",
+		},
+		{
+			name:           "negative file count is rejected, reclaim still parsed",
+			input:          "Processed -3 files and reclaimed 4 B space",
+			wantFiles:      0,
+			wantReclaimed:  4,
+			wantRawContain: "Processed",
+		},
 	}
 
 	for _, tt := range tests {
@@ -378,6 +399,7 @@ func TestParseRedundantSize(t *testing.T) {
 		{"unmatched paren", "# Redundant: 5 files (1.2 GB", "5 files"},
 		{"empty parens", "# Redundant: 5 files ()", "5 files"},
 		{"nested parens", "# Redundant: 5 files (1.2 GB (approx))", "1.2 GB (approx"},
+		{"close paren before open paren", "a ) (", "0 B"},
 	}
 
 	for _, tt := range tests {
@@ -672,6 +694,27 @@ func TestParseActionSummary_partialParse(t *testing.T) {
 	}
 }
 
+// TestParseActionSummary_nonNumericFileCount completes the partial-parse
+// contract: the mirror of the existing "non-numeric size" case. When the
+// file-count token is not a number the strconv.Atoi error path leaves Files at
+// 0 while the well-formed reclaimed size is still parsed independently.
+func TestParseActionSummary_nonNumericFileCount(t *testing.T) {
+	t.Parallel()
+
+	const stdout = "Processed many files and reclaimed 4 B space"
+	got := parsing.ParseActionSummary(stdout)
+
+	if got.Files != 0 {
+		t.Errorf("ParseActionSummary(%q).Files = %d, want 0", stdout, got.Files)
+	}
+	if got.ReclaimedBytes != 4 {
+		t.Errorf("ParseActionSummary(%q).ReclaimedBytes = %d, want 4", stdout, got.ReclaimedBytes)
+	}
+	if got.RawLine != stdout {
+		t.Errorf("ParseActionSummary(%q).RawLine = %q, want %q", stdout, got.RawLine, stdout)
+	}
+}
+
 func TestParseHumanBytes(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -833,6 +876,53 @@ func TestParseDuplicateGroups_commentPrefixedPathLinesAreSkipped(t *testing.T) {
 						t.Errorf("group %d Duplicates[%d] = %q, want %q", i, j, got[i].Duplicates[j], tt.want[i].Duplicates[j])
 					}
 				}
+			}
+		})
+	}
+}
+
+// TestProperty_HumanBytesParseHumanBytesRoundTrip verifies that ParseHumanBytes
+// recovers a value formatted by HumanBytes within the one-decimal-mantissa
+// precision HumanBytes can represent (relative error stays well under 10%). It
+// is the value-preserving round-trip that FuzzHumanBytesRoundTrip only gestures
+// at with a non-zero check.
+func TestProperty_HumanBytesParseHumanBytesRoundTrip(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		n := rapid.Int64Range(0, 9223372036854775807).Draw(rt, "n")
+		parsed := parsing.ParseHumanBytes(parsing.HumanBytes(n))
+		diff := parsed - n
+		if diff < 0 {
+			diff = -diff
+		}
+		if float64(diff) > 0.1*float64(n) {
+			rt.Fatalf("HumanBytes(%d) round-trips to %d, exceeding 10%% tolerance", n, parsed)
+		}
+	})
+}
+
+// TestParseHumanBytes_overflowBoundary pins floatToInt64's out-of-range guard at
+// the exact boundary. float64(math.MaxInt64) rounds up to 2^63
+// (9223372036854775808) and ParseFloat reproduces that power of two exactly, so
+// "9223372036854775808 B" drives the converted value to precisely the guard
+// value, which must clamp to 0. The largest float64 strictly below 2^63
+// (9223372036854774784) must pass through unchanged.
+func TestParseHumanBytes_overflowBoundary(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want int64
+	}{
+		{"exactly 2^63 bytes clamps to zero", "9223372036854775808 B", 0},
+		{"MaxInt64 string rounds up to 2^63 and clamps", "9223372036854775807 B", 0},
+		{"largest float64 below 2^63 passes through", "9223372036854774784 B", 9223372036854774784},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parsing.ParseHumanBytes(tt.in); got != tt.want {
+				t.Errorf("ParseHumanBytes(%q) = %d, want %d", tt.in, got, tt.want)
 			}
 		})
 	}

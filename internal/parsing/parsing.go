@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// DefaultSizeStr is the fallback size string when no duplicates are found.
-const DefaultSizeStr = "0 B"
+// defaultSizeStr is the fallback size string when no duplicates are found.
+const defaultSizeStr = "0 B"
 
 // Stats holds parsed statistics from fclones output.
 type Stats struct {
@@ -45,7 +45,7 @@ type ActionSummary struct {
 // "# Redundant:" stat. The returned Stats are advisory (logging and Grafana alerting
 // only) and never drive file operations, so this is an accepted log-integrity tradeoff.
 func ParseStats(output string) Stats {
-	stats := Stats{Groups: "0", Size: DefaultSizeStr}
+	stats := Stats{Groups: "0", Size: defaultSizeStr}
 
 	for line := range strings.SplitSeq(output, "\n") {
 		switch {
@@ -75,7 +75,7 @@ func parseRedundantSize(line string) string {
 	if parts := strings.Fields(line); len(parts) >= 4 {
 		return parts[2] + " " + parts[3]
 	}
-	return DefaultSizeStr
+	return defaultSizeStr
 }
 
 // isGroupHeader reports whether a line is an fclones group header like
@@ -86,6 +86,54 @@ func isGroupHeader(line string) bool {
 		strings.HasSuffix(line, ":")
 }
 
+// groupParser carries the mutable accounting for ParseDuplicateGroups as it
+// scans an fclones report line by line.
+type groupParser struct {
+	groups  []DuplicateGroup
+	current DuplicateGroup
+	inGroup bool
+}
+
+// flush finalizes the current group, keeping it only when it collected at
+// least one duplicate, then resets the accumulator for the next group.
+func (p *groupParser) flush() {
+	if p.inGroup && len(p.current.Duplicates) > 0 {
+		p.groups = append(p.groups, p.current)
+	}
+	p.current = DuplicateGroup{}
+	p.inGroup = false
+}
+
+// step feeds one report line into the parser, updating its accounting.
+func (p *groupParser) step(line string) {
+	if strings.HasPrefix(line, "#") {
+		return
+	}
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		p.flush()
+		return
+	}
+	if !p.inGroup {
+		if isGroupHeader(line) {
+			p.current.SizePerDup = extractGroupSize(line)
+			p.inGroup = true
+		}
+		return
+	}
+	// Once in a group, every non-blank line is a path until the blank-line
+	// flush ends the group. Header detection is deliberately NOT re-run here:
+	// fclones separates groups with a blank line, so a duplicate filename that
+	// embeds the header delimiters (',', '*', trailing ':') must not be
+	// reclassified as a new group header. Do not add an isGroupHeader check in
+	// this branch.
+	if p.current.Keeper == "" {
+		p.current.Keeper = trimmed
+	} else {
+		p.current.Duplicates = append(p.current.Duplicates, trimmed)
+	}
+}
+
 // ParseDuplicateGroups parses an fclones custom-format report into structured
 // groups. Each group header looks like:
 //
@@ -94,48 +142,12 @@ func isGroupHeader(line string) bool {
 // followed by one path per line (one "keeper" and one or more duplicates),
 // terminated by a blank line.
 func ParseDuplicateGroups(report string) []DuplicateGroup {
-	var groups []DuplicateGroup
-	var current DuplicateGroup
-	inGroup := false
-
-	flush := func() {
-		if inGroup && len(current.Duplicates) > 0 {
-			groups = append(groups, current)
-		}
-		current = DuplicateGroup{}
-		inGroup = false
-	}
-
+	var p groupParser
 	for line := range strings.SplitSeq(report, "\n") {
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			flush()
-			continue
-		}
-		if !inGroup {
-			if isGroupHeader(line) {
-				current.SizePerDup = extractGroupSize(line)
-				inGroup = true
-			}
-			continue
-		}
-		// Once in a group, every non-blank line is a path until the blank-line
-		// flush ends the group. Header detection is deliberately NOT re-run here:
-		// fclones separates groups with a blank line, so a duplicate filename that
-		// embeds the header delimiters (',', '*', trailing ':') must not be
-		// reclassified as a new group header. Do not add an isGroupHeader check in
-		// this branch.
-		if current.Keeper == "" {
-			current.Keeper = trimmed
-		} else {
-			current.Duplicates = append(current.Duplicates, trimmed)
-		}
+		p.step(line)
 	}
-	flush()
-	return groups
+	p.flush()
+	return p.groups
 }
 
 // extractGroupSize pulls the single-file size from a group header.
@@ -148,6 +160,24 @@ func extractGroupSize(header string) string {
 		h = h[idx+1:]
 	}
 	return strings.TrimSpace(h)
+}
+
+// reclaimedMetrics parses the file count and reclaimed byte total from a
+// trimmed "Processed <files> files and reclaimed <num> <unit> [space]" line.
+// Token positions in that documented shape: fields[1]=file count,
+// fields[5]=reclaimed number, fields[6]=unit. The >= 7 check guarantees
+// fields[6] exists; the trailing "space" word is optional, so a 7-field line
+// still parses. A non-numeric or negative file count leaves files at 0 while
+// the reclaimed size is parsed independently.
+func reclaimedMetrics(rawLine string) (files int, reclaimedBytes int64) {
+	fields := strings.Fields(rawLine)
+	if len(fields) < 7 {
+		return 0, 0
+	}
+	if n, err := strconv.Atoi(fields[1]); err == nil && n >= 0 {
+		files = n
+	}
+	return files, parseHumanBytes(fields[5] + " " + fields[6])
 }
 
 // ParseActionSummary extracts structured metrics from fclones action stdout.
@@ -164,18 +194,7 @@ func ParseActionSummary(stdout string) ActionSummary {
 		if idx := strings.Index(line, "Processed"); idx != -1 &&
 			strings.Contains(line, "reclaimed") {
 			summary.RawLine = strings.TrimSpace(line[idx:])
-			fields := strings.Fields(summary.RawLine)
-			// Token positions in the documented shape
-			// "Processed <files> files and reclaimed <num> <unit> space":
-			// fields[1]=file count, fields[5]=reclaimed number, fields[6]=unit.
-			// The >= 7 guard guarantees fields[6] exists; the trailing "space"
-			// word is optional, so a 7-field line still parses.
-			if len(fields) >= 7 {
-				if n, err := strconv.Atoi(fields[1]); err == nil && n >= 0 {
-					summary.Files = n
-				}
-				summary.ReclaimedBytes = parseHumanBytes(fields[5] + " " + fields[6])
-			}
+			summary.Files, summary.ReclaimedBytes = reclaimedMetrics(summary.RawLine)
 			return summary
 		}
 	}

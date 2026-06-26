@@ -15,13 +15,19 @@ The Go module is `github.com/cplieger/fclones-wrapper`; the built binary is
 - `main.go` — composition root. Dispatches the `health` and `scan`
   subcommands and the default long-running daemon, and wires config plus the
   health marker (`health.NewMarker` from `github.com/cplieger/health`). The
-  daemon splits into `runBuiltin` (a startup scan plus a `time.Ticker` loop)
-  and `runExternal` (idle until signalled); `runScan` is the one-shot
-  `scan`-subcommand path. Shutdown is driven by `signal.NotifyContext`
+  daemon dispatches on `config.Mode` (derived from `FCLONES_INTERVAL`):
+  `runBuiltin` (a startup scan plus a `time.Ticker` loop), `runExternal` (idle
+  until signalled, scans triggered out-of-band), and `runOnce` (a single
+  scan+action, then exit — `FCLONES_INTERVAL=0`); `runScan` is the separate
+  one-shot `scan`-subcommand path. Shutdown is driven by `signal.NotifyContext`
   (SIGTERM/SIGINT) and a `sync.WaitGroup` that drains in-flight scans.
 - `config.go` — environment loading (`loadConfig`), logger setup
-  (`setupLogger`), the `FCLONES_ACTION` allowlist (`parseAction`), and the
-  dangerous-flag rejection (`rejectDangerousArgs`).
+  (`setupLogger`), the `FCLONES_ACTION` allowlist (`parseAction`), the
+  dangerous-flag rejection (`rejectDangerousArgs`), and the `FCLONES_INTERVAL`
+  interpreter (`parseInterval` → interval + `runMode`: a positive duration runs
+  built-in, `off`/`disabled` idles, `0`/`0s` runs once, and an empty,
+  unparseable, or negative value warns and falls back to the `3h` default
+  cadence rather than disabling scans).
 - `scheduler.go` — the two-phase run (`runFclonesJob`): `fclones group` scan
   (`buildScanArgs`) then the dedup action (`buildActionArgs` /
   `runFclonesAction`). The action-decision logic (`shouldRunAction` /

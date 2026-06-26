@@ -159,6 +159,67 @@ func TestLimitedBufferNotTruncatedBelowMax(t *testing.T) {
 	}
 }
 
+// TestLimitedBufferWriteFillsExactRemaining locks the exact-fill boundary: a
+// Write whose length equals the remaining room must store all of it, bringing
+// the buffer to exactly Max with nothing discarded.
+func TestLimitedBufferWriteFillsExactRemaining(t *testing.T) {
+	t.Parallel()
+	lb := &ioutil.LimitedBuffer{Max: 10}
+
+	// Partially fill so the remaining room is a non-trivial 7 bytes.
+	if n, err := lb.Write([]byte("abc")); err != nil || n != 3 {
+		t.Fatalf("setup Write(%q) = (%d, %v), want (3, nil)", "abc", n, err)
+	}
+
+	// Write exactly the remaining room (10 - 3 = 7) bytes.
+	n, err := lb.Write([]byte("defghij"))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n != 7 {
+		t.Errorf("Write returned n=%d, want 7", n)
+	}
+	if got := lb.String(); got != "abcdefghij" {
+		t.Errorf("String() = %q, want %q (filled to exactly Max)", got, "abcdefghij")
+	}
+	if lb.Truncated() {
+		t.Errorf("Truncated() = true, want false (total 10 == Max, nothing discarded)")
+	}
+}
+
+// TestLimitedBufferWriteAfterMaxLoweredStoresNothing locks the negative-room
+// boundary: lowering Max below the current buffer length makes the available
+// room negative, which must clamp to zero so a further Write stores nothing
+// without panicking.
+func TestLimitedBufferWriteAfterMaxLoweredStoresNothing(t *testing.T) {
+	t.Parallel()
+	lb := &ioutil.LimitedBuffer{Max: 10}
+
+	if n, err := lb.Write([]byte("0123456789")); err != nil || n != 10 {
+		t.Fatalf("setup Write = (%d, %v), want (10, nil)", n, err)
+	}
+
+	// Lower Max below the current length: Max - buf.Len() is now negative.
+	lb.Max = 4
+
+	n, err := lb.Write([]byte("more"))
+	if err != nil {
+		t.Fatalf("Write after Max lowered: %v", err)
+	}
+	if n != 4 {
+		t.Errorf("Write after Max lowered n=%d, want 4 (full input length)", n)
+	}
+	if got := lb.String(); got != "0123456789" {
+		t.Errorf("String() = %q, want %q (frozen; negative room stores nothing)", got, "0123456789")
+	}
+	if got, want := lb.Total(), 14; got != want {
+		t.Errorf("Total() = %d, want %d (10 stored + 4 discarded)", got, want)
+	}
+	if !lb.Truncated() {
+		t.Errorf("Truncated() = false, want true (total 14 exceeds lowered Max 4)")
+	}
+}
+
 func TestProperty_LimitedBufferInvariants(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -720,4 +781,35 @@ func TestFilteringWriterCapNotTrippedAtExactBoundary(t *testing.T) {
 	if out.Len() != maxLine+1 {
 		t.Errorf("sink got %d bytes after crossing the cap, want %d", out.Len(), maxLine+1)
 	}
+}
+
+func TestProperty_ReadFileWithLimitMatchesFileSize(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		content := rapid.SliceOfN(rapid.Byte(), 0, 4096).Draw(rt, "content")
+		limit := int64(rapid.IntRange(0, 8192).Draw(rt, "limit"))
+
+		path := filepath.Join(t.TempDir(), "data.bin")
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			rt.Fatalf("WriteFile: %v", err)
+		}
+
+		data, err := ioutil.ReadFileWithLimit(path, limit)
+
+		if int64(len(content)) <= limit {
+			if err != nil {
+				rt.Fatalf("ReadFileWithLimit(%d-byte file, limit=%d) = err %v, want nil", len(content), limit, err)
+			}
+			if !bytes.Equal(data, content) {
+				rt.Fatalf("ReadFileWithLimit returned %d bytes, want the %d-byte file content verbatim", len(data), len(content))
+			}
+		} else {
+			if err == nil {
+				rt.Fatalf("ReadFileWithLimit(%d-byte file, limit=%d) = nil error, want an over-limit error", len(content), limit)
+			}
+			if data != nil {
+				rt.Fatalf("ReadFileWithLimit over-limit returned %d bytes, want nil data alongside the error", len(data))
+			}
+		}
+	})
 }

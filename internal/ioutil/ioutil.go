@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 )
@@ -29,6 +30,13 @@ func NewFilteringWriter(w io.Writer) *FilteringWriter {
 }
 
 // filteredPatterns lists all substrings that mark a line as noise to suppress.
+//
+// Matched with strings.Contains (not HasPrefix): real fclones lines carry a leading
+// "[timestamp] fclones:  <level>:" prefix, so the noise marker appears mid-line. Each
+// pattern includes the "info:" level tag so it only matches info-level progress lines.
+// Contains means any future info-level line embedding one of these substrings would also
+// be dropped from logs; scan stats are unaffected (parsed from the stdout report, not
+// filtered stderr). Re-audit this list on a FCLONES_VERSION bump (see CONTRIBUTING.md).
 var filteredPatterns = []string{
 	"doesn't support FIEMAP ioctl API",
 	"info: Started grouping",
@@ -157,8 +165,17 @@ func ReadFileWithLimit(path string, maxBytes int64) ([]byte, error) {
 	// Read one byte past the limit (maxBytes+1) so an oversized file is detected
 	// rather than silently truncated to maxBytes. The length re-check below turns
 	// that extra byte into an error and also closes the TOCTOU gap where the file
-	// grew between the Stat check above and this read.
-	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	// grew between the Stat check above and this read. Guard the +1 against int64
+	// overflow: at maxBytes == math.MaxInt64 the +1 would wrap to a negative value,
+	// which io.LimitReader treats as immediate EOF (silently returning empty data).
+	// No file can exceed that cap anyway (Stat already rejected info.Size() >
+	// maxBytes, and a file cannot exceed MaxInt64 bytes), so read up to MaxInt64
+	// without the extra byte.
+	limit := maxBytes
+	if limit < math.MaxInt64 {
+		limit++ // read one past the cap to detect oversize / TOCTOU growth
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit))
 	if err != nil {
 		return nil, err
 	}

@@ -27,7 +27,7 @@ func tryLock(path string) (l *fileLock, ok bool, err error) {
 		return nil, false, err
 	}
 	if lockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); lockErr != nil {
-		f.Close()
+		_ = f.Close()
 		if errors.Is(lockErr, syscall.EWOULDBLOCK) {
 			return nil, false, nil
 		}

@@ -1,5 +1,9 @@
 // Package args parses a shell-style argument string into a slice of tokens,
-// honouring single and double quotes and backslash escapes.
+// honouring single and double quotes and backslash escapes. Unlike a POSIX
+// shell, a backslash escapes the next rune even inside single quotes, so a
+// literal backslash inside single quotes must be doubled (write '\\d+' for
+// the regex \d+). Applies to FCLONES_ARGS, FCLONES_ACTION_ARGS, and
+// FCLONES_SCAN_PATHS.
 package args
 
 import (
