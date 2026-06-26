@@ -1,6 +1,7 @@
 package ioutil_test
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,8 +90,17 @@ func FuzzReadFileWithLimit(f *testing.F) {
 	f.Add([]byte("exact"), int64(5))
 	f.Add([]byte("over the limit"), int64(1))
 	f.Add([]byte(strings.Repeat("x", 70000)), int64(65536))
+	f.Add([]byte("near-max"), int64(math.MaxInt64))
+	f.Add([]byte("near-max-1"), int64(math.MaxInt64-1))
+	f.Add([]byte("neg"), int64(-1))
 	f.Fuzz(func(t *testing.T, content []byte, limit int64) {
-		limit &= (1 << 20) - 1
+		// Bound the on-disk fixture (not the limit): cap the file at 1 MiB so
+		// the temp write stays cheap, while leaving `limit` fully fuzzable across
+		// the int64 range so the coverage-guided run can reach the MaxInt64
+		// overflow guard and the negative-limit rejection path.
+		if len(content) > 1<<20 {
+			content = content[:1<<20]
+		}
 
 		path := filepath.Join(t.TempDir(), "data.bin")
 		if err := os.WriteFile(path, content, 0o644); err != nil {

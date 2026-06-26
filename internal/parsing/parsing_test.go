@@ -927,3 +927,32 @@ func TestParseHumanBytes_overflowBoundary(t *testing.T) {
 		})
 	}
 }
+
+// TestParseActionSummary_shortReclaimLineNoPanic pins the
+// `len(fields) < 7` early return in reclaimedMetrics, reached via
+// ParseActionSummary. A line containing both "Processed" and
+// "reclaimed" but with fewer than seven fields enters the
+// metric-extraction block, so reclaimedMetrics is invoked and must
+// return zero metrics WITHOUT indexing fields[5]/fields[6] out of
+// range. Removing or widening the guard panics on this input.
+func TestParseActionSummary_shortReclaimLineNoPanic(t *testing.T) {
+	t.Parallel()
+
+	// given a line with both keywords but only four fields
+	const stdout = "Processed 5 reclaimed something"
+
+	// when the action summary is parsed
+	got := parsing.ParseActionSummary(stdout)
+
+	// then the short-field guard yields zero metrics (no panic)
+	// and the matched line is still recorded verbatim
+	if got.Files != 0 {
+		t.Errorf("ParseActionSummary(%q).Files = %d, want 0", stdout, got.Files)
+	}
+	if got.ReclaimedBytes != 0 {
+		t.Errorf("ParseActionSummary(%q).ReclaimedBytes = %d, want 0", stdout, got.ReclaimedBytes)
+	}
+	if got.RawLine != stdout {
+		t.Errorf("ParseActionSummary(%q).RawLine = %q, want %q", stdout, got.RawLine, stdout)
+	}
+}
