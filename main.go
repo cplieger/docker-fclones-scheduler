@@ -137,7 +137,7 @@ func runBuiltin(ctx context.Context, marker *health.Marker, cfg *config) {
 	marker.Set(false)
 
 	slog.Info("container started (built-in scheduling)",
-		"uid", os.Getuid(), "interval", cfg.Interval,
+		"uid", os.Getuid(), "mode", cfg.Mode, "interval", cfg.Interval,
 		"target", cfg.ScanPath, "action", cfg.Action,
 		"phase_timeout", cfg.PhaseTimeout)
 
@@ -195,7 +195,7 @@ func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
 	marker.Set(false)
 
 	slog.Info("container started (run once)",
-		"uid", os.Getuid(), "target", cfg.ScanPath, "action", cfg.Action,
+		"uid", os.Getuid(), "mode", cfg.Mode, "target", cfg.ScanPath, "action", cfg.Action,
 		"phase_timeout", cfg.PhaseTimeout)
 
 	ran, err := runFclonesJob(ctx, marker, cfg, "once", defaultCommandRunner)
@@ -219,6 +219,7 @@ func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
 		// a batch orchestrator treats the cut-short run as a failure, not a success.
 		return fmt.Errorf("run-once interrupted before completion: %w", context.Cause(ctx))
 	default:
+		slog.Info("run once complete", "outcome", "success")
 		return nil
 	}
 }
@@ -233,7 +234,7 @@ func runExternal(ctx context.Context, marker *health.Marker, cfg *config) {
 	marker.Set(true)
 
 	slog.Info("container started (external scheduling)",
-		"uid", os.Getuid(), "target", cfg.ScanPath, "action", cfg.Action,
+		"uid", os.Getuid(), "mode", cfg.Mode, "target", cfg.ScanPath, "action", cfg.Action,
 		"phase_timeout", cfg.PhaseTimeout, "trigger", "wrapper scan")
 
 	<-ctx.Done()
