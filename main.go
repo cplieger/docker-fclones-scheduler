@@ -194,6 +194,11 @@ func runScan(ctx context.Context) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Reclaim report temp files orphaned by a prior hard-killed `scan` that the idle
+	// external-mode daemon never sweeps. Holds the scan lock, so it skips when a scan
+	// is in flight and never unlinks a live report.
+	cleanStaleReports()
+
 	// Deliberately no `defer marker.Cleanup()` (unlike run): the marker file
 	// must persist so the running container's healthcheck reflects this run.
 	return runFclonesJob(ctx, marker, &cfg, "external", defaultCommandRunner)

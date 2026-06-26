@@ -595,3 +595,24 @@ func TestSetupLoggerLevels(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyDirParentNotADirectory(t *testing.T) {
+	t.Parallel()
+	// A regular file standing in for a parent path component makes the write
+	// probe's os.MkdirAll fail with ENOTDIR, exercising the mkdir-error branch --
+	// the symmetric counterpart to TestVerifyDirReadOnly's create-error path.
+	parent := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(parent, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: os.WriteFile: %v", err)
+	}
+	target := filepath.Join(parent, "child")
+
+	err := verifyDir(context.Background(), target, 5*time.Second)
+
+	if err == nil {
+		t.Fatalf("verifyDir(%q) error = nil, want a mkdir error when a parent path component is a regular file", target)
+	}
+	if !strings.Contains(err.Error(), "mkdir") {
+		t.Errorf("verifyDir(%q) error = %q, want it to contain \"mkdir\"", target, err)
+	}
+}

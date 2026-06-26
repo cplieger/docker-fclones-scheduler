@@ -694,3 +694,30 @@ func TestFilteringWriterClosePropagatesSinkError(t *testing.T) {
 		t.Errorf("sink.Write called %d times during Close, want 1", sink.calls)
 	}
 }
+
+func TestFilteringWriterCapNotTrippedAtExactBoundary(t *testing.T) {
+	t.Parallel()
+
+	const maxLine = 1 << 20 // mirrors maxLineBytes
+
+	var out bytes.Buffer
+	fw := ioutil.NewFilteringWriter(&out)
+
+	// A no-newline run of exactly maxLineBytes must NOT trip the cap: the guard
+	// is `len(fw.buf) > maxLineBytes`, so the buffer is held (not flushed) until
+	// it strictly exceeds the cap.
+	if _, err := fw.Write(bytes.Repeat([]byte("x"), maxLine)); err != nil {
+		t.Fatalf("Write(exact-cap): %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("sink got %d bytes after an exactly-maxLineBytes write, want 0 (cap not yet exceeded)", out.Len())
+	}
+
+	// One more no-newline byte pushes the buffer strictly past the cap, flushing.
+	if _, err := fw.Write([]byte("y")); err != nil {
+		t.Fatalf("Write(+1): %v", err)
+	}
+	if out.Len() != maxLine+1 {
+		t.Errorf("sink got %d bytes after crossing the cap, want %d", out.Len(), maxLine+1)
+	}
+}

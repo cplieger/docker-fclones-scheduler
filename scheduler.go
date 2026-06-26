@@ -104,6 +104,61 @@ func markerAction(ctxErr, runErr error) (set, healthy bool) {
 	return true, runErr == nil
 }
 
+// classifyAndLogOutcome classifies a finished subprocess run and logs any terminal
+// (non-success) outcome with the attribute shape shared by the scan and action phases,
+// returning (done, err): done is true for every outcome except OutcomeSuccess, and err is the
+// value the phase should return (nil for an expected shutdown). Keeping both phases on this one
+// path stops their log keys, return semantics, and truncation attrs from drifting. The action
+// phase passes its captured stdout buffer (the scan sends stdout to the report file, so it passes
+// nil) and any phase-specific attrs via extra.
+func classifyAndLogOutcome(
+	parent, phaseCtx context.Context,
+	log *slog.Logger,
+	phase string,
+	runErr error,
+	timeout, duration time.Duration,
+	stderr, stdout *ioutil.LimitedBuffer,
+	extra ...any,
+) (done bool, err error) {
+	switch outcome := classifyExecOutcome(parent, phaseCtx, runErr); outcome {
+	case OutcomeSuccess:
+		return false, nil
+	case OutcomeShutdown:
+		log.Info(phase+" interrupted", "reason", outcome.String(),
+			"outcome", outcome, "cause", context.Cause(parent))
+		return true, nil
+	case OutcomeTimeout:
+		attrs := append([]any{
+			"reason", outcome.String(), "outcome", outcome,
+			"timeout", timeout, "duration", duration,
+			"stderr", stderr.String(),
+			"stderr_total_bytes", stderr.Total(),
+			"stderr_truncated", stderr.Truncated(),
+		}, extra...)
+		log.Error(phase+" timeout exceeded", attrs...)
+		return true, fmt.Errorf("%s timeout exceeded after %s", phase, timeout)
+	case OutcomeExecError:
+		attrs := []any{
+			"reason", outcome.String(), "outcome", outcome,
+			"duration", duration, "error", runErr,
+			"stderr", stderr.String(),
+			"stderr_total_bytes", stderr.Total(),
+			"stderr_truncated", stderr.Truncated(),
+		}
+		if stdout != nil {
+			attrs = append(attrs,
+				"stdout", stdout.String(),
+				"stdout_total_bytes", stdout.Total(),
+				"stdout_truncated", stdout.Truncated())
+		}
+		attrs = append(attrs, extra...)
+		log.Error(phase+" failed", attrs...)
+		return true, fmt.Errorf("%s exec failed: %w", phase, runErr)
+	default:
+		panic(fmt.Sprintf("unhandled PhaseOutcome: %d", int(outcome)))
+	}
+}
+
 func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trigger string, newCmd commandRunner) (err error) {
 	lock, ok, lockErr := tryLock(lockFile)
 	if lockErr != nil {
@@ -171,34 +226,11 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 
 	duration := time.Since(startTime)
 
-	outcome := classifyExecOutcome(ctx, scanCtx, runErr)
-	switch outcome {
-	case OutcomeTimeout:
-		log.Error("scan timeout exceeded", "reason", "timeout",
-			"outcome", outcome,
-			"timeout", cfg.PhaseTimeout, "duration", duration,
-			"stderr", errBuf.String(),
-			"stderr_total_bytes", errBuf.Total(),
-			"stderr_truncated", errBuf.Truncated())
-		return fmt.Errorf("scan timeout exceeded after %s", cfg.PhaseTimeout)
-	case OutcomeShutdown:
-		log.Info("scan interrupted", "reason", "shutdown",
-			"outcome", outcome,
-			"cause", context.Cause(ctx))
-		return nil
-	case OutcomeExecError:
-		log.Error("scan failed", "reason", "exec_error",
-			"outcome", outcome,
-			"duration", duration, "error", runErr,
-			"stderr", errBuf.String(),
-			"stderr_total_bytes", errBuf.Total(),
-			"stderr_truncated", errBuf.Truncated())
-		return fmt.Errorf("scan exec failed: %w", runErr)
-	case OutcomeSuccess:
-		// continue to report parsing
-	default:
-		panic(fmt.Sprintf("unhandled PhaseOutcome: %d", int(outcome)))
+	if done, phaseErr := classifyAndLogOutcome(ctx, scanCtx, log, "scan", runErr,
+		cfg.PhaseTimeout, duration, errBuf, nil); done {
+		return phaseErr
 	}
+	// success: continue to report parsing
 
 	outputBytes, readErr := ioutil.ReadFileWithLimit(tmpPath, outputCapBytes)
 	reportParsed := readErr == nil
@@ -430,43 +462,25 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 	runErr := actionCmd.Run()
 	duration := time.Since(startTime)
 	actionFilter.Flush()
-	outcome := classifyExecOutcome(ctx, actionCtx, runErr)
-	switch outcome {
-	case OutcomeTimeout:
-		log.Error("action timeout exceeded",
-			"reason", "timeout",
-			"outcome", outcome,
-			"action", cfg.Action, "timeout", cfg.PhaseTimeout, "duration", duration,
-			"stderr", actionStderr.String(),
-			"stderr_total_bytes", actionStderr.Total(),
-			"stderr_truncated", actionStderr.Truncated())
-		return fmt.Errorf("action timeout exceeded after %s", cfg.PhaseTimeout)
-	case OutcomeShutdown:
-		log.Info("action interrupted", "reason", "shutdown",
-			"outcome", outcome,
-			"cause", context.Cause(ctx))
-		return nil
-	case OutcomeExecError:
-		log.Error("action failed",
-			"reason", "exec_error",
-			"outcome", outcome,
-			"action", cfg.Action, "duration", duration, "error", runErr,
-			"stderr", actionStderr.String(),
-			"stderr_total_bytes", actionStderr.Total(),
-			"stderr_truncated", actionStderr.Truncated(),
-			"stdout", actionStdout.String(),
-			"stdout_total_bytes", actionStdout.Total(),
-			"stdout_truncated", actionStdout.Truncated())
-		return fmt.Errorf("action exec failed: %w", runErr)
-	case OutcomeSuccess:
-		// continue to summary parsing
-	default:
-		panic(fmt.Sprintf("unhandled PhaseOutcome: %d", int(outcome)))
+	if done, phaseErr := classifyAndLogOutcome(ctx, actionCtx, log, "action", runErr,
+		cfg.PhaseTimeout, duration, actionStderr, actionStdout, "action", cfg.Action); done {
+		return phaseErr
 	}
+	// success: continue to summary parsing
 
 	summary := parsing.ParseActionSummary(actionStderr.String())
 	if summary.RawLine == "" {
 		summary = parsing.ParseActionSummary(actionStdout.String())
+	}
+
+	if actionStdout.Truncated() || actionStderr.Truncated() {
+		log.Warn("action output exceeded capture cap; summary stats may be incomplete",
+			"action", cfg.Action,
+			"stdout_total_bytes", actionStdout.Total(),
+			"stdout_truncated", actionStdout.Truncated(),
+			"stderr_total_bytes", actionStderr.Total(),
+			"stderr_truncated", actionStderr.Truncated(),
+			"cap_bytes", streamCapBytes)
 	}
 
 	attrs := []any{

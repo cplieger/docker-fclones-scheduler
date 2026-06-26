@@ -120,10 +120,10 @@ Overlapping scans are prevented in both modes by an advisory file lock (`flock`)
 
 ### Volumes
 
-| Mount      | Description                                                                                                                                                                          |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `/scandir` | Directory to scan for duplicate files. Must match the paths in `FCLONES_SCAN_PATHS`. You can mount multiple directories and list them all in `FCLONES_SCAN_PATHS` (space-separated). |
-| `/cache`   | fclones cache and state directory                                                                                                                                                    |
+| Mount      | Description                                                                                                                                                                                                                                                                                                                            |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/scandir` | Directory to scan for duplicate files. Must match the paths in `FCLONES_SCAN_PATHS` (space-separated for multiple mounts). The `group` action needs read access only; **`link`/`remove`/`dedupe` modify files here, so `/scandir` must be writable by the `user:` UID** (not a `:ro` mount) for those actions.                         |
+| `/cache`   | fclones cache and state directory. **Must be writable by the UID set in `user:`** (the example uses `1000:1000`). The wrapper write-probes `/cache` at startup; if it is read-only or owned by another UID the container logs `cache directory verification failed uid=<n>` and exits (crash-looping under `restart: unless-stopped`). |
 
 ## Healthcheck
 

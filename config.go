@@ -158,6 +158,14 @@ func loadConfig() (config, error) {
 		}
 	}
 
+	// A whitespace- or quote-only FCLONES_SCAN_PATHS parses to zero tokens, so fclones
+	// would run with no scan target. Warn at startup so the cause is obvious instead of
+	// surfacing later as a cryptic exec error.
+	if parsed, perr := args.Parse(scanPaths); perr == nil && len(parsed) == 0 {
+		slog.Warn("FCLONES_SCAN_PATHS resolved to no scan targets; fclones will have no path to scan",
+			"value", scanPaths)
+	}
+
 	timeoutStr := getEnv("FCLONES_SCAN_TIMEOUT", "12h")
 	scanTimeout, err := time.ParseDuration(timeoutStr)
 	if err != nil {
@@ -175,44 +183,9 @@ func loadConfig() (config, error) {
 		return config{}, fmt.Errorf("invalid FCLONES_SCAN_TIMEOUT %q: must be zero (no timeout) or positive", timeoutStr)
 	}
 
-	// FCLONES_INTERVAL is a Go duration (e.g., "1h", "30m", "12h") that
-	// sets the built-in scan cadence. The sentinels "off", "disabled", or
-	// any zero duration ("0", "0s") disable the built-in scheduler; the
-	// container then idles and scans are triggered via the `scan`
-	// subcommand by an external scheduler. On any other parse failure the
-	// loader falls back to defaultInterval and logs a warning rather than
-	// refusing to start, keeping the container scanning on a reasonable
-	// cadence even with a malformed env block.
-	interval := defaultInterval
-	scheduleEnabled := true
-	if raw := strings.TrimSpace(os.Getenv("FCLONES_INTERVAL")); raw != "" {
-		switch strings.ToLower(raw) {
-		case "off", "disabled":
-			scheduleEnabled = false
-		default:
-			if d, perr := time.ParseDuration(raw); perr == nil {
-				switch {
-				case d > 0:
-					interval = d
-				case d == 0:
-					// Zero duration ("0", "0s") is a documented disable sentinel.
-					scheduleEnabled = false
-				default:
-					// A negative duration is almost certainly a typo (e.g.
-					// "-1h" for "1h"). Disable scheduling like zero, but warn:
-					// otherwise the container silently idles in no-scan mode,
-					// unlike the unparseable path which already warns and keeps
-					// scanning on the default cadence.
-					scheduleEnabled = false
-					slog.Warn("negative FCLONES_INTERVAL disables built-in scheduling; use a positive duration or 'off'",
-						"value", raw)
-				}
-			} else {
-				slog.Warn("cannot parse FCLONES_INTERVAL, using default",
-					"value", raw, "default", defaultInterval)
-			}
-		}
-	}
+	// FCLONES_INTERVAL sets the built-in scan cadence; see parseInterval for the
+	// sentinel ("off"/"disabled"/zero/negative) and fallback rules.
+	interval, scheduleEnabled := parseInterval(os.Getenv("FCLONES_INTERVAL"))
 
 	return config{
 		Interval:        interval,
@@ -223,6 +196,41 @@ func loadConfig() (config, error) {
 		ActionArgs:      actionArgs,
 		PhaseTimeout:    scanTimeout,
 	}, nil
+}
+
+// parseInterval interprets FCLONES_INTERVAL into the built-in scan interval and whether the
+// built-in scheduler is enabled. "off"/"disabled" and any zero or negative duration disable
+// scheduling (a negative value is a likely typo and is warned about); an empty or unparseable
+// non-sentinel value falls back to defaultInterval with scheduling enabled so the container keeps
+// scanning. Mirrors the sibling schedulers' interval helpers (e.g. pg-autodump loadInterval).
+func parseInterval(raw string) (interval time.Duration, scheduleEnabled bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultInterval, true
+	}
+	switch strings.ToLower(raw) {
+	case "off", "disabled":
+		return defaultInterval, false
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		slog.Warn("cannot parse FCLONES_INTERVAL, using default",
+			"value", raw, "default", defaultInterval)
+		return defaultInterval, true
+	}
+	switch {
+	case d > 0:
+		return d, true
+	case d == 0:
+		// Zero duration ("0", "0s") is a documented disable sentinel.
+		return defaultInterval, false
+	default:
+		// A negative duration is almost certainly a typo (e.g. "-1h" for "1h").
+		// Disable scheduling like zero, but warn.
+		slog.Warn("negative FCLONES_INTERVAL disables built-in scheduling; use a positive duration or 'off'",
+			"value", raw)
+		return defaultInterval, false
+	}
 }
 
 func getEnv(key, fallback string) string {

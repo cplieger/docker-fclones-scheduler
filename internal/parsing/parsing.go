@@ -153,6 +153,11 @@ func ParseActionSummary(stdout string) ActionSummary {
 			strings.Contains(line, "reclaimed") {
 			summary.RawLine = strings.TrimSpace(line[idx:])
 			fields := strings.Fields(summary.RawLine)
+			// Token positions in the documented shape
+			// "Processed <files> files and reclaimed <num> <unit> space":
+			// fields[1]=file count, fields[5]=reclaimed number, fields[6]=unit.
+			// The >= 7 guard guarantees fields[6] exists; the trailing "space"
+			// word is optional, so a 7-field line still parses.
 			if len(fields) >= 7 {
 				if n, err := strconv.Atoi(fields[1]); err == nil && n >= 0 {
 					summary.Files = n
