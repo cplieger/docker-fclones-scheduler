@@ -1,6 +1,8 @@
 package ioutil_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -79,4 +81,37 @@ type lenSink struct{ n int }
 func (s *lenSink) Write(p []byte) (int, error) {
 	s.n += len(p)
 	return len(p), nil
+}
+
+func FuzzReadFileWithLimit(f *testing.F) {
+	f.Add([]byte("hello"), int64(100))
+	f.Add([]byte(""), int64(0))
+	f.Add([]byte("exact"), int64(5))
+	f.Add([]byte("over the limit"), int64(1))
+	f.Add([]byte(strings.Repeat("x", 70000)), int64(65536))
+	f.Fuzz(func(t *testing.T, content []byte, limit int64) {
+		limit &= (1 << 20) - 1
+
+		path := filepath.Join(t.TempDir(), "data.bin")
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		data, err := ioutil.ReadFileWithLimit(path, limit)
+		if err != nil {
+			if int64(len(content)) <= limit {
+				t.Fatalf("ReadFileWithLimit(%d-byte file, limit=%d) errored %v, want success", len(content), limit, err)
+			}
+			if data != nil {
+				t.Fatalf("error path returned %d bytes, want nil data", len(data))
+			}
+			return
+		}
+		if int64(len(data)) > limit {
+			t.Fatalf("returned %d bytes exceeds cap %d", len(data), limit)
+		}
+		if string(data) != string(content) {
+			t.Fatalf("returned %d bytes, want the %d-byte file content verbatim", len(data), len(content))
+		}
+	})
 }

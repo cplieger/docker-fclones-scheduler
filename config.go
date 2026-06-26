@@ -26,12 +26,46 @@ type config struct {
 	Interval     time.Duration
 	PhaseTimeout time.Duration
 
-	// ScheduleEnabled reports whether the built-in interval scheduler runs.
-	// When false (FCLONES_INTERVAL=off/disabled/0), the container idles and
-	// scans are triggered out-of-band via the `scan` subcommand (e.g. an
-	// external scheduler such as Ofelia running `docker exec`). Interval is
-	// not consulted in that mode.
-	ScheduleEnabled bool
+	// Mode selects how the daemon schedules scans, derived from
+	// FCLONES_INTERVAL (see parseInterval). Interval is consulted only in
+	// modeBuiltin.
+	Mode runMode
+}
+
+// runMode is how the long-running container schedules fclones scans, derived
+// from FCLONES_INTERVAL.
+type runMode int
+
+const (
+	// modeBuiltin runs a scan at startup, then every config.Interval. Selected
+	// by a positive FCLONES_INTERVAL, or by the default cadence when the value
+	// is empty, unparseable, or negative.
+	modeBuiltin runMode = iota
+	// modeExternal idles until SIGTERM; scans are triggered out-of-band via the
+	// `scan` subcommand (e.g. Ofelia `docker exec`). Selected by
+	// FCLONES_INTERVAL=off/disabled.
+	modeExternal
+	// modeOnce runs exactly one scan+action then exits. Selected by a zero
+	// FCLONES_INTERVAL (0/0s); the process exits non-zero if that scan fails.
+	modeOnce
+)
+
+// Compile-time assertion: runMode implements fmt.Stringer (mirrors the action
+// and phaseOutcome assertions).
+var _ fmt.Stringer = runMode(0)
+
+// String returns the human-readable mode name for log lines.
+func (m runMode) String() string {
+	switch m {
+	case modeBuiltin:
+		return "built-in"
+	case modeExternal:
+		return "external"
+	case modeOnce:
+		return "once"
+	default:
+		panic(fmt.Sprintf("unhandled runMode: %d", int(m)))
+	}
 }
 
 // action represents a validated fclones subcommand.
@@ -62,7 +96,7 @@ func parseAction(s string) (action, error) {
 }
 
 // Compile-time assertion: action implements fmt.Stringer (mirrors the
-// PhaseOutcome assertion in outcome.go).
+// phaseOutcome assertion in outcome.go).
 var _ fmt.Stringer = action("")
 
 // String returns the fclones subcommand name for the action.
@@ -188,52 +222,54 @@ func loadConfig() (config, error) {
 	}
 
 	// FCLONES_INTERVAL sets the built-in scan cadence; see parseInterval for the
-	// sentinel ("off"/"disabled"/zero/negative) and fallback rules.
-	interval, scheduleEnabled := parseInterval(os.Getenv("FCLONES_INTERVAL"))
+	// sentinel ("off"/"disabled"/zero) and fallback rules.
+	interval, mode := parseInterval(os.Getenv("FCLONES_INTERVAL"))
 
 	return config{
-		Interval:        interval,
-		ScheduleEnabled: scheduleEnabled,
-		ScanPath:        scanPaths,
-		Args:            argsStr,
-		Action:          parsedAction,
-		ActionArgs:      actionArgs,
-		PhaseTimeout:    scanTimeout,
+		Interval:     interval,
+		Mode:         mode,
+		ScanPath:     scanPaths,
+		Args:         argsStr,
+		Action:       parsedAction,
+		ActionArgs:   actionArgs,
+		PhaseTimeout: scanTimeout,
 	}, nil
 }
 
-// parseInterval interprets FCLONES_INTERVAL into the built-in scan interval and whether the
-// built-in scheduler is enabled. "off"/"disabled" and any zero or negative duration disable
-// scheduling (a negative value is a likely typo and is warned about); an empty or unparseable
-// non-sentinel value falls back to defaultInterval with scheduling enabled so the container keeps
-// scanning. Mirrors the sibling schedulers' interval helpers (e.g. pg-autodump loadInterval).
-func parseInterval(raw string) (interval time.Duration, scheduleEnabled bool) {
+// parseInterval interprets FCLONES_INTERVAL into the built-in scan interval and the run mode.
+// "off"/"disabled" select external (idle) mode; a zero duration ("0"/"0s") selects run-once mode
+// (one scan, then exit). A positive duration sets the built-in cadence. An empty, unparseable, or
+// negative value falls back to defaultInterval in built-in mode so the container keeps scanning; a
+// negative value is a likely typo (e.g. "-1h" for "1h") and is warned about. Mirrors the sibling
+// schedulers' interval helpers (e.g. pg-autodump loadInterval).
+func parseInterval(raw string) (interval time.Duration, mode runMode) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return defaultInterval, true
+		return defaultInterval, modeBuiltin
 	}
 	switch strings.ToLower(raw) {
 	case "off", "disabled":
-		return defaultInterval, false
+		return defaultInterval, modeExternal
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
 		slog.Warn("cannot parse FCLONES_INTERVAL, using default",
 			"value", raw, "default", defaultInterval)
-		return defaultInterval, true
+		return defaultInterval, modeBuiltin
 	}
 	switch {
 	case d > 0:
-		return d, true
+		return d, modeBuiltin
 	case d == 0:
-		// Zero duration ("0", "0s") is a documented disable sentinel.
-		return defaultInterval, false
+		// Zero duration ("0", "0s") runs exactly one scan, then exits.
+		return defaultInterval, modeOnce
 	default:
 		// A negative duration is almost certainly a typo (e.g. "-1h" for "1h").
-		// Disable scheduling like zero, but warn.
-		slog.Warn("negative FCLONES_INTERVAL disables built-in scheduling; use a positive duration or 'off'",
-			"value", raw)
-		return defaultInterval, false
+		// Fall back to the default cadence rather than disabling scanning, but
+		// warn so the typo is visible.
+		slog.Warn("negative FCLONES_INTERVAL is invalid; falling back to default cadence; use a positive duration, '0' to run once, or 'off' to idle",
+			"value", raw, "default", defaultInterval)
+		return defaultInterval, modeBuiltin
 	}
 }
 
@@ -293,8 +329,7 @@ func rejectDangerousArgs(raw, envVar string) error {
 // verifyCacheDir ensures the cache directory exists and is writable.
 func verifyCacheDir(ctx context.Context) error {
 	if err := verifyDir(ctx, cacheDir, 10*time.Second); err != nil {
-		return fmt.Errorf("cache directory verification failed (path=%s, uid=%d): %w",
-			cacheDir, os.Getuid(), err)
+		return fmt.Errorf("verify cache dir: %w", err)
 	}
 	slog.Debug("cache directory verified", "path", cacheDir)
 	return nil

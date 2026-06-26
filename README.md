@@ -62,15 +62,15 @@ services:
 
 ## Scheduling modes
 
-The container runs in one of two modes, selected by `FCLONES_INTERVAL`.
+The container runs in one of three modes, selected by `FCLONES_INTERVAL`.
 
 ### Built-in scheduler (default)
 
-Set `FCLONES_INTERVAL` to a Go duration (`1h`, `30m`, `12h`, …). The container runs a scan at startup and then every interval. This is the zero-dependency default; nothing else is required.
+Set `FCLONES_INTERVAL` to a positive Go duration (`1h`, `30m`, `12h`, …). The container runs a scan at startup and then every interval. This is the zero-dependency default; nothing else is required. An unset, unparseable, or negative value falls back to the `3h` default cadence in this mode (a negative value is treated as a typo and logged as a warning).
 
 ### External scheduler
 
-Set `FCLONES_INTERVAL=off` (aliases: `disabled`, `0`). The container stays running but idle, and you trigger each scan out-of-band by exec'ing the `scan` subcommand:
+Set `FCLONES_INTERVAL=off` (alias: `disabled`). The container stays running but idle, and you trigger each scan out-of-band by exec'ing the `scan` subcommand:
 
 ```bash
 docker exec fclones /app/wrapper scan
@@ -102,21 +102,25 @@ services:
 
 Overlapping scans are prevented in both modes by an advisory file lock (`flock`) on `/cache/.fclones.lock`, so a manual `docker exec` scan that races a scheduled one will skip rather than corrupt the shared fclones cache. Ofelia's `no-overlap` is still recommended to avoid queuing redundant triggers.
 
+### Run once
+
+Set `FCLONES_INTERVAL=0` (or `0s`). The container runs exactly one scan and dedup action, then exits — non-zero if the scan failed. This suits a batch or one-shot context (a Kubernetes `Job`, a CI step, or a manual `docker run --rm`) where an external system, not the container, decides when to run again.
+
 ## Configuration reference
 
 ### Environment variables
 
-| Variable               | Description                                                                                                                                                                                                                                                                                                                                                          | Default        | Required |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | -------- |
-| `TZ`                   | Container timezone                                                                                                                                                                                                                                                                                                                                                   | `Europe/Paris` | No       |
-| `FCLONES_INTERVAL`     | Built-in scan interval as a Go duration (e.g. `1h`, `30m`, `12h`). The first scan runs at startup; subsequent scans fire every interval thereafter. Set to `off` (or `disabled`/`0`) to disable the built-in scheduler and trigger scans externally — see [Scheduling modes](#scheduling-modes). Falls back to `3h` on an unset or unparseable (non-sentinel) value. | `3h`           | No       |
-| `FCLONES_SCAN_PATHS`   | Paths inside the container to scan for duplicates. Must match the volume mounts. Multiple paths can be space-separated (e.g. `/media /photos`), each requiring a corresponding volume mount.                                                                                                                                                                         | `/scandir`     | No       |
-| `FCLONES_ARGS`         | Extra arguments passed to `fclones group` scan phase                                                                                                                                                                                                                                                                                                                 | `(none)`       | No       |
-| `FCLONES_ACTION`       | Dedup action after scan — group (report only), link (hardlink), remove (delete), or dedupe (reflink/copy-on-write)                                                                                                                                                                                                                                                   | `group`        | No       |
-| `FCLONES_ACTION_ARGS`  | Extra arguments for the dedup action phase                                                                                                                                                                                                                                                                                                                           | `(none)`       | No       |
-| `FCLONES_ALLOW_UNSAFE` | Set to `true` to allow dangerous flags (`--command`, `--transform`, `--in-place`, `--no-copy`)                                                                                                                                                                                                                                                                       | `false`        | No       |
-| `FCLONES_SCAN_TIMEOUT` | Per-phase timeout (Go duration) applied to each fclones scan and action phase. A phase exceeding it is terminated and the run is marked unhealthy. Set to `0` for no timeout (unbounded — the phase runs until it finishes or the container stops). Raise for large filesystems whose initial scan can exceed 12h.                                                   | `12h`          | No       |
-| `FCLONES_LOG_LEVEL`    | slog level: `debug`, `info`, `warn`/`warning`, or `error`. Unrecognized values fall back to `info`.                                                                                                                                                                                                                                                                  | `info`         | No       |
+| Variable               | Description                                                                                                                                                                                                                                                                                                                                                                           | Default        | Required |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | -------- |
+| `TZ`                   | Container timezone                                                                                                                                                                                                                                                                                                                                                                    | `Europe/Paris` | No       |
+| `FCLONES_INTERVAL`     | Built-in scan interval as a Go duration (e.g. `1h`, `30m`, `12h`). The first scan runs at startup; subsequent scans fire every interval thereafter. Set to `off` (or `disabled`) to idle and trigger scans externally, or to `0` (or `0s`) to run a single scan and exit — see [Scheduling modes](#scheduling-modes). Falls back to `3h` on an unset, unparseable, or negative value. | `3h`           | No       |
+| `FCLONES_SCAN_PATHS`   | Paths inside the container to scan for duplicates. Must match the volume mounts. Multiple paths can be space-separated (e.g. `/media /photos`), each requiring a corresponding volume mount.                                                                                                                                                                                          | `/scandir`     | No       |
+| `FCLONES_ARGS`         | Extra arguments passed to `fclones group` scan phase                                                                                                                                                                                                                                                                                                                                  | `(none)`       | No       |
+| `FCLONES_ACTION`       | Dedup action after scan — group (report only), link (hardlink), remove (delete), or dedupe (reflink/copy-on-write)                                                                                                                                                                                                                                                                    | `group`        | No       |
+| `FCLONES_ACTION_ARGS`  | Extra arguments for the dedup action phase                                                                                                                                                                                                                                                                                                                                            | `(none)`       | No       |
+| `FCLONES_ALLOW_UNSAFE` | Set to `true` to allow dangerous flags (`--command`, `--transform`, `--in-place`, `--no-copy`)                                                                                                                                                                                                                                                                                        | `false`        | No       |
+| `FCLONES_SCAN_TIMEOUT` | Per-phase timeout (Go duration) applied to each fclones scan and action phase. A phase exceeding it is terminated and the run is marked unhealthy. Set to `0` for no timeout (unbounded — the phase runs until it finishes or the container stops). Raise for large filesystems whose initial scan can exceed 12h.                                                                    | `12h`          | No       |
+| `FCLONES_LOG_LEVEL`    | slog level: `debug`, `info`, `warn`/`warning`, or `error`. Unrecognized values fall back to `info`.                                                                                                                                                                                                                                                                                   | `info`         | No       |
 
 ### Volumes
 
@@ -135,7 +139,7 @@ The image bakes a 15s `start_period`, which suits small libraries and external m
 services:
   fclones:
     healthcheck:
-      start_period: 10m  # size to your library's first-scan duration
+      start_period: 10m # size to your library's first-scan duration
 ```
 
 ## Security

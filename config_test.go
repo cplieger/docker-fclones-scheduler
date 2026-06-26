@@ -5,12 +5,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/cplieger/fclones-wrapper/internal/args"
 	"pgregory.net/rapid"
 )
 
@@ -44,8 +42,8 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.Interval != time.Hour {
 		t.Errorf("Interval = %s, want 1h", cfg.Interval)
 	}
-	if !cfg.ScheduleEnabled {
-		t.Error("ScheduleEnabled = false, want true for a duration interval")
+	if cfg.Mode != modeBuiltin {
+		t.Errorf("Mode = %s, want built-in for a duration interval", cfg.Mode)
 	}
 	if cfg.ScanPath != "/data" {
 		t.Errorf("ScanPath = %q, want %q", cfg.ScanPath, "/data")
@@ -74,8 +72,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.Interval != defaultInterval {
 		t.Errorf("Interval = %s, want default %s", cfg.Interval, defaultInterval)
 	}
-	if !cfg.ScheduleEnabled {
-		t.Error("ScheduleEnabled = false, want true when interval is unset (default cadence)")
+	if cfg.Mode != modeBuiltin {
+		t.Errorf("Mode = %s, want built-in when interval is unset (default cadence)", cfg.Mode)
 	}
 	if cfg.ScanPath != scanDir {
 		t.Errorf("ScanPath = %q, want %q", cfg.ScanPath, scanDir)
@@ -89,7 +87,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 }
 
 func TestLoadConfigScheduleDisabled(t *testing.T) {
-	for _, value := range []string{"off", "OFF", "disabled", "Disabled", "0", "0s", "0h"} {
+	for _, value := range []string{"off", "OFF", "disabled", "Disabled"} {
 		t.Run(value, func(t *testing.T) {
 			setCleanFclonesEnv(t)
 			t.Setenv("FCLONES_INTERVAL", value)
@@ -98,14 +96,36 @@ func TestLoadConfigScheduleDisabled(t *testing.T) {
 			if err != nil {
 				t.Fatalf("loadConfig: %v", err)
 			}
-			if cfg.ScheduleEnabled {
-				t.Errorf("FCLONES_INTERVAL=%q: ScheduleEnabled = true, want false", value)
+			if cfg.Mode != modeExternal {
+				t.Errorf("FCLONES_INTERVAL=%q: Mode = %s, want external", value, cfg.Mode)
 			}
 		})
 	}
 }
 
-func TestLoadConfigScheduleDisabledNegativeInterval(t *testing.T) {
+func TestLoadConfigRunOnce(t *testing.T) {
+	// A zero duration runs exactly one scan, then exits -- distinct from the
+	// off/disabled idle mode.
+	for _, value := range []string{"0", "0s", "0h"} {
+		t.Run(value, func(t *testing.T) {
+			setCleanFclonesEnv(t)
+			t.Setenv("FCLONES_INTERVAL", value)
+
+			cfg, err := loadConfig()
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			if cfg.Mode != modeOnce {
+				t.Errorf("FCLONES_INTERVAL=%q: Mode = %s, want once", value, cfg.Mode)
+			}
+		})
+	}
+}
+
+func TestLoadConfigNegativeIntervalFallsBackToDefault(t *testing.T) {
+	// A negative duration is a likely typo; it must NOT disable scanning. It
+	// falls back to the default cadence in built-in mode so the container keeps
+	// reclaiming space rather than silently idling while reporting healthy.
 	for _, value := range []string{"-1h", "-30m", "-1s"} {
 		t.Run(value, func(t *testing.T) {
 			setCleanFclonesEnv(t)
@@ -115,8 +135,8 @@ func TestLoadConfigScheduleDisabledNegativeInterval(t *testing.T) {
 			if err != nil {
 				t.Fatalf("loadConfig with FCLONES_INTERVAL=%q: unexpected error: %v", value, err)
 			}
-			if cfg.ScheduleEnabled {
-				t.Errorf("FCLONES_INTERVAL=%q: ScheduleEnabled = true, want false", value)
+			if cfg.Mode != modeBuiltin {
+				t.Errorf("FCLONES_INTERVAL=%q: Mode = %s, want built-in", value, cfg.Mode)
 			}
 			if cfg.Interval != defaultInterval {
 				t.Errorf("FCLONES_INTERVAL=%q: Interval = %s, want default %s", value, cfg.Interval, defaultInterval)
@@ -125,7 +145,7 @@ func TestLoadConfigScheduleDisabledNegativeInterval(t *testing.T) {
 	}
 }
 
-func TestLoadConfigScheduleEnabledOnGarbage(t *testing.T) {
+func TestLoadConfigGarbageIntervalFallsBackToDefault(t *testing.T) {
 	// A non-sentinel unparseable value must NOT disable scheduling; it
 	// falls back to the default cadence so the container keeps scanning.
 	setCleanFclonesEnv(t)
@@ -135,8 +155,8 @@ func TestLoadConfigScheduleEnabledOnGarbage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if !cfg.ScheduleEnabled {
-		t.Error("ScheduleEnabled = false, want true on unparseable non-sentinel value")
+	if cfg.Mode != modeBuiltin {
+		t.Errorf("Mode = %s, want built-in on unparseable non-sentinel value", cfg.Mode)
 	}
 	if cfg.Interval != defaultInterval {
 		t.Errorf("Interval = %s, want default %s", cfg.Interval, defaultInterval)
@@ -173,17 +193,6 @@ func TestLoadConfigAllowUnsafeCaseInsensitive(t *testing.T) {
 	}
 }
 
-// isDangerousArg mirrors the detection logic in rejectDangerousArgs.
-func isDangerousArg(arg string) bool {
-	lower := strings.ToLower(arg)
-	for _, flag := range dangerousFlags {
-		if lower == flag || strings.HasPrefix(lower, flag+"=") {
-			return true
-		}
-	}
-	return false
-}
-
 func TestRejectDangerousArgs(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -212,13 +221,13 @@ func TestRejectDangerousArgs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			parsed, err := args.Parse(tt.input)
-			if err != nil {
-				t.Fatalf("args.Parse: %v", err)
+			t.Parallel()
+			err := rejectDangerousArgs(tt.input, "TEST_ENV")
+			if (err != nil) != tt.dangerous {
+				t.Errorf("rejectDangerousArgs(%q) error = %v, want dangerous=%v", tt.input, err, tt.dangerous)
 			}
-			found := slices.ContainsFunc(parsed, isDangerousArg)
-			if found != tt.dangerous {
-				t.Errorf("args.Parse(%q): dangerous=%v, want %v", tt.input, found, tt.dangerous)
+			if tt.dangerous && err != nil && !strings.Contains(err.Error(), "dangerous flag") {
+				t.Errorf("rejectDangerousArgs(%q) error = %q, want it to mention 'dangerous flag'", tt.input, err)
 			}
 		})
 	}
@@ -614,5 +623,25 @@ func TestVerifyDirParentNotADirectory(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "mkdir") {
 		t.Errorf("verifyDir(%q) error = %q, want it to contain \"mkdir\"", target, err)
+	}
+}
+
+func TestLoadConfigWarnsOnEmptyScanPaths(t *testing.T) {
+	setCleanFclonesEnv(t)
+	// A whitespace-only value is non-empty (so getEnv returns it rather than
+	// the default scanDir) yet parses to zero tokens, hitting the
+	// "no scan targets" branch in loadConfig.
+	t.Setenv("FCLONES_SCAN_PATHS", "   ")
+
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	var logs strings.Builder
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	if _, err := loadConfig(); err != nil {
+		t.Fatalf("loadConfig with whitespace FCLONES_SCAN_PATHS: unexpected error: %v", err)
+	}
+	if !strings.Contains(logs.String(), "resolved to no scan targets") {
+		t.Errorf("loadConfig did not warn that scan paths resolved to no targets; logs = %q", logs.String())
 	}
 }

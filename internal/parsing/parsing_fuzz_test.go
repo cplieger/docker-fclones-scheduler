@@ -18,7 +18,7 @@ func FuzzParseStats(f *testing.F) {
 		if stats.Groups == "" {
 			t.Fatal("Groups must not be empty")
 		}
-		// Size must be non-empty (at least DefaultSizeStr)
+		// Size must be non-empty (at least defaultSizeStr)
 		if stats.Size == "" {
 			t.Fatal("Size must not be empty")
 		}
