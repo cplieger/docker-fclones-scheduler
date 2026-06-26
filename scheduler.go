@@ -261,7 +261,7 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	outputBytes, readErr := ioutil.ReadFileWithLimit(tmpPath, outputCapBytes)
 	reportParsed := readErr == nil
 	if !reportParsed {
-		log.Error("report too large to parse, observability degraded",
+		log.Error("fclones report exceeded parse cap; scan and dedup still ran but stats are degraded. Narrow FCLONES_SCAN_PATHS or split into multiple runs",
 			"error", readErr, "cap_bytes", outputCapBytes)
 		outputBytes = []byte{}
 	}
