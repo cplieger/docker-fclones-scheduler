@@ -31,7 +31,7 @@ aggregators (Alloy, Promtail, etc.) and alerting via Grafana or similar.
 ### Why this design
 
 - **Scheduler your way** — ships with a self-contained Go interval scheduler so you don't need external cron, systemd timers, or orchestrator-level scheduling. If you already run a central scheduler (Ofelia, cron), set `FCLONES_INTERVAL=off` and trigger scans with `docker exec fclones /app/wrapper scan` instead
-- **Distroless and rootless** — runs as `nonroot` (UID 65534) on `gcr.io/distroless/static-debian13` with no shell or package manager, minimizing attack surface
+- **Distroless and rootless** — runs as `nonroot` (UID 65532) on `gcr.io/distroless/static-debian13` with no shell or package manager, minimizing attack surface
 - **Dangerous flags blocked by default** — `--command`, `--transform`, `--in-place`, and `--no-copy` are rejected unless you explicitly opt in with `FCLONES_ALLOW_UNSAFE=true`, preventing command injection via environment variables
 - **Structured logs for observability** — all output goes to stdout/stderr in a format ready for log aggregators, enabling alerting on scan failures or duplicate detection without custom exporters
 
@@ -172,7 +172,7 @@ are capped at 50 MB. Concurrent scans are guarded by an advisory
 file lock (`flock` on `/cache/.fclones.lock`), which serialises
 both the built-in ticker and externally triggered `scan`
 invocations. Semgrep flags the distroless nonroot image as "missing
-USER" (false positive, UID 65534 is baked in) and the
+USER" (false positive, UID 65532 is baked in) and the
 `/tmp/.healthy` marker (fixed path, single-process container).
 Hadolint DL3008 applies to the Rust builder stage only, which is
 discarded in the final image.

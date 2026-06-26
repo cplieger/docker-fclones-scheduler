@@ -39,11 +39,14 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
       printf '%s  /tmp/fclones.tar.gz\n' "${FCLONES_SHA256_AMD64}" | sha256sum -c - && \
       tar xz --strip-components=3 -C /usr/src/fclones -f /tmp/fclones.tar.gz && \
       rm -f /tmp/fclones.tar.gz; \
-    else \
+    elif [ "$ARCH" = "arm64" ]; then \
       git clone --branch "${FCLONES_VERSION}" --depth 1 https://github.com/pkolaczk/fclones.git . && \
       test "$(git rev-parse HEAD)" = "${FCLONES_COMMIT}" && \
       cargo build --release --target aarch64-unknown-linux-musl && \
       mv target/aarch64-unknown-linux-musl/release/fclones /usr/src/fclones/fclones; \
+    else \
+      echo "unsupported build architecture: ${ARCH} (expected amd64 or arm64); no integrity pin defined" >&2; \
+      exit 1; \
     fi
 
 FROM golang:1.26-trixie@sha256:76a29248dedcd75870e95cbd90cc8cb356db082404ac7d3a5803f276c3ba79c9 AS go-builder
