@@ -41,8 +41,11 @@ func defaultCommandRunner(ctx context.Context, name string, cmdArgs ...string) *
 const reportTempPattern = "fclones_report_*.txt"
 
 // logKeyDurationS is the slog attribute key for an integer-seconds phase
-// duration. It is emitted on both the success and failure log lines so phase
-// duration can be charted across every outcome from a single numeric field.
+// duration. It is emitted on the scan-complete, action-complete, timeout, and
+// exec-error log lines so completed and failed phase durations can be charted
+// from one numeric field. The shutdown (interrupted) line deliberately omits
+// it: an interrupted phase never ran to a natural end, so its elapsed time is
+// not a meaningful phase duration.
 const logKeyDurationS = "duration_s"
 
 // cleanStaleReports removes orphaned fclones report temp files left in /cache
@@ -143,14 +146,21 @@ func classifyAndLogOutcome(
 			"outcome", outcome, "cause", context.Cause(parent))
 		return true, nil
 	case OutcomeTimeout:
-		attrs := append([]any{
+		attrs := []any{
 			"reason", outcome.String(), "outcome", outcome,
 			"timeout", timeout, "duration", duration,
 			logKeyDurationS, int(duration.Round(time.Second).Seconds()),
 			"stderr", stderr.String(),
 			"stderr_total_bytes", stderr.Total(),
 			"stderr_truncated", stderr.Truncated(),
-		}, extra...)
+		}
+		if stdout != nil {
+			attrs = append(attrs,
+				"stdout", stdout.String(),
+				"stdout_total_bytes", stdout.Total(),
+				"stdout_truncated", stdout.Truncated())
+		}
+		attrs = append(attrs, extra...)
 		log.Error(phase+" timeout exceeded", attrs...)
 		return true, fmt.Errorf("%s timeout exceeded after %s", phase, timeout)
 	case OutcomeExecError:
@@ -206,8 +216,6 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	scanID := newScanID()
 	log := slog.With("scan_id", scanID, "trigger", trigger)
 
-	startTime := time.Now()
-
 	scanArgs, err := buildScanArgs(cfg)
 	if err != nil {
 		log.Error("scan failed to start", "reason", "bad_args", "error", err)
@@ -236,13 +244,13 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	cmd.Stdout = tmpFile
 	cmd.Stderr = io.MultiWriter(scanFilter, errBuf)
 
+	startTime := time.Now()
 	runErr := cmd.Run()
+	duration := time.Since(startTime)
 	scanFilter.Flush()
 	if cerr := tmpFile.Close(); cerr != nil {
 		log.Warn("failed to close report temp file", "error", cerr)
 	}
-
-	duration := time.Since(startTime)
 
 	if done, phaseErr := classifyAndLogOutcome(ctx, scanCtx, log, "scan", runErr,
 		cfg.PhaseTimeout, duration, errBuf, nil); done {
