@@ -24,7 +24,9 @@ The Go module is `github.com/cplieger/fclones-wrapper`; the built binary is
   dangerous-flag rejection (`rejectDangerousArgs`).
 - `scheduler.go` — the two-phase run (`runFclonesJob`): `fclones group` scan
   (`buildScanArgs`) then the dedup action (`buildActionArgs` /
-  `runFclonesAction`).
+  `runFclonesAction`). The action-decision logic (`shouldRunAction` /
+  `suspectDrift`) tolerates fclones report-format drift; see Conventions and
+  gotchas.
 - `lock.go` — the advisory file lock (`tryLock`, `flock` on
   `/cache/.fclones.lock`) that prevents overlapping scans with one mechanism
   covering both the in-process built-in ticker and cross-process external
@@ -80,6 +82,18 @@ intact when touching `config.go` or `scheduler.go`:
   config loading always yields a valid action.
 - Fixed container paths (`/scandir`, `/cache`) are constants, not env vars —
   they are wired through volume mounts.
+- fclones **report-format drift** is handled defensively. If a scan parses but
+  `internal/parsing` finds no duplicate groups while fclones' own report
+  disagrees (it reported a positive group count, or its `# Total:` line is
+  missing or no longer matches), the pure `suspectDrift` predicate
+  (`scheduler.go`, table-tested) makes `shouldRunAction` run the action against
+  the full report via stdin instead of skipping dedup, so an upstream
+  output-format change can't silently stop reclaiming space while the run still
+  reports healthy. `ParseStats` exposes `TotalParsed` so a missing or changed
+  `# Total:` line is distinguishable from a genuine zero. When you bump
+  `FCLONES_VERSION`, re-check the `internal/parsing` parsers against the new
+  report format; `suspectDrift` is the runtime backstop, not a substitute for
+  that re-audit.
 
 ## Running checks locally
 
