@@ -1,4 +1,11 @@
 # check=error=true
+
+# FCLONES_VERSION is the single source of truth for the pinned fclones release.
+# Declared as a global ARG (before the first FROM) so every build stage consumes
+# it with a bare `ARG FCLONES_VERSION`; Renovate bumps this one line.
+# renovate: datasource=github-tags depName=pkolaczk/fclones
+ARG FCLONES_VERSION=v0.35.0
+
 FROM rust:1.96-trixie@sha256:6df234c1eb92b0545468fab8c18fc5f9adfb994e7d4f67d81d45fe2fcabf5657 AS fclones-builder
 
 WORKDIR /usr/src/fclones
@@ -16,8 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN rustup target add aarch64-unknown-linux-musl
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
     CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc
-# renovate: datasource=github-tags depName=pkolaczk/fclones
-ARG FCLONES_VERSION=v0.35.0
+# Consume the global FCLONES_VERSION (declared before the first FROM with its
+# renovate datasource comment) in this stage.
+ARG FCLONES_VERSION
 # Integrity pins -- re-verify on every version bump (stale pin fail-closes the build).
 # amd64: sha256 of fclones-<version>-linux-musl-x86_64.tar.gz
 ARG FCLONES_SHA256_AMD64=9eae0466e5b78871cf25822e503ee9efbfa28dc36cc167060c4a4920306389ac
@@ -47,6 +55,16 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 COPY *.go ./
 COPY internal/ internal/
+# Fail the build if config.go's dangerous-flag denylist audit comment does not
+# match the pinned fclones version. The amd64 sha256 and arm64 commit pins
+# already fail-close the build on a stale version; this extends the same
+# fail-closed coupling to the security re-audit, so a FCLONES_VERSION bump
+# cannot silently ship an un-re-audited denylist.
+ARG FCLONES_VERSION
+RUN grep -q "Audited against fclones ${FCLONES_VERSION};" config.go || { \
+      echo "config.go dangerous-flag audit comment does not match FCLONES_VERSION=${FCLONES_VERSION}; re-audit dangerousFlags and bump the 'Audited against fclones <version>;' comment in config.go (see CONTRIBUTING.md)" >&2; \
+      exit 1; \
+    }
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /wrapper .
