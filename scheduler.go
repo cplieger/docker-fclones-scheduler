@@ -68,7 +68,7 @@ func cleanStaleReports() {
 	// orphans (if any) are reclaimed on a later startup when no scan races.
 	lock, ok, lockErr := tryLock(lockFile)
 	if lockErr != nil {
-		slog.Warn("cannot acquire scan lock for stale-report sweep, skipping",
+		slog.Warn("cannot acquire scan lock for stale-report sweep, skipping; orphaned report temp files (if any) will be reclaimed on a later startup",
 			"path", lockFile, "error", lockErr)
 		return
 	}

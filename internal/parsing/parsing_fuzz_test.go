@@ -176,9 +176,18 @@ func FuzzHumanBytesRoundTrip(f *testing.F) {
 		if parsed < 0 {
 			t.Fatalf("round-trip produced negative: HumanBytes(%d)=%q -> %d", n, s, parsed)
 		}
-		// Allow 10% tolerance due to floating point formatting
-		if n > 0 && parsed == 0 {
-			t.Fatalf("round-trip lost all value: HumanBytes(%d)=%q -> 0", n, s)
+		// Round-trip must stay within the one-decimal-mantissa
+		// precision HumanBytes can represent (relative error < 10%).
+		// This is the same bound the rapid property asserts, applied
+		// here so the coverage-guided weekly run is meaningful too.
+		if n > 0 {
+			diff := parsed - n
+			if diff < 0 {
+				diff = -diff
+			}
+			if float64(diff) > 0.1*float64(n) {
+				t.Fatalf("round-trip exceeded 10%% tolerance: HumanBytes(%d)=%q -> %d", n, s, parsed)
+			}
 		}
 	})
 }
