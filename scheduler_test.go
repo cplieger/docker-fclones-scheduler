@@ -6,9 +6,11 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -342,6 +344,35 @@ func TestDefaultCommandRunnerGracefulShutdown(t *testing.T) {
 	}
 	if len(cmd.Args) != 3 || cmd.Args[0] != "fclones" || cmd.Args[1] != "group" || cmd.Args[2] != "/scandir" {
 		t.Errorf("Args = %v, want [fclones group /scandir]", cmd.Args)
+	}
+}
+
+func TestDefaultCommandRunnerCancelSendsSIGTERM(t *testing.T) {
+	t.Parallel()
+	// The graceful-shutdown contract: cancelling the context SIGTERMs the
+	// child (not the default SIGKILL), giving fclones the 5s WaitDelay grace
+	// to flush its cache. A trivial sleep child makes this deterministic.
+	if _, err := exec.LookPath("sleep"); err != nil {
+		t.Skipf("sleep not available: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := defaultCommandRunner(ctx, "sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	cancel() // fires cmd.Cancel, which signals SIGTERM
+	err := cmd.Wait()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("Wait() error = %v, want an *exec.ExitError from a signalled process", err)
+	}
+	ws, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok {
+		t.Fatalf("exit status type = %T, want syscall.WaitStatus", exitErr.Sys())
+	}
+	if !ws.Signaled() || ws.Signal() != syscall.SIGTERM {
+		t.Errorf("child terminated by signaled=%v signal=%v, want SIGTERM (graceful shutdown)",
+			ws.Signaled(), ws.Signal())
 	}
 }
 

@@ -400,6 +400,7 @@ func TestParseRedundantSize(t *testing.T) {
 		{"empty parens", "# Redundant: 5 files ()", "5 files"},
 		{"nested parens", "# Redundant: 5 files (1.2 GB (approx))", "1.2 GB (approx"},
 		{"close paren before open paren", "a ) (", "0 B"},
+		{"three fields no parens falls through", "# Redundant: 512", "0 B"},
 	}
 
 	for _, tt := range tests {

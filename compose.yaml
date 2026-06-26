@@ -7,7 +7,7 @@ services:
 
     environment:
       TZ: "Europe/Paris"
-      FCLONES_INTERVAL: "1h"  # Go duration (1h, 30m, 12h); "off" disables built-in scheduling
+      FCLONES_INTERVAL: "1h"  # built-in scan interval (Go duration: 1h, 30m, 12h). "off"/"disabled" = idle, trigger scans externally via `docker exec fclones /app/wrapper scan`; "0"/"0s" = run one scan then exit (batch/run-once). See README "Scheduling modes".
       FCLONES_SCAN_PATHS: "/scandir"  # must match a volume mount target below
       FCLONES_ARGS: "--rf-over 1"
       FCLONES_ACTION: "link"  # group (report), link (hardlink), remove (delete), or dedupe (reflink/copy-on-write)
