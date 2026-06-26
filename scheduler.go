@@ -40,6 +40,11 @@ func defaultCommandRunner(ctx context.Context, name string, cmdArgs ...string) *
 // from matching any orphan. Keep both call sites on this one constant.
 const reportTempPattern = "fclones_report_*.txt"
 
+// logKeyDurationS is the slog attribute key for an integer-seconds phase
+// duration. It is emitted on both the success and failure log lines so phase
+// duration can be charted across every outcome from a single numeric field.
+const logKeyDurationS = "duration_s"
+
 // cleanStaleReports removes orphaned fclones report temp files left in /cache
 // by a previous scan whose `defer os.Remove` never ran -- e.g. the container
 // was SIGKILLed after the 5s WaitDelay grace, OOM-killed, or lost power
@@ -66,7 +71,17 @@ func cleanStaleReports() {
 	}
 	defer lock.unlock()
 
-	matches, err := filepath.Glob(filepath.Join(cacheDir, reportTempPattern))
+	sweepStaleReports(cacheDir)
+}
+
+// sweepStaleReports removes report temp files matching reportTempPattern in dir.
+// It is split out of cleanStaleReports (which acquires the scan flock before
+// calling this) so a test can exercise the glob+remove against a temp dir and
+// assert the create/glob lockstep on reportTempPattern. Callers MUST already
+// hold the scan lock: sweepStaleReports does no locking itself and would
+// otherwise race a live scan's report file.
+func sweepStaleReports(dir string) {
+	matches, err := filepath.Glob(filepath.Join(dir, reportTempPattern))
 	if err != nil {
 		return
 	}
@@ -131,6 +146,7 @@ func classifyAndLogOutcome(
 		attrs := append([]any{
 			"reason", outcome.String(), "outcome", outcome,
 			"timeout", timeout, "duration", duration,
+			logKeyDurationS, int(duration.Round(time.Second).Seconds()),
 			"stderr", stderr.String(),
 			"stderr_total_bytes", stderr.Total(),
 			"stderr_truncated", stderr.Truncated(),
@@ -140,7 +156,9 @@ func classifyAndLogOutcome(
 	case OutcomeExecError:
 		attrs := []any{
 			"reason", outcome.String(), "outcome", outcome,
-			"duration", duration, "error", runErr,
+			"duration", duration,
+			logKeyDurationS, int(duration.Round(time.Second).Seconds()),
+			"error", runErr,
 			"stderr", stderr.String(),
 			"stderr_total_bytes", stderr.Total(),
 			"stderr_truncated", stderr.Truncated(),
@@ -245,10 +263,17 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	groups := parsing.ParseDuplicateGroups(outputStr)
 	hasDuplicates := len(groups) > 0
 
-	maybeWarnGroupCountDrift(log, reportParsed, stats.Groups, len(groups))
+	reportedGroups, reportedOK := reportedGroupCount(stats.Groups)
+	maybeWarnGroupCountDrift(log, reportParsed, reportedGroups, reportedOK, len(groups))
+
+	// driftSuspected: the report parsed and fclones reported duplicate groups,
+	// but our parser extracted none -- an output-format drift. shouldRunAction
+	// then still runs the action (fclones re-parses the full report from stdin)
+	// rather than silently skipping dedup while the run reports healthy.
+	driftSuspected := reportParsed && !hasDuplicates && reportedOK && reportedGroups > 0
 
 	log.Info("scan complete",
-		"duration_s", int(duration.Round(time.Second).Seconds()),
+		logKeyDurationS, int(duration.Round(time.Second).Seconds()),
 		"redundant_human", stats.Size,
 		"groups", len(groups),
 		"duplicate_files", countDuplicateFiles(groups),
@@ -259,11 +284,22 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 		logDuplicateGroups(log, groups)
 	}
 
-	if !shouldRunAction(log, cfg, reportParsed, hasDuplicates) {
+	if !shouldRunAction(log, cfg, reportParsed, hasDuplicates, driftSuspected) {
 		return nil
 	}
 
 	return runFclonesAction(ctx, cfg, tmpPath, log, newCmd)
+}
+
+// reportedGroupCount parses fclones' own group count from Stats.Groups (the
+// "# Total: N groups" line). ok is false when the value is non-numeric, so
+// callers can distinguish "fclones reported zero" from "we couldn't read it".
+func reportedGroupCount(groups string) (count int, ok bool) {
+	n, err := strconv.Atoi(groups)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // maybeWarnGroupCountDrift cross-checks fclones' own group count (from the
@@ -272,13 +308,9 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 // output-format change our parser no longer recognises; surfacing it avoids
 // silently treating drift as "no duplicates" (which skips the dedup action
 // while the healthcheck stays green). No-op when the report was not parsed or
-// fclones' reported count is non-numeric.
-func maybeWarnGroupCountDrift(log *slog.Logger, reportParsed bool, reportedGroups string, parsed int) {
-	if !reportParsed {
-		return
-	}
-	reported, err := strconv.Atoi(reportedGroups)
-	if err != nil {
+// fclones' reported count is non-numeric (reportedOK false).
+func maybeWarnGroupCountDrift(log *slog.Logger, reportParsed bool, reported int, reportedOK bool, parsed int) {
+	if !reportParsed || !reportedOK {
 		return
 	}
 	if reported != parsed {
@@ -289,15 +321,30 @@ func maybeWarnGroupCountDrift(log *slog.Logger, reportParsed bool, reportedGroup
 
 // shouldRunAction reports whether the dedup action phase should run after a
 // scan. It returns false (logging "action skipped") when the report parsed
-// cleanly and found no duplicates. When the report could not be parsed it warns
-// that the action will run without duplicate stats, then returns true so the
-// action still runs against the full report via stdin.
-func shouldRunAction(log *slog.Logger, cfg *config, reportParsed, hasDuplicates bool) bool {
+// cleanly and found no duplicates -- UNLESS drift is suspected (fclones reported
+// duplicate groups but our parser extracted none), in which case it still runs
+// the action against the full report via stdin rather than silently skipping
+// dedup. When the report could not be parsed it warns that the action will run
+// without duplicate stats, then returns true so the action still runs.
+func shouldRunAction(log *slog.Logger, cfg *config, reportParsed, hasDuplicates, driftSuspected bool) bool {
 	if reportParsed && !hasDuplicates {
-		if cfg.Action != actionGroup {
-			log.Info("action skipped",
-				"action", cfg.Action, "reason", "no_duplicates")
+		if cfg.Action == actionGroup {
+			// Report-only: there is no action to run regardless of drift.
+			return false
 		}
+		if driftSuspected {
+			// fclones reported duplicate groups but our parser extracted none
+			// (output-format drift). Run the action against the full report via
+			// stdin anyway -- fclones re-parses its own report, so the action is
+			// correct even when our parser missed the groups. Same fallback the
+			// report-unparseable case below uses; without it, drift would
+			// silently stop reclaiming space while the run still reports healthy.
+			log.Warn("running action despite zero parsed groups; fclones reported duplicates (possible format drift)",
+				"action", cfg.Action, "reason", "group_count_drift")
+			return true
+		}
+		log.Info("action skipped",
+			"action", cfg.Action, "reason", "no_duplicates")
 		return false
 	}
 	if !reportParsed && cfg.Action != actionGroup {
@@ -485,7 +532,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 
 	attrs := []any{
 		"action", cfg.Action,
-		"duration_s", int(duration.Round(time.Second).Seconds()),
+		logKeyDurationS, int(duration.Round(time.Second).Seconds()),
 		"files_deduped", summary.Files,
 		"bytes_reclaimed", summary.ReclaimedBytes,
 		"reclaimed_human", parsing.HumanBytes(summary.ReclaimedBytes),
