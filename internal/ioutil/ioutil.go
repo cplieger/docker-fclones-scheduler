@@ -29,23 +29,37 @@ func NewFilteringWriter(w io.Writer) *FilteringWriter {
 	return &FilteringWriter{w: w}
 }
 
-// infoProgressPatterns mark info-level progress noise (matched against the
-// message body of a genuine fclones info line; see shouldFilterLine).
-var infoProgressPatterns = []string{
-	"Started grouping",
-	"Started deduplicating",
-	"Scanned ",
-	"Found ",
+// noiseMarker is a body substring that marks noise at its level. An optional
+// prefix, when set, additionally requires the message body to begin with
+// fclones' own framing for that notice, so a marker echoed in an attacker-named
+// scanned path (which fclones prefixes with "cannot read file ", never with the
+// notice's own framing) cannot suppress a genuine same-level diagnostic.
+type noiseMarker struct {
+	substr string
+	prefix string // "" means no prefix anchor
 }
 
-// warnNoisePatterns mark warn-level noise. The FIEMAP notice ("the filesystem
-// doesn't support the FIEMAP ioctl", e.g. on ZFS) is benign and recurrent and
-// is emitted by fclones at warn level, so it is matched against the message
-// body of a genuine fclones warn line -- not anywhere in the raw line -- so a
-// real warn/error line whose body merely echoes the phrase in a scanned
+// infoProgressPatterns mark info-level progress noise (matched against the
+// message body of a genuine fclones info line; see shouldFilterLine). These
+// carry no prefix anchor: the phrases are fclones-controlled framing already.
+var infoProgressPatterns = []noiseMarker{
+	{substr: "Started grouping"},
+	{substr: "Started deduplicating"},
+	{substr: "Scanned "},
+	{substr: "Found "},
+}
+
+// warnNoisePatterns mark warn-level noise. The FIEMAP notice ("doesn't support
+// FIEMAP ioctl API", e.g. on ZFS) is benign and recurrent and
+// is emitted by fclones at warn level. It is matched against the message body
+// of a genuine fclones warn line -- not anywhere in the raw line -- AND anchored
+// to fclones' own framing for the canonical notice ("File system <fs> on device
+// <dev> doesn't support FIEMAP ioctl API ..."). fclones prefixes path read
+// errors with "cannot read file ", never with "File system ", so a genuine
+// same-level warn that merely echoes the phrase in an attacker-named scanned
 // filename is NOT suppressed.
-var warnNoisePatterns = []string{
-	"doesn't support FIEMAP ioctl API",
+var warnNoisePatterns = []noiseMarker{
+	{substr: "doesn't support FIEMAP ioctl API", prefix: "File system "},
 }
 
 // noisePatternsByLevel maps an fclones log level to the body markers dropped at
@@ -54,7 +68,7 @@ var warnNoisePatterns = []string{
 // line, so an attacker-controlled scanned filename echoing a marker cannot
 // suppress the line that reports it. Re-audit on a FCLONES_VERSION bump (see
 // CONTRIBUTING.md).
-var noisePatternsByLevel = map[string][]string{
+var noisePatternsByLevel = map[string][]noiseMarker{
 	"info": infoProgressPatterns,
 	"warn": warnNoisePatterns,
 }
@@ -64,9 +78,10 @@ var noisePatternsByLevel = map[string][]string{
 // It reads the level positionally from the FIRST "fclones:" prefix that fclones
 // itself emits (an attacker cannot inject text ahead of it), then drops the line
 // only when a noise marker registered for that exact level appears in the
-// message body. Both the info-progress markers and the warn-level FIEMAP notice
-// are matched this way, so no marker echoed in a scanned filename can suppress a
-// genuine diagnostic at a different level.
+// message body. A marker carrying a prefix anchor additionally requires the body
+// to begin with fclones' own framing for that notice, so neither a marker echoed
+// in a scanned filename at a different level NOR one echoed in a genuine
+// same-level diagnostic about an attacker-named path can suppress it.
 func shouldFilterLine(line string) bool {
 	const prefix = "fclones:"
 	_, after, ok := strings.Cut(line, prefix)
@@ -82,8 +97,17 @@ func shouldFilterLine(line string) bool {
 	if !ok {
 		return false
 	}
-	for _, p := range patterns {
-		if strings.Contains(msg, p) {
+	// fclones renders the body with a leading space after the level colon
+	// ("warn: File system ..."); trim it so a marker's prefix anchor matches the
+	// body's own framing rather than that separator space. Trimming is
+	// behavior-preserving for the substring check (a leading space is never part
+	// of a marker phrase).
+	body := strings.TrimLeft(msg, " ")
+	for _, m := range patterns {
+		if m.prefix != "" && !strings.HasPrefix(body, m.prefix) {
+			continue
+		}
+		if strings.Contains(body, m.substr) {
 			return true
 		}
 	}
