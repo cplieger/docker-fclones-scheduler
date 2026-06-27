@@ -83,11 +83,16 @@ func FuzzFilteringWriter(f *testing.F) {
 		// mirrors the positional policy so a wrong edit to either side is caught: a
 		// noise marker is dropped only inside the message body of a genuine
 		// "fclones: <level>:" line whose level matches the marker (info-progress
-		// markers at info, the FIEMAP notice at warn). A filter-disabled mutant of
-		// emit() makes a filtered line survive here even though the byte-bound passes.
-		noiseByLevel := map[string][]string{
-			"info": {"Started grouping", "Started deduplicating", "Scanned ", "Found "},
-			"warn": {"doesn't support FIEMAP ioctl API"},
+		// markers at info, the FIEMAP notice at warn). The FIEMAP marker also carries
+		// a prefix anchor ("File system "): the body must BEGIN with fclones' own
+		// framing for the canonical notice, so a genuine same-level warn about an
+		// attacker-named path that merely echoes the phrase survives. A
+		// filter-disabled mutant of emit() makes a filtered line survive here even
+		// though the byte-bound passes.
+		type marker struct{ substr, prefix string }
+		noiseByLevel := map[string][]marker{
+			"info": {{substr: "Started grouping"}, {substr: "Started deduplicating"}, {substr: "Scanned "}, {substr: "Found "}},
+			"warn": {{substr: "doesn't support FIEMAP ioctl API", prefix: "File system "}},
 		}
 		filtered := func(line string) bool {
 			const prefix = "fclones:"
@@ -100,8 +105,12 @@ func FuzzFilteringWriter(f *testing.F) {
 			if !ok {
 				return false
 			}
-			for _, p := range noiseByLevel[strings.TrimSpace(level)] {
-				if strings.Contains(msg, p) {
+			body := strings.TrimLeft(msg, " ")
+			for _, m := range noiseByLevel[strings.TrimSpace(level)] {
+				if m.prefix != "" && !strings.HasPrefix(body, m.prefix) {
+					continue
+				}
+				if strings.Contains(body, m.substr) {
 					return true
 				}
 			}
