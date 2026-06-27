@@ -95,6 +95,29 @@ func FuzzParseActionSummary(f *testing.F) {
 			t.Fatalf("Files=%d ReclaimedBytes=%d set but RawLine empty: input=%q",
 				summary.Files, summary.ReclaimedBytes, input)
 		}
+		// Provenance: a non-empty RawLine must be derivable from the input --
+		// either the TrimSpace of a whole line (fallback path) or
+		// TrimSpace(line[idx:]) at the "Processed" offset (match path). This
+		// grounds the parser's output in its input so a fabricated RawLine
+		// cannot pass.
+		if summary.RawLine != "" {
+			derivable := false
+			for line := range strings.SplitSeq(input, "\n") {
+				if strings.TrimSpace(line) == summary.RawLine {
+					derivable = true
+					break
+				}
+				if idx := strings.Index(line, "Processed"); idx != -1 &&
+					strings.TrimSpace(line[idx:]) == summary.RawLine {
+					derivable = true
+					break
+				}
+			}
+			if !derivable {
+				t.Fatalf("RawLine %q not derivable from any input line: input=%q",
+					summary.RawLine, input)
+			}
+		}
 	})
 }
 
