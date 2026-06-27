@@ -36,12 +36,18 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
     if [ "$ARCH" = "amd64" ]; then \
       curl -fsSL -o /tmp/fclones.tar.gz \
         "https://github.com/pkolaczk/fclones/releases/download/${FCLONES_VERSION}/fclones-${VERSION}-linux-musl-x86_64.tar.gz" && \
-      printf '%s  /tmp/fclones.tar.gz\n' "${FCLONES_SHA256_AMD64}" | sha256sum -c - && \
+      printf '%s  /tmp/fclones.tar.gz\n' "${FCLONES_SHA256_AMD64}" | sha256sum -c - || { \
+        echo "fclones amd64 sha256 pin mismatch: fclones-${VERSION}-linux-musl-x86_64.tar.gz does not match FCLONES_SHA256_AMD64=${FCLONES_SHA256_AMD64}; recompute the sha256 of the new release asset and update ARG FCLONES_SHA256_AMD64 (and FCLONES_COMMIT) for the new version -- see CONTRIBUTING.md" >&2; \
+        exit 1; \
+      } && \
       tar xz --strip-components=3 -C /usr/src/fclones -f /tmp/fclones.tar.gz && \
       rm -f /tmp/fclones.tar.gz; \
     elif [ "$ARCH" = "arm64" ]; then \
       git clone --branch "${FCLONES_VERSION}" --depth 1 https://github.com/pkolaczk/fclones.git . && \
-      test "$(git rev-parse HEAD)" = "${FCLONES_COMMIT}" && \
+      { [ "$(git rev-parse HEAD)" = "${FCLONES_COMMIT}" ] || { \
+          echo "fclones arm64 commit pin mismatch: ${FCLONES_VERSION} dereferences to $(git rev-parse HEAD) but FCLONES_COMMIT=${FCLONES_COMMIT}; update ARG FCLONES_COMMIT (and FCLONES_SHA256_AMD64) for the new version -- see CONTRIBUTING.md" >&2; \
+          exit 1; \
+        }; } && \
       cargo build --release --target aarch64-unknown-linux-musl && \
       mv target/aarch64-unknown-linux-musl/release/fclones /usr/src/fclones/fclones; \
     else \

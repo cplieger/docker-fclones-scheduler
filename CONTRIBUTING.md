@@ -64,10 +64,22 @@ intact when touching `config.go` or `scheduler.go`:
 - `--command`, `--transform`, `--in-place`, and `--no-copy` are rejected in
   `rejectDangerousArgs` unless `FCLONES_ALLOW_UNSAFE=true`. New flag handling
   must preserve this opt-in gate.
-- When the `FCLONES_VERSION` Renovate PR bumps the minor or major version,
-  diff `fclones group --help` and `fclones <action> --help` for any new flag
-  that executes an external command or mutates files in-place, and extend
-  `dangerousFlags` (`config.go`) accordingly.
+- When the `FCLONES_VERSION` Renovate PR bumps the version, four coupled
+  artifacts must move in lockstep (each fail-closes the build if stale, so a
+  broken build after a bump usually means one was missed):
+  1. `ARG FCLONES_SHA256_AMD64` (Dockerfile) — recompute as the sha256 of the
+     new `fclones-<version>-linux-musl-x86_64.tar.gz` release asset.
+  2. `ARG FCLONES_COMMIT` (Dockerfile) — set to the commit the new
+     `FCLONES_VERSION` tag dereferences to (`git rev-parse <tag>`); tags are
+     mutable, so the arm64 source build pins the commit.
+  3. The `Audited against fclones <version>;` comment in `config.go` — diff
+     `fclones group --help` and `fclones <action> --help` for any new flag
+     that executes an external command or mutates files in-place, extend
+     `dangerousFlags` accordingly, and bump the audit comment to the new
+     version (the go-builder grep gate refuses to build until it matches).
+  4. The `internal/parsing` report parsers — re-check them against the new
+     fclones report format (`suspectDrift` is the runtime backstop, not a
+     substitute).
 - Memory is bounded on purpose: per-stream capture (`streamCapBytes`, bounding
   fclones' stderr and the action phase's stdout), the report
   read (`outputCapBytes`, 50 MB), and the duplicate-log detail
