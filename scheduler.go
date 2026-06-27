@@ -48,8 +48,12 @@ const reportTempPattern = "fclones_report_*.txt"
 // not a meaningful phase duration.
 const logKeyDurationS = "duration_s"
 
-// logKeyOutcome is the slog attribute key carrying the classified phaseOutcome
-// on every terminal (non-success) phase log line (timeout, exec-error, shutdown).
+// logKeyOutcome is the slog attribute key tagging every non-success outcome so a
+// single Loki/Grafana query (outcome=~".+") catches them all. It carries the
+// classified phaseOutcome on the terminal phase lines (timeout, exec_error,
+// shutdown) and, for the pre-exec failures that mark the run unhealthy before a
+// phase outcome exists, the literals "lock_error" (scan lock could not be
+// acquired) and "start_error" (bad args or temp-file creation failed).
 const logKeyOutcome = "outcome"
 
 // cleanStaleReports removes orphaned fclones report temp files left in /cache
@@ -215,7 +219,7 @@ func classifyAndLogOutcome(
 func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trigger string, newCmd commandRunner) (ran bool, err error) {
 	lock, ok, lockErr := tryLock(lockFile)
 	if lockErr != nil {
-		slog.Error("cannot acquire scan lock", "trigger", trigger, "path", lockFile, "error", lockErr)
+		slog.Error("cannot acquire scan lock", "trigger", trigger, logKeyOutcome, "lock_error", "path", lockFile, "error", lockErr)
 		marker.Set(false)
 		return true, lockErr
 	}
@@ -243,13 +247,13 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 
 	scanArgs, err := buildScanArgs(cfg)
 	if err != nil {
-		log.Error("scan failed to start", "reason", "bad_args", "error", err)
+		log.Error("scan failed to start", "reason", "bad_args", logKeyOutcome, "start_error", "error", err)
 		return true, err
 	}
 
 	tmpFile, err := os.CreateTemp(cacheDir, reportTempPattern)
 	if err != nil {
-		log.Error("scan failed to start", "reason", "tmpfile", "error", err)
+		log.Error("scan failed to start", "reason", "tmpfile", logKeyOutcome, "start_error", "error", err)
 		return true, err
 	}
 	tmpPath := tmpFile.Name()
@@ -527,7 +531,7 @@ func phaseContext(ctx context.Context, timeout time.Duration) (context.Context, 
 func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *slog.Logger, newCmd commandRunner) error {
 	actionCmdArgs, err := buildActionArgs(cfg)
 	if err != nil {
-		log.Error("invalid FCLONES_ACTION_ARGS syntax", "error", err)
+		log.Error("invalid FCLONES_ACTION_ARGS syntax", logKeyOutcome, "start_error", "error", err)
 		return err
 	}
 	if actionCmdArgs == nil {
@@ -548,7 +552,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 
 	inFile, err := os.Open(reportPath)
 	if err != nil {
-		log.Error("failed to open report for action", "error", err)
+		log.Error("failed to open report for action", logKeyOutcome, "start_error", "error", err)
 		return err
 	}
 	defer inFile.Close()
