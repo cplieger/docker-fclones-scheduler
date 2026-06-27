@@ -946,6 +946,9 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		if !strings.Contains(buf.String(), `msg="scan interrupted"`) {
 			t.Errorf("classifyAndLogOutcome(shutdown) log = %q, want it to contain 'scan interrupted'", buf.String())
 		}
+		if !strings.Contains(buf.String(), "outcome=shutdown") {
+			t.Errorf("classifyAndLogOutcome(shutdown) log = %q, want the outcome=shutdown attr", buf.String())
+		}
 	})
 
 	t.Run("timeout returns done with a timeout error and logs stderr", func(t *testing.T) {
@@ -969,6 +972,9 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		if !strings.Contains(out, `msg="scan timeout exceeded"`) || !strings.Contains(out, "stderr=boom") {
 			t.Errorf("classifyAndLogOutcome(timeout) log = %q, want the timeout message and captured stderr", out)
 		}
+		if !strings.Contains(out, "outcome=timeout") {
+			t.Errorf("classifyAndLogOutcome(timeout) log = %q, want the outcome=timeout attr", out)
+		}
 	})
 
 	t.Run("exec error returns done with an exec error and omits stdout when nil", func(t *testing.T) {
@@ -991,6 +997,9 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		out := buf.String()
 		if !strings.Contains(out, `msg="scan failed"`) || !strings.Contains(out, "stderr=\"permission denied\"") {
 			t.Errorf("classifyAndLogOutcome(exec_error) log = %q, want failure message and stderr", out)
+		}
+		if !strings.Contains(out, "outcome=exec_error") {
+			t.Errorf("classifyAndLogOutcome(exec_error) log = %q, want the outcome=exec_error attr", out)
 		}
 		if strings.Contains(out, "stdout=") {
 			t.Errorf("classifyAndLogOutcome(exec_error, stdout=nil) log = %q, must not emit a stdout attr", out)
