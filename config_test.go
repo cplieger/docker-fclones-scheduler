@@ -705,3 +705,41 @@ func TestRunModeStringPanicsOnUnknown(t *testing.T) {
 	}()
 	_ = runMode(99).String()
 }
+
+func TestLoadConfigTagsConfigErrorOutcome(t *testing.T) {
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	tests := []struct {
+		name   string
+		envVar string
+		value  string
+		unsafe bool
+	}{
+		{"invalid action", "FCLONES_ACTION", "shell", false},
+		{"unparseable scan timeout", "FCLONES_SCAN_TIMEOUT", "not-a-duration", false},
+		{"negative scan timeout", "FCLONES_SCAN_TIMEOUT", "-1h", false},
+		{"dangerous flag", "FCLONES_ARGS", "--command rm", false},
+		{"invalid arg syntax", "FCLONES_ARGS", "--path \"/unterminated", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setCleanFclonesEnv(t)
+			if tt.unsafe {
+				t.Setenv("FCLONES_ALLOW_UNSAFE", "true")
+			}
+			t.Setenv(tt.envVar, tt.value)
+
+			var logs strings.Builder
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelError})))
+
+			if _, err := loadConfig(); err == nil {
+				t.Fatalf("loadConfig(%s=%q) error = nil, want a config error", tt.envVar, tt.value)
+			}
+			if got := logs.String(); !strings.Contains(got, "outcome=config_error") {
+				t.Errorf("loadConfig(%s=%q) log = %q, want the outcome=config_error attr so the outcome=~\".+\" dashboard query catches startup config faults", tt.envVar, tt.value, got)
+			}
+		})
+	}
+}

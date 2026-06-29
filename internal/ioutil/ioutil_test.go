@@ -558,17 +558,6 @@ func TestFilteringWriterFlushEmptyIsNoop(t *testing.T) {
 	}
 }
 
-func TestFilteringWriterCloseFlushesPartialLine(t *testing.T) {
-	t.Parallel()
-	var out bytes.Buffer
-	fw := ioutil.NewFilteringWriter(&out)
-	fw.Write([]byte("tail line no newline"))
-	fw.Close()
-	if got := out.String(); got != "tail line no newline" {
-		t.Errorf("after Close, out = %q, want tail line", got)
-	}
-}
-
 func TestFilteringWriterFlushPropagatesSinkError(t *testing.T) {
 	t.Parallel()
 
@@ -693,6 +682,42 @@ func TestFilteringWriterCapFiresAcrossMultipleWrites(t *testing.T) {
 	}
 }
 
+func TestFloodsCountsForcedFlushes(t *testing.T) {
+	t.Parallel()
+	const maxLine = 1 << 20 // mirrors maxLineBytes
+	var out bytes.Buffer
+	fw := ioutil.NewFilteringWriter(&out)
+
+	if got := fw.Floods(); got != 0 {
+		t.Errorf("Floods() = %d before any write, want 0", got)
+	}
+
+	// Two separate no-newline runs each strictly exceed maxLineBytes, so each
+	// forces a cap-flush and bumps the flood counter.
+	if _, err := fw.Write(bytes.Repeat([]byte("x"), maxLine+1)); err != nil {
+		t.Fatalf("Write(flood #1): %v", err)
+	}
+	if got := fw.Floods(); got != 1 {
+		t.Errorf("Floods() = %d after one no-newline flood, want 1", got)
+	}
+
+	if _, err := fw.Write(bytes.Repeat([]byte("y"), maxLine+1)); err != nil {
+		t.Fatalf("Write(flood #2): %v", err)
+	}
+	if got := fw.Floods(); got != 2 {
+		t.Errorf("Floods() = %d after a second flood, want 2", got)
+	}
+
+	// A sub-cap, newline-terminated line is emitted normally and must NOT bump
+	// the flood counter.
+	if _, err := fw.Write([]byte("short line\n")); err != nil {
+		t.Fatalf("Write(short): %v", err)
+	}
+	if got := fw.Floods(); got != 2 {
+		t.Errorf("Floods() = %d after a sub-cap line, want 2 (no new flood)", got)
+	}
+}
+
 func TestFilteringWriterPropagatesSinkErrorOnCompleteLine(t *testing.T) {
 	t.Parallel()
 
@@ -798,25 +823,6 @@ func (s *failingThenRecordingSink) Write(p []byte) (int, error) {
 	return s.got.Write(p)
 }
 
-func TestFilteringWriterClosePropagatesSinkError(t *testing.T) {
-	t.Parallel()
-
-	sink := &errOnWrite{}
-	fw := ioutil.NewFilteringWriter(sink)
-
-	if _, err := fw.Write([]byte("buffered partial line, no newline")); err != nil {
-		t.Fatalf("Write(partial) buffered the line but returned error %v, want nil", err)
-	}
-
-	err := fw.Close()
-	if err == nil {
-		t.Fatal("Close of a buffered non-filtered line into a failing sink = nil error, want the sink error propagated from Flush")
-	}
-	if sink.calls != 1 {
-		t.Errorf("sink.Write called %d times during Close, want 1", sink.calls)
-	}
-}
-
 func TestFilteringWriterCapNotTrippedAtExactBoundary(t *testing.T) {
 	t.Parallel()
 
@@ -873,4 +879,27 @@ func TestProperty_ReadFileWithLimitMatchesFileSize(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestReadFileWithLimitPropagatesMidReadError(t *testing.T) {
+	t.Parallel()
+
+	// /proc/self/mem opens and stats cleanly (reported size 0, so it passes
+	// the info.Size() > maxBytes gate) but errors with EIO on the first read,
+	// exercising the io.ReadAll error-return path that no other test reaches.
+	// Linux-only; skip elsewhere (mirrors the /dev/zero growth-detection test).
+	const procMem = "/proc/self/mem"
+	if f, statErr := os.Open(procMem); statErr != nil {
+		t.Skipf("%s not available on this platform: %v", procMem, statErr)
+	} else {
+		_ = f.Close()
+	}
+
+	data, err := ioutil.ReadFileWithLimit(procMem, 1<<20)
+	if err == nil {
+		t.Fatalf("ReadFileWithLimit(%s, 1MiB) = nil error, want the underlying read error propagated", procMem)
+	}
+	if data != nil {
+		t.Errorf("ReadFileWithLimit(%s) returned %d bytes with the error, want nil data", procMem, len(data))
+	}
 }

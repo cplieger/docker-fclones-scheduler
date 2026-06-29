@@ -47,7 +47,7 @@ func main() {
 			// docker-rsync-scheduler), which exit non-zero on an unknown
 			// subcommand.
 			setupLogger()
-			slog.Error("unknown subcommand", "command", os.Args[1], "valid", "scan, health")
+			slog.Error("unknown subcommand", "command", os.Args[1], logKeyOutcome, "bad_subcommand", "valid", "scan, health")
 			os.Exit(2)
 		}
 	}
@@ -118,7 +118,7 @@ func bootstrap(ctx context.Context) (config, error) {
 
 	if err := verifyCacheDir(ctx); err != nil {
 		slog.Error("cache directory verification failed",
-			"path", cacheDir, "uid", os.Getuid(), "error", err)
+			"path", cacheDir, "uid", os.Getuid(), logKeyOutcome, "cache_error", "error", err)
 		return config{}, err
 	}
 
@@ -212,14 +212,14 @@ func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
 		// no-op as success.
 		marker.Set(false)
 		slog.Warn("run-once skipped: another process holds the scan lock; no scan ran",
-			"outcome", "skipped", "lock", lockFile)
+			logKeyOutcome, "skipped", "lock", lockFile)
 		return errors.New("run-once skipped: scan lock held by another process")
 	case ctx.Err() != nil:
 		// Interrupted before the single run completed: report a non-zero exit so
 		// a batch orchestrator treats the cut-short run as a failure, not a success.
 		return fmt.Errorf("run-once interrupted before completion: %w", context.Cause(ctx))
 	default:
-		slog.Info("run once complete", "outcome", "success")
+		slog.Info("run once complete", logKeyOutcome, "success")
 		return nil
 	}
 }

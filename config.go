@@ -163,7 +163,7 @@ func loadConfig() (config, error) {
 	actionStr := getEnv("FCLONES_ACTION", string(actionGroup))
 	parsedAction, parseErr := parseAction(actionStr)
 	if parseErr != nil {
-		slog.Error("invalid FCLONES_ACTION", "action", actionStr, "error", parseErr)
+		slog.Error("invalid FCLONES_ACTION", "action", actionStr, logKeyOutcome, "config_error", "error", parseErr)
 		return config{}, parseErr
 	}
 
@@ -207,7 +207,7 @@ func loadConfig() (config, error) {
 	timeoutStr := getEnv("FCLONES_SCAN_TIMEOUT", "12h")
 	scanTimeout, err := time.ParseDuration(timeoutStr)
 	if err != nil {
-		slog.Error("invalid FCLONES_SCAN_TIMEOUT", "value", timeoutStr, "error", err)
+		slog.Error("invalid FCLONES_SCAN_TIMEOUT", "value", timeoutStr, logKeyOutcome, "config_error", "error", err)
 		return config{}, fmt.Errorf("invalid FCLONES_SCAN_TIMEOUT %q: %w", timeoutStr, err)
 	}
 	// Zero (FCLONES_SCAN_TIMEOUT=0/0s) disables the per-phase deadline: the
@@ -217,7 +217,7 @@ func loadConfig() (config, error) {
 	// every scan, so reject it rather than silently bricking the container.
 	if scanTimeout < 0 {
 		slog.Error("invalid FCLONES_SCAN_TIMEOUT",
-			"value", timeoutStr, "error", "must be zero (no timeout) or a positive duration")
+			"value", timeoutStr, logKeyOutcome, "config_error", "error", "must be zero (no timeout) or a positive duration")
 		return config{}, fmt.Errorf("invalid FCLONES_SCAN_TIMEOUT %q: must be zero (no timeout) or positive", timeoutStr)
 	}
 
@@ -302,7 +302,7 @@ var dangerousFlags = []string{flagCommand, flagTransform, flagInPlace, flagNoCop
 func parseArgString(raw, envVar string) ([]string, error) {
 	parsed, err := args.Parse(raw)
 	if err != nil {
-		slog.Error("invalid argument syntax", "env", envVar, "error", err)
+		slog.Error("invalid argument syntax", "env", envVar, logKeyOutcome, "config_error", "error", err)
 		return nil, fmt.Errorf("invalid argument syntax in %s: %w", envVar, err)
 	}
 	return parsed, nil
@@ -318,7 +318,7 @@ func rejectDangerousArgs(raw, envVar string) error {
 		lower := strings.ToLower(arg)
 		for _, flag := range dangerousFlags {
 			if lower == flag || strings.HasPrefix(lower, flag+"=") {
-				slog.Error("dangerous flag not allowed", "flag", flag, "env", envVar)
+				slog.Error("dangerous flag not allowed", "flag", flag, "env", envVar, logKeyOutcome, "config_error")
 				return fmt.Errorf("dangerous flag %s not allowed in %s", flag, envVar)
 			}
 		}

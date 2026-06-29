@@ -512,7 +512,7 @@ func TestMaybeWarnGroupCountDrift(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-		maybeWarnGroupCountDrift(log, true, 5, true, 3)
+		maybeWarnGroupCountDrift(log, true, 5, true, true, 3)
 
 		out := buf.String()
 		if !strings.Contains(out, driftMsg) {
@@ -528,7 +528,7 @@ func TestMaybeWarnGroupCountDrift(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-		maybeWarnGroupCountDrift(log, true, 7, true, 7)
+		maybeWarnGroupCountDrift(log, true, 7, true, true, 7)
 
 		if out := buf.String(); out != "" {
 			t.Errorf("maybeWarnGroupCountDrift(reported=7, parsed=7) = %q, want no log", out)
@@ -540,7 +540,7 @@ func TestMaybeWarnGroupCountDrift(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-		maybeWarnGroupCountDrift(log, false, 5, true, 3)
+		maybeWarnGroupCountDrift(log, false, 5, true, true, 3)
 
 		if out := buf.String(); out != "" {
 			t.Errorf("maybeWarnGroupCountDrift(reportParsed=false) = %q, want no log", out)
@@ -552,10 +552,29 @@ func TestMaybeWarnGroupCountDrift(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-		maybeWarnGroupCountDrift(log, true, 0, false, 3)
+		maybeWarnGroupCountDrift(log, true, 0, false, true, 3)
 
 		if out := buf.String(); out != "" {
 			t.Errorf("maybeWarnGroupCountDrift(reportedOK=false) = %q, want no log", out)
+		}
+	})
+
+	t.Run("warns when the # Total line could not be parsed", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+		// The '# Total:' line is absent/reformatted (totalParsed=false): even with
+		// a numeric fallback count that happens to match parsed (0), the most severe
+		// drift mode must surface a warning, including in report-only group mode.
+		maybeWarnGroupCountDrift(log, true, 0, true, false, 0)
+
+		out := buf.String()
+		if !strings.Contains(out, "fclones '# Total:' line missing or reformatted") {
+			t.Errorf("maybeWarnGroupCountDrift(totalParsed=false): no format-drift warning, got %q", out)
+		}
+		if !strings.Contains(out, "parsed_groups=0") {
+			t.Errorf("maybeWarnGroupCountDrift(totalParsed=false): warning missing parsed_groups, got %q", out)
 		}
 	})
 }

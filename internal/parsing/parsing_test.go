@@ -88,6 +88,13 @@ func TestParseStats(t *testing.T) {
 			totalParsed: false,
 		},
 		{
+			name:        "multiple Total lines last wins",
+			input:       "# Total: 10 3 groups\n# Total: 20 5 groups",
+			groups:      "5",
+			size:        "0 B",
+			totalParsed: true,
+		},
+		{
 			name:        "Total line with no count fields returns defaults",
 			input:       "# Total:",
 			groups:      "0",
