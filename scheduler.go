@@ -48,12 +48,31 @@ const reportTempPattern = "fclones_report_*.txt"
 // not a meaningful phase duration.
 const logKeyDurationS = "duration_s"
 
-// logKeyOutcome is the slog attribute key tagging every non-success outcome so a
-// single Loki/Grafana query (outcome=~".+") catches them all. It carries the
-// classified phaseOutcome on the terminal phase lines (timeout, exec_error,
-// shutdown) and, for the pre-exec failures that mark the run unhealthy before a
-// phase outcome exists, the literals "lock_error" (scan lock could not be
-// acquired) and "start_error" (bad args or temp-file creation failed).
+// logKeyOutcome is the slog attribute key tagging the terminal outcome of a run
+// or startup so a single Loki/Grafana query (outcome=~".+") catches every
+// outcome on one field. It is emitted on every non-success outcome and, for the
+// run-once mode where the exit code is the batch-job result, on the terminal
+// success outcome too. The values:
+//
+//   - the classified phaseOutcome on the terminal phase lines: "timeout",
+//     "exec_error", "shutdown";
+//   - "lock_error" (scan lock could not be acquired) and "start_error" (bad
+//     args or temp-file creation failed) for the pre-exec failures that mark a
+//     run unhealthy before a phase outcome exists;
+//   - "skipped" on the overlap-skip path when a job is already running;
+//   - "success" on the run-once happy path ("run once complete"), the one
+//     terminal success that is tagged so a one-shot's healthy completion is
+//     queryable alongside its failures;
+//   - the startup-failure literals "config_error" (invalid FCLONES_ACTION /
+//     FCLONES_SCAN_TIMEOUT / argument syntax / a dangerous flag), "cache_error"
+//     (cache directory verification failed), and "bad_subcommand" (an unknown
+//     subcommand) emitted by loadConfig/bootstrap/main before any scan runs, so
+//     a config or cache fault that crash-loops the container is caught by the
+//     same query rather than being silently missed.
+//
+// Because the run-once success line flows through this key, an
+// outcome=~".+" query matches that one healthy line in addition to every
+// failure; scope to outcome!="success" to view non-success outcomes only.
 const logKeyOutcome = "outcome"
 
 // cleanStaleReports removes orphaned fclones report temp files left in /cache
@@ -224,7 +243,7 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 		return true, lockErr
 	}
 	if !ok {
-		slog.Info("job already running, skipping overlapping request", "trigger", trigger)
+		slog.Info("job already running, skipping overlapping request", "trigger", trigger, logKeyOutcome, "skipped")
 		return false, nil
 	}
 	defer lock.unlock()
@@ -277,6 +296,10 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	runErr := cmd.Run()
 	duration := time.Since(startTime)
 	scanFilter.Flush()
+	if n := scanFilter.Floods(); n > 0 {
+		log.Warn("fclones emitted a no-newline output flood; partial line force-flushed at cap",
+			"flood_count", n, "cap_bytes", streamCapBytes)
+	}
 	if cerr := tmpFile.Close(); cerr != nil {
 		log.Warn("failed to close report temp file", "error", cerr)
 	}
@@ -301,7 +324,7 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	hasDuplicates := len(groups) > 0
 
 	reportedGroups, reportedOK := reportedGroupCount(stats.Groups)
-	maybeWarnGroupCountDrift(log, reportParsed, reportedGroups, reportedOK, len(groups))
+	maybeWarnGroupCountDrift(log, reportParsed, reportedGroups, reportedOK, stats.TotalParsed, len(groups))
 
 	driftSuspected := suspectDrift(reportParsed, hasDuplicates, stats.TotalParsed, reportedOK, reportedGroups)
 
@@ -340,10 +363,25 @@ func reportedGroupCount(groups string) (count int, ok bool) {
 // successfully read report a mismatch is the signature of an fclones
 // output-format change our parser no longer recognises; surfacing it avoids
 // silently treating drift as "no duplicates" (which skips the dedup action
-// while the healthcheck stays green). No-op when the report was not parsed or
-// fclones' reported count is non-numeric (reportedOK false).
-func maybeWarnGroupCountDrift(log *slog.Logger, reportParsed bool, reported int, reportedOK bool, parsed int) {
-	if !reportParsed || !reportedOK {
+// while the healthcheck stays green). It also warns when the "# Total:" line
+// itself could not be parsed (totalParsed false) -- the most severe drift mode,
+// silent in report-only group mode where shouldRunAction skips with no other
+// drift warning. No-op when the report was not parsed; when the "# Total:" line
+// parsed but fclones' count token is non-numeric (reportedOK false) the numeric
+// compare is skipped.
+func maybeWarnGroupCountDrift(log *slog.Logger, reportParsed bool, reported int, reportedOK, totalParsed bool, parsed int) {
+	if !reportParsed {
+		return
+	}
+	if !totalParsed {
+		// The '# Total:' line is absent or its format changed, so we cannot read fclones'
+		// own group count -- the most severe drift mode. Surface it even in report-only
+		// group mode, where shouldRunAction skips silently and no other drift warning fires.
+		log.Warn("fclones '# Total:' line missing or reformatted, possible fclones format drift",
+			"parsed_groups", parsed)
+		return
+	}
+	if !reportedOK {
 		return
 	}
 	if reported != parsed {
@@ -539,7 +577,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 	}
 
 	if ctx.Err() != nil {
-		log.Info("action skipped, shutting down")
+		log.Info("action skipped, shutting down", logKeyOutcome, outcomeShutdown)
 		return nil
 	}
 
@@ -569,6 +607,10 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 	runErr := actionCmd.Run()
 	duration := time.Since(startTime)
 	actionFilter.Flush()
+	if n := actionFilter.Floods(); n > 0 {
+		log.Warn("fclones emitted a no-newline output flood; partial line force-flushed at cap",
+			"flood_count", n, "cap_bytes", streamCapBytes)
+	}
 	if done, phaseErr := classifyAndLogOutcome(ctx, actionCtx, log, "action", runErr,
 		cfg.PhaseTimeout, duration, actionStderr, actionStdout, "action", cfg.Action); done {
 		return phaseErr

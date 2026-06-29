@@ -20,8 +20,9 @@ const maxLineBytes = 1 << 20 // 1 MB
 // FilteringWriter wraps an io.Writer and drops lines matching known-recurring
 // noise from upstream fclones.
 type FilteringWriter struct {
-	w   io.Writer
-	buf []byte
+	w      io.Writer
+	buf    []byte
+	floods int
 }
 
 // NewFilteringWriter returns a line-filtering wrapper around w.
@@ -140,6 +141,7 @@ func (fw *FilteringWriter) Write(p []byte) (int, error) {
 			// fw.buf is nil here, so append allocates a tight copy of just the tail.
 			fw.buf = append(fw.buf, buf...)
 			if len(fw.buf) > maxLineBytes {
+				fw.floods++
 				err := fw.emit(fw.buf)
 				fw.buf = nil
 				if err != nil {
@@ -169,10 +171,11 @@ func (fw *FilteringWriter) Flush() error {
 	return fw.emit(line)
 }
 
-// Close implements io.Closer by flushing the remaining buffer.
-func (fw *FilteringWriter) Close() error {
-	return fw.Flush()
-}
+// Floods reports how many times the partial-line buffer exceeded maxLineBytes
+// and was force-flushed (a no-newline output flood). It mirrors the visibility
+// LimitedBuffer.Total/Truncated give their cap: the caller logs a non-zero
+// count so the otherwise-silent flood bound is observable in Loki/Grafana.
+func (fw *FilteringWriter) Floods() int { return fw.floods }
 
 // LimitedBuffer is a bytes.Buffer that stops accumulating after Max bytes.
 type LimitedBuffer struct {

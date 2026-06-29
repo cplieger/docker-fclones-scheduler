@@ -35,6 +35,36 @@ func FuzzParseStats(f *testing.F) {
 		if !hasTotal && stats.Groups != "0" {
 			t.Fatalf("Groups should be '0' without valid Total line, got %q", stats.Groups)
 		}
+		// TotalParsed is the format-drift signal scheduler.go's suspectDrift relies
+		// on, so it must track exactly whether a recognizable Total line was seen.
+		if stats.TotalParsed != hasTotal {
+			t.Fatalf("TotalParsed=%v but a recognizable Total line present=%v: input=%q",
+				stats.TotalParsed, hasTotal, input)
+		}
+		// When the Total line parsed, Groups must echo its real count token, never
+		// the "0" default placeholder (a regression that set TotalParsed without
+		// assigning Groups would otherwise pass).
+		if stats.TotalParsed {
+			// Production keeps the LAST recognizable Total line's count token
+			// (ParseStats reassigns Groups on every match), matching the
+			// last-wins semantics suspectDrift depends on. Re-derive the same
+			// way -- independently from the input -- then assert once. Checking
+			// the FIRST match instead falsely fires on two distinct Total lines.
+			wantGroups := ""
+			haveWant := false
+			for line := range strings.SplitSeq(input, "\n") {
+				if strings.HasPrefix(line, "# Total:") {
+					if parts := strings.Fields(line); len(parts) >= 2 && parts[len(parts)-1] == "groups" {
+						wantGroups = parts[len(parts)-2]
+						haveWant = true
+					}
+				}
+			}
+			if haveWant && stats.Groups != wantGroups {
+				t.Fatalf("TotalParsed but Groups=%q, want %q from input=%q",
+					stats.Groups, wantGroups, input)
+			}
+		}
 	})
 }
 
