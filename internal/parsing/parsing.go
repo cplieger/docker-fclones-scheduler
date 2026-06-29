@@ -109,24 +109,30 @@ func (p *groupParser) step(line string) {
 	if strings.HasPrefix(line, "#") {
 		return
 	}
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "" {
+	if strings.TrimSpace(line) == "" {
 		p.flush()
 		return
 	}
-	if !p.inGroup {
-		if isGroupHeader(line) {
-			p.current.SizePerDup = extractGroupSize(line)
-			p.inGroup = true
-		}
+	// fclones writes each group header at column 0 and indents every file path
+	// beneath it. A non-indented header-shaped line therefore begins a new
+	// group even when no blank line precedes it. This matters because fclones'
+	// default report does NOT reliably separate groups with a blank line:
+	// relying on the blank line alone collapses consecutive groups into one and
+	// absorbs the following groups' headers as bogus "duplicate" paths (the
+	// FclonesFormatDrift incident). Indentation is the guard that keeps an
+	// attacker-influenced duplicate path -- always indented in the report --
+	// from being reclassified as a header, so header delimiters (',', '*',
+	// trailing ':') embedded in a filename stay part of the path.
+	if !isIndented(line) && isGroupHeader(line) {
+		p.flush()
+		p.current.SizePerDup = extractGroupSize(line)
+		p.inGroup = true
 		return
 	}
-	// Once in a group, every non-blank line is a path until the blank-line
-	// flush ends the group. Header detection is deliberately NOT re-run here:
-	// fclones separates groups with a blank line, so a duplicate filename that
-	// embeds the header delimiters (',', '*', trailing ':') must not be
-	// reclassified as a new group header. Do not add an isGroupHeader check in
-	// this branch.
+	if !p.inGroup {
+		return
+	}
+	trimmed := strings.TrimSpace(line)
 	if p.current.Keeper == "" {
 		p.current.Keeper = trimmed
 	} else {
@@ -134,13 +140,26 @@ func (p *groupParser) step(line string) {
 	}
 }
 
+// isIndented reports whether a line begins with leading whitespace. fclones
+// indents duplicate-file path lines beneath their group header (which sits at
+// column 0), so indentation is what distinguishes a path from a header even
+// when the path's basename embeds the header delimiters (',', '*', trailing
+// ':').
+func isIndented(line string) bool {
+	return line != "" && (line[0] == ' ' || line[0] == '\t')
+}
+
 // ParseDuplicateGroups parses an fclones custom-format report into structured
 // groups. Each group header looks like:
 //
 //	3a2b, 512 B * 2:
 //
-// followed by one path per line (one "keeper" and one or more duplicates),
-// terminated by a blank line.
+// and is followed by one indented path per line (one "keeper" and one or more
+// duplicates). A group ends at the next group header or a blank line, whichever
+// comes first. fclones does not reliably emit a blank line between groups, so
+// the parser relies on the structural distinction instead: headers sit at
+// column 0, paths are indented, and a non-indented header-shaped line opens a
+// new group (see step).
 func ParseDuplicateGroups(report string) []DuplicateGroup {
 	var p groupParser
 	for line := range strings.SplitSeq(report, "\n") {
