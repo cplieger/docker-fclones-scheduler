@@ -41,10 +41,15 @@ func FuzzParseStats(f *testing.F) {
 func FuzzParseDuplicateGroups(f *testing.F) {
 	f.Add("# comment\n\n3a2b,1024 B,2 * 512 B:\n/path/file1\n/path/file2\n")
 	f.Add("# comment\n/path/lonely\n")
-	// Adversarial: duplicate paths that themselves look like group headers
-	// (embed ',', '*' and a trailing ':'). Exercises in-group path handling so
-	// a header-like filename is not mistaken for the start of a new group.
-	f.Add("h, 1 B * 2:\n/x, 1 B * 2:\n/y, 1 B * 2:\n\n")
+	// Adversarial: header-shaped tokens. In the real report every path is
+	// indented, so an indented header-shaped filename stays a path (injection
+	// safety), while a non-indented header-shaped line is a genuine new-group
+	// boundary. These seeds exercise both sides of that indentation
+	// discriminator plus the panic/structure invariants under it. The last is
+	// the FclonesFormatDrift shape: back-to-back groups with no blank line.
+	f.Add("h, 1 B * 2:\n/x, 1 B * 2:\n/y, 1 B * 2:\n\n")                  // non-indented header-shaped => new groups
+	f.Add("h, 1 B * 2:\n    /x, 1 B * 2:\n    /y, 1 B * 2:\n")            // indented header-shaped => still paths
+	f.Add("h1, 1 B * 2:\n    /a\n    /b\nh2, 2 B * 2:\n    /c\n    /d\n") // back-to-back groups, no blank line
 	// Adversarial: filenames that embed a newline (legal on Unix). fclones
 	// writes scanned paths into a newline-delimited report, so an embedded
 	// newline can split one path across two parser lines or fake the

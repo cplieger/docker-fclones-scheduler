@@ -217,18 +217,48 @@ func TestParseDuplicateGroups(t *testing.T) {
 			},
 		},
 		{
-			// Oracle the fuzz invariants miss: duplicate filenames that embed
-			// the header delimiters (',', '*', trailing ':') must NOT be
-			// reclassified as new group headers. The whole block stays ONE
-			// group with the expected keeper and duplicate count.
+			// Oracle the fuzz invariants miss: in the real report every path is
+			// indented, so a duplicate filename that embeds the header
+			// delimiters (',', '*', trailing ':') is still a path, not a new
+			// group header. Indentation is the discriminator, so the whole
+			// block stays ONE group with the expected keeper and duplicate count.
 			name:  "duplicate filenames that look like group headers stay one group",
-			input: "realhash, 100 B * 3:\n/path/a, 1 B * 2:\n/path/b, 1 B * 2:\n/path/c, 1 B * 2:\n",
+			input: "realhash, 100 B * 3:\n    /path/a, 1 B * 2:\n    /path/b, 1 B * 2:\n    /path/c, 1 B * 2:\n",
 			want: []parsing.DuplicateGroup{
 				{
 					Keeper:     "/path/a, 1 B * 2:",
 					Duplicates: []string{"/path/b, 1 B * 2:", "/path/c, 1 B * 2:"},
 					SizePerDup: "100 B",
 				},
+			},
+		},
+		{
+			// Regression test for the FclonesFormatDrift incident: fclones does
+			// NOT put a blank line between groups, so group blocks arrive
+			// back-to-back (header at column 0, paths indented). The parser must
+			// split them on the non-indented header rather than collapse them
+			// into one group and absorb the later headers as duplicate paths.
+			name: "back-to-back groups without blank-line separators",
+			input: "h1, 100 B * 2:\n    /a/keeper\n    /a/dup\n" +
+				"h2, 200 B * 3:\n    /b/keeper\n    /b/dup1\n    /b/dup2\n" +
+				"h3, 300 B * 2:\n    /c/keeper\n    /c/dup\n",
+			want: []parsing.DuplicateGroup{
+				{Keeper: "/a/keeper", Duplicates: []string{"/a/dup"}, SizePerDup: "100 B"},
+				{Keeper: "/b/keeper", Duplicates: []string{"/b/dup1", "/b/dup2"}, SizePerDup: "200 B"},
+				{Keeper: "/c/keeper", Duplicates: []string{"/c/dup"}, SizePerDup: "300 B"},
+			},
+		},
+		{
+			// fclones' separator emission is inconsistent: a single report may
+			// mix blank-separated and back-to-back groups. Both forms must split.
+			name: "mixed separators (blank line then back-to-back)",
+			input: "h1, 10 B * 2:\n    /a\n    /a2\n\n" +
+				"h2, 20 B * 2:\n    /b\n    /b2\n" +
+				"h3, 30 B * 2:\n    /c\n    /c2\n",
+			want: []parsing.DuplicateGroup{
+				{Keeper: "/a", Duplicates: []string{"/a2"}, SizePerDup: "10 B"},
+				{Keeper: "/b", Duplicates: []string{"/b2"}, SizePerDup: "20 B"},
+				{Keeper: "/c", Duplicates: []string{"/c2"}, SizePerDup: "30 B"},
 			},
 		},
 	}
