@@ -1,6 +1,6 @@
 # docker-fclones-scheduler
 
-[![Image Size](https://ghcr-badge.egpl.dev/cplieger/docker-fclones-scheduler/size)](https://github.com/cplieger/docker-fclones-scheduler/pkgs/container/fclones)
+[![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-fclones-scheduler/badges/size.json)](https://github.com/cplieger/docker-fclones-scheduler/pkgs/container/docker-fclones-scheduler)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Distroless](https://img.shields.io/badge/base-Distroless_nonroot-4285F4?logo=google)
 [![Go Report Card](https://goreportcard.com/badge/github.com/cplieger/docker-fclones-scheduler)](https://goreportcard.com/report/github.com/cplieger/docker-fclones-scheduler)
