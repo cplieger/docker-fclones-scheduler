@@ -500,6 +500,54 @@ func TestLogDuplicateGroups(t *testing.T) {
 			t.Error("missing final pairs-truncated summary")
 		}
 	})
+
+	t.Run("logs the pair whose cumulative detail bytes equal the cap exactly", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		// A single (keeper, duplicate) pair whose lengths sum to exactly
+		// logDetailCapBytes. The byte cap is exclusive: a pair landing right on
+		// it is still emitted and no truncation fires. An inclusive cap would
+		// drop this pair and log "byte cap reached" instead.
+		keeper := strings.Repeat("k", 10)
+		dup := strings.Repeat("d", logDetailCapBytes-10)
+		groups := []parsing.DuplicateGroup{
+			{Keeper: keeper, SizePerDup: "1 KB", Duplicates: []string{dup}},
+		}
+		logDuplicateGroups(log, groups)
+
+		out := buf.String()
+		if got := strings.Count(out, dupFileMsg); got != 1 {
+			t.Errorf("emitted %d duplicate-file lines, want 1 (a pair whose detail bytes equal the cap is logged; the cap is exclusive)", got)
+		}
+		if strings.Contains(out, "byte cap reached") {
+			t.Errorf("byte-cap truncation fired when detail bytes only equalled the cap; the cap must be exclusive, got %q", out)
+		}
+	})
+
+	t.Run("numbers groups one-based in the duplicate-file lines", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+
+		groups := []parsing.DuplicateGroup{
+			{Keeper: "/a/keeper", SizePerDup: "1 KB", Duplicates: []string{"/a/dup"}},
+			{Keeper: "/b/keeper", SizePerDup: "1 KB", Duplicates: []string{"/b/dup"}},
+		}
+		logDuplicateGroups(log, groups)
+
+		// Groups are displayed one-based: group index i is rendered as group
+		// i+1, so the first group is group=1 and the second group=2. A shifted
+		// numbering (i-1, i, or i%1) would render group=-1/group=0 instead.
+		out := buf.String()
+		if !strings.Contains(out, "group=1") {
+			t.Errorf("first group not labelled group=1 (one-based display), got %q", out)
+		}
+		if !strings.Contains(out, "group=2") {
+			t.Errorf("second group not labelled group=2 (one-based display), got %q", out)
+		}
+	})
 }
 
 func TestMaybeWarnGroupCountDrift(t *testing.T) {
