@@ -478,8 +478,7 @@ func logDuplicateGroups(log *slog.Logger, groups []parsing.DuplicateGroup) {
 	detailBytes := 0
 
 pairs:
-	for i := range emit {
-		g := groups[i]
+	for i, g := range groups[:emit] {
 		for _, dup := range g.Duplicates {
 			if pairsEmitted >= maxLoggedPairs {
 				break pairs
