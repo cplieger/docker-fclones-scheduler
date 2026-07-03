@@ -34,12 +34,12 @@ ARG FCLONES_COMMIT=a74f90d293e05856d19a4c0ac2b29b46ef16cf23
 RUN VERSION="${FCLONES_VERSION#v}" && \
     ARCH=$(dpkg --print-architecture) && \
     if [ "$ARCH" = "amd64" ]; then \
-      curl -fsSL -o /tmp/fclones.tar.gz \
+      curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 -o /tmp/fclones.tar.gz \
         "https://github.com/pkolaczk/fclones/releases/download/${FCLONES_VERSION}/fclones-${VERSION}-linux-musl-x86_64.tar.gz" && \
-      printf '%s  /tmp/fclones.tar.gz\n' "${FCLONES_SHA256_AMD64}" | sha256sum -c - || { \
+      { printf '%s  /tmp/fclones.tar.gz\n' "${FCLONES_SHA256_AMD64}" | sha256sum -c - || { \
         echo "fclones amd64 sha256 pin mismatch: fclones-${VERSION}-linux-musl-x86_64.tar.gz does not match FCLONES_SHA256_AMD64=${FCLONES_SHA256_AMD64}; recompute the sha256 of the new release asset and update ARG FCLONES_SHA256_AMD64 (and FCLONES_COMMIT) for the new version -- see CONTRIBUTING.md" >&2; \
         exit 1; \
-      } && \
+      }; } && \
       tar xz --strip-components=3 -C /usr/src/fclones -f /tmp/fclones.tar.gz && \
       rm -f /tmp/fclones.tar.gz; \
     elif [ "$ARCH" = "arm64" ]; then \
