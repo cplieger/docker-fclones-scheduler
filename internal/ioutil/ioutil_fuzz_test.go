@@ -50,10 +50,13 @@ func FuzzLimitedBuffer(f *testing.F) {
 func FuzzFilteringWriter(f *testing.F) {
 	f.Add("info: Started grouping\nkeep me\n")
 	f.Add("no newline at all")
-	f.Add(strings.Repeat("a", 1<<20+1)) // >maxLineBytes: covers the no-newline flood-flush path
+	f.Add(strings.Repeat("a", ioutil.MaxLineBytes+1)) // > MaxLineBytes: covers the no-newline flood-flush path
 	f.Add("")
 	f.Add("\n\n\n")
 	f.Add("info: Scanned 5\npartial line")
+	f.Add("cannot read file /scan/\x1b[31mevil\x1b[0m: denied\n") // ESC escapes to \xNN; output exceeds input
+	f.Add("cannot read file /scan/a\x00\x7fb: denied\n")          // NUL + DEL escape
+	f.Add("\x1b")                                                 // lone control byte, no newline: sanitized on Flush
 	f.Fuzz(func(t *testing.T, input string) {
 		var sink bytes.Buffer
 		fw := ioutil.NewFilteringWriter(&sink)
@@ -71,11 +74,23 @@ func FuzzFilteringWriter(f *testing.F) {
 
 		out := sink.Bytes()
 
-		// Drop-only: FilteringWriter only ever drops whole lines, so it must never
-		// emit more bytes than it received -- regardless of how lines split across
-		// the internal buffer or the no-newline cap-flush path.
-		if len(out) > len(input) {
-			t.Fatalf("filtered output %d bytes exceeds input %d bytes for %q", len(out), len(input), input)
+		// Bounded expansion: FilteringWriter drops whole lines and rewrites each C0/DEL
+		// control byte (and any invalid-UTF-8 byte) to a 4-byte \xNN escape via
+		// sanitizeControlBytes, so output can exceed input, but never by more than 4x.
+		// The old drop-only bound (len(out) > len(input)) held only before the
+		// sanitizer landed; a control byte in a scanned path trips it under the
+		// coverage-guided fuzz run even though the deterministic seed corpus passed.
+		if len(out) > 4*len(input) {
+			t.Fatalf("filtered output %d bytes exceeds 4x input %d bytes for %q", len(out), len(input), input)
+		}
+
+		// Sanitization efficacy (CWE-117): no forbidden control byte (C0 except
+		// '\n'/'\t', or DEL) may survive into the log sink, however it was framed in
+		// the raw scanned-path text fclones renders.
+		for _, b := range out {
+			if (b < 0x20 && b != '\n' && b != '\t') || b == 0x7f {
+				t.Fatalf("forbidden control byte %#02x survived into output %q for input %q", b, out, input)
+			}
 		}
 
 		// Filter efficacy: every COMPLETE (newline-terminated) line emitted must be a

@@ -3,6 +3,7 @@ package ioutil
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // shouldFilterLine is unexported (no production caller outside this package),
@@ -132,6 +133,63 @@ func FuzzShouldFilterLine(f *testing.F) {
 		}
 		if got := shouldFilterLine(input); got != want {
 			t.Fatalf("shouldFilterLine(%q) = %v, want %v", input, got, want)
+		}
+	})
+}
+
+// FuzzSanitizeControlBytes pins the properties of the unexported sanitizer
+// directly (FilteringWriter as a whole is not idempotent because of line
+// framing, so idempotency can only be asserted on the function itself). The
+// seed corpus runs deterministically every PR; the properties are asserted
+// against the post-UTF-8-awareness behavior (a standalone C1 / invalid byte is
+// escaped, valid multi-byte runes pass through verbatim).
+func FuzzSanitizeControlBytes(f *testing.F) {
+	f.Add("clean printable text /scan/file.txt")
+	f.Add("esc \x1b[31mred\x1b[0m reset")
+	f.Add("nul\x00 and del\x7f bytes")
+	f.Add("tab\there newline\nkept")
+	f.Add("valid multibyte caf\u00e9 \u65e5\u672c\u8a9e kept")
+	f.Add("standalone C1 \x9b and invalid \xff escaped")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, input string) {
+		out := sanitizeControlBytes([]byte(input))
+
+		// Efficacy (CWE-117 log injection): no forbidden control byte -- any C0 byte
+		// other than '\n'/'\t', or DEL -- survives into the sanitized output.
+		for _, b := range out {
+			if (b < 0x20 && b != '\n' && b != '\t') || b == 0x7f {
+				t.Fatalf("forbidden control byte %#02x survived in %q for input %q", b, out, input)
+			}
+		}
+
+		// Idempotency (required of any sanitizer): the escaped form is valid UTF-8
+		// containing only printable ASCII escapes plus preserved '\n'/'\t' and valid
+		// runes, so a second pass takes the fast path and changes nothing.
+		if again := sanitizeControlBytes(out); string(again) != string(out) {
+			t.Fatalf("not idempotent: sanitize(%q) = %q, second pass = %q", input, out, again)
+		}
+
+		// Bounded transform: escaping is the only growth (1 byte -> 4 bytes) and
+		// nothing is dropped, so output never shrinks and never exceeds 4x the input.
+		if len(out) < len(input) || len(out) > 4*len(input) {
+			t.Fatalf("output length %d outside [%d, %d] for input %q", len(out), len(input), 4*len(input), input)
+		}
+
+		// Identity fast path: input already valid UTF-8 with nothing to escape is
+		// returned verbatim. The verbatim condition is UTF-8-aware, so a standalone
+		// C1 / invalid byte (>=0x80 but not part of a valid rune) is NOT clean even
+		// though it is neither a C0 control nor DEL -- it is escaped instead.
+		clean := utf8.Valid([]byte(input))
+		if clean {
+			for _, b := range []byte(input) {
+				if (b < 0x20 && b != '\n' && b != '\t') || b == 0x7f {
+					clean = false
+					break
+				}
+			}
+		}
+		if clean && string(out) != input {
+			t.Fatalf("clean input mutated: sanitize(%q) = %q", input, out)
 		}
 	})
 }
