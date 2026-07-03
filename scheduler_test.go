@@ -595,15 +595,23 @@ func TestMaybeWarnGroupCountDrift(t *testing.T) {
 		}
 	})
 
-	t.Run("silent when reported count is unavailable", func(t *testing.T) {
+	t.Run("warns when reported count is non-numeric", func(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
+		// The '# Total:' line parsed but its group-count token is non-numeric
+		// (reportedOK=false), e.g. a thousands-separated count. That unreadable
+		// count is a drift mode suspectDrift acts on, so report-only group mode
+		// must surface it here rather than skip silently.
 		maybeWarnGroupCountDrift(log, true, 0, false, true, 3)
 
-		if out := buf.String(); out != "" {
-			t.Errorf("maybeWarnGroupCountDrift(reportedOK=false) = %q, want no log", out)
+		out := buf.String()
+		if !strings.Contains(out, "fclones '# Total:' group count is non-numeric") {
+			t.Errorf("maybeWarnGroupCountDrift(reportedOK=false): no format-drift warning, got %q", out)
+		}
+		if !strings.Contains(out, "parsed_groups=3") {
+			t.Errorf("maybeWarnGroupCountDrift(reportedOK=false): warning missing parsed_groups, got %q", out)
 		}
 	})
 

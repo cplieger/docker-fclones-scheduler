@@ -53,3 +53,45 @@ func classifyExecOutcome(ctx, phaseCtx context.Context, runErr error) phaseOutco
 	}
 	return outcomeExecError
 }
+
+// --- Run-Once Terminal Outcome ---
+
+// runOnceOutcome classifies how a single run-once scan (FCLONES_INTERVAL=0)
+// terminated. Extracting it makes the process exit code -- the batch-job result
+// an orchestrator keys on -- a pure function of (ran, runErr, ctxErr) instead of
+// logic welded into the untested runOnce orchestration, mirroring
+// classifyExecOutcome and markerAction.
+type runOnceOutcome int
+
+const (
+	// runOnceOK: a scan ran to completion with no error (exit 0).
+	runOnceOK runOnceOutcome = iota
+	// runOnceFailed: the scan or action returned an error -- exec failure or
+	// timeout (exit non-zero).
+	runOnceFailed
+	// runOnceSkipped: the scan lock was held by another process, so no scan ran
+	// (exit non-zero: a one-shot that did nothing is not a success).
+	runOnceSkipped
+	// runOnceInterrupted: a SIGTERM/SIGINT cancelled the parent context before
+	// the single scan completed (exit non-zero so a batch orchestrator retries).
+	runOnceInterrupted
+)
+
+// classifyRunOnceOutcome maps runFclonesJob's (ran, runErr) result plus the
+// parent context error to the run-once terminal outcome. The precedence is
+// load-bearing: a real runErr is reported ahead of a lock skip, and a lock skip
+// ahead of an interrupt, so an interrupt is reported ONLY for a run that
+// actually started and neither failed nor was skipped -- the asymmetry that lets
+// a SIGTERM be a clean stop for the daemon yet a failed batch run for the one-shot.
+func classifyRunOnceOutcome(ran bool, runErr, ctxErr error) runOnceOutcome {
+	switch {
+	case runErr != nil:
+		return runOnceFailed
+	case !ran:
+		return runOnceSkipped
+	case ctxErr != nil:
+		return runOnceInterrupted
+	default:
+		return runOnceOK
+	}
+}

@@ -127,3 +127,32 @@ func TestPhaseOutcomeStringPanicsOnUnknown(t *testing.T) {
 	}()
 	_ = phaseOutcome(99).String()
 }
+
+func TestClassifyRunOnceOutcome(t *testing.T) {
+	t.Parallel()
+	errBoom := errors.New("boom")
+	tests := []struct {
+		runErr error
+		ctxErr error
+		name   string
+		want   runOnceOutcome
+		ran    bool
+	}{
+		{nil, nil, "completed clean scan is OK", runOnceOK, true},
+		{errBoom, nil, "exec error or timeout is failed", runOnceFailed, true},
+		{nil, nil, "lock-held skip is skipped", runOnceSkipped, false},
+		{nil, context.Canceled, "interrupt after a started scan is interrupted", runOnceInterrupted, true},
+		{errBoom, context.Canceled, "a real error outranks a concurrent interrupt", runOnceFailed, true},
+		{errBoom, nil, "a real error outranks a lock skip", runOnceFailed, false},
+		{nil, context.Canceled, "a lock skip outranks an interrupt", runOnceSkipped, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := classifyRunOnceOutcome(tt.ran, tt.runErr, tt.ctxErr); got != tt.want {
+				t.Errorf("classifyRunOnceOutcome(ran=%v, runErr=%v, ctxErr=%v) = %d, want %d",
+					tt.ran, tt.runErr, tt.ctxErr, got, tt.want)
+			}
+		})
+	}
+}
