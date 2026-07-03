@@ -306,6 +306,7 @@ func TestParseActionSummary(t *testing.T) {
 		wantRawContain string
 		wantFiles      int
 		wantReclaimed  int64
+		wantEstimated  bool
 	}{
 		{
 			name:           "standard Processed line",
@@ -391,6 +392,22 @@ func TestParseActionSummary(t *testing.T) {
 			wantReclaimed:  4,
 			wantRawContain: "Processed",
 		},
+		{
+			name:           "dedupe reclaimed up to is parsed as an upper-bound estimate",
+			input:          "Processed 73 files and reclaimed up to 512 MB space",
+			wantFiles:      73,
+			wantReclaimed:  512_000_000,
+			wantRawContain: "reclaimed up to",
+			wantEstimated:  true,
+		},
+		{
+			name:           "reclaimed up to truncated yields files but zero reclaimed",
+			input:          "Processed 3 files and reclaimed up to",
+			wantFiles:      3,
+			wantReclaimed:  0,
+			wantRawContain: "Processed 3 files",
+			wantEstimated:  true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -402,6 +419,9 @@ func TestParseActionSummary(t *testing.T) {
 			}
 			if got.ReclaimedBytes != tt.wantReclaimed {
 				t.Errorf("ReclaimedBytes = %d, want %d", got.ReclaimedBytes, tt.wantReclaimed)
+			}
+			if got.Estimated != tt.wantEstimated {
+				t.Errorf("Estimated = %v, want %v", got.Estimated, tt.wantEstimated)
 			}
 			if tt.wantRawContain != "" && !strings.Contains(got.RawLine, tt.wantRawContain) {
 				t.Errorf("RawLine = %q, want to contain %q", got.RawLine, tt.wantRawContain)
@@ -570,7 +590,7 @@ func TestProperty_ParseActionSummaryIsDeterministic(t *testing.T) {
 		a := parsing.ParseActionSummary(input)
 		b := parsing.ParseActionSummary(input)
 		if a.Files != b.Files || a.ReclaimedBytes != b.ReclaimedBytes ||
-			a.RawLine != b.RawLine {
+			a.RawLine != b.RawLine || a.Estimated != b.Estimated {
 			rt.Fatalf("ParseActionSummary(%q) non-deterministic: %+v vs %+v", input, a, b)
 		}
 	})

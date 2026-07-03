@@ -36,6 +36,10 @@ type ActionSummary struct {
 	RawLine        string
 	Files          int
 	ReclaimedBytes int64
+	// Estimated is true when fclones reported the reclaimed total as an upper
+	// bound ("reclaimed up to X"). The dedupe action does this because the
+	// dedup ioctl is advisory; link and remove report an exact figure.
+	Estimated bool
 }
 
 // ParseStats extracts statistics from fclones output.
@@ -181,22 +185,32 @@ func extractGroupSize(header string) string {
 	return strings.TrimSpace(h)
 }
 
-// reclaimedMetrics parses the file count and reclaimed byte total from a
-// trimmed "Processed <files> files and reclaimed <num> <unit> [space]" line.
-// Token positions in that documented shape: fields[1]=file count,
-// fields[5]=reclaimed number, fields[6]=unit. The >= 7 check guarantees
-// fields[6] exists; the trailing "space" word is optional, so a 7-field line
-// still parses. A non-numeric or negative file count leaves files at 0 while
-// the reclaimed size is parsed independently.
-func reclaimedMetrics(rawLine string) (files int, reclaimedBytes int64) {
+// reclaimedMetrics parses the file count and reclaimed byte total from a trimmed
+// "Processed <files> files and reclaimed [up to ]<num> <unit> [space]" line.
+// fields[1] is the file count. The reclaimed <num> <unit> normally sit at
+// fields[5..6]; the dedupe action prints "reclaimed up to <num> <unit>" (its
+// reclaim is an advisory upper bound), which shifts them to fields[7..8] and
+// sets estimated. The >= 7 check guarantees fields[5..6] exist for the exact
+// form; the shifted form is bounds-checked before fields[7..8] are read. A
+// non-numeric or negative file count leaves files at 0 while the reclaimed size
+// is parsed independently.
+func reclaimedMetrics(rawLine string) (files int, reclaimedBytes int64, estimated bool) {
 	fields := strings.Fields(rawLine)
 	if len(fields) < 7 {
-		return 0, 0
+		return 0, 0, false
 	}
 	if n, err := strconv.Atoi(fields[1]); err == nil && n >= 0 {
 		files = n
 	}
-	return files, parseHumanBytes(fields[5] + " " + fields[6])
+	numIdx := 5
+	if fields[5] == "up" && fields[6] == "to" {
+		estimated = true
+		numIdx = 7
+		if len(fields) < numIdx+2 {
+			return files, 0, estimated
+		}
+	}
+	return files, parseHumanBytes(fields[numIdx] + " " + fields[numIdx+1]), estimated
 }
 
 // ParseActionSummary extracts structured metrics from fclones action stdout.
@@ -213,7 +227,7 @@ func ParseActionSummary(stdout string) ActionSummary {
 		if idx := strings.Index(line, "Processed"); idx != -1 &&
 			strings.Contains(line, "reclaimed") {
 			summary.RawLine = strings.TrimSpace(line[idx:])
-			summary.Files, summary.ReclaimedBytes = reclaimedMetrics(summary.RawLine)
+			summary.Files, summary.ReclaimedBytes, summary.Estimated = reclaimedMetrics(summary.RawLine)
 			return summary
 		}
 	}
