@@ -9,13 +9,17 @@ import (
 	"io"
 	"math"
 	"os"
+	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
-// maxLineBytes bounds the partial-line buffer in FilteringWriter so a
-// no-newline byte flood cannot grow it without limit. It mirrors the 1 MB
-// stderr cap applied to the sibling LimitedBuffer sink.
-const maxLineBytes = 1 << 20 // 1 MB
+// MaxLineBytes bounds the partial-line buffer in FilteringWriter so a
+// no-newline byte flood cannot grow it without limit. It is the threshold a
+// flood force-flush trips (see Floods), so the caller logs it directly rather
+// than a coincidentally-equal config constant. It mirrors the 1 MB stderr cap
+// applied to the sibling LimitedBuffer sink.
+const MaxLineBytes = 1 << 20 // 1 MB
 
 // FilteringWriter wraps an io.Writer and drops lines matching known-recurring
 // noise from upstream fclones.
@@ -115,14 +119,70 @@ func shouldFilterLine(line string) bool {
 	return false
 }
 
+// sanitizeControlBytes neutralizes C0 control bytes (0x00-0x1F) other than
+// '\n' and '\t', DEL (0x7F), and any byte that is not part of a valid UTF-8
+// sequence (which includes a standalone C1 control such as the 8-bit CSI 0x9B),
+// by rewriting each to a visible "\xNN" escape before the line is forwarded to
+// the log sink. fclones renders scanned filenames raw into its stderr
+// diagnostics (e.g. "cannot read file <path>"), and <path> is
+// attacker-influenceable: a file whose name embeds ANSI escape sequences (ESC,
+// 0x1B), a carriage return, a NUL, or a raw C1 CSI (0x9B) would otherwise reach
+// an operator's terminal or Loki unescaped (CWE-117 log injection). '\n' is
+// left intact so the line-oriented framing is preserved (Write has already
+// split on it, so a line reaching emit holds at most a single trailing '\n');
+// '\t' is a benign, common separator. Valid multi-byte UTF-8 runes (accented
+// Latin, CJK, ...) are forwarded verbatim so legitimate non-ASCII filenames
+// survive; only bytes that cannot form a valid rune are escaped. The input is
+// returned unchanged, without allocating, when it is already valid UTF-8 with
+// nothing to escape (the common case), so well-formed fclones output pays no copy.
+func sanitizeControlBytes(line []byte) []byte {
+	needsEscape := func(b byte) bool {
+		return (b < 0x20 && b != '\n' && b != '\t') || b == 0x7f
+	}
+	// Fast path: valid UTF-8 with no C0/DEL control -> forward verbatim, no alloc.
+	if utf8.Valid(line) && !slices.ContainsFunc(line, needsEscape) {
+		return line
+	}
+	const hexDigits = "0123456789abcdef"
+	esc := func(dst []byte, b byte) []byte {
+		return append(dst, '\\', 'x', hexDigits[b>>4], hexDigits[b&0x0f])
+	}
+	out := make([]byte, 0, len(line))
+	for i := 0; i < len(line); {
+		b := line[i]
+		switch {
+		case needsEscape(b):
+			out = esc(out, b)
+			i++
+		case b < utf8.RuneSelf: // printable ASCII plus the exempt '\n', '\t'
+			out = append(out, b)
+			i++
+		default:
+			// b >= 0x80: only forward it if it begins a valid multi-byte rune;
+			// a standalone/invalid byte (incl. a bare C1 control) is escaped.
+			if r, size := utf8.DecodeRune(line[i:]); r == utf8.RuneError && size == 1 {
+				out = esc(out, b)
+				i++
+			} else {
+				out = append(out, line[i:i+size]...)
+				i += size
+			}
+		}
+	}
+	return out
+}
+
 // emit applies the noise filter to a single line and writes it through to the
-// wrapped writer unless it is filtered. It is the single filter-then-write step
-// shared by Write's per-line and flood-flush paths and by Flush.
+// wrapped writer unless it is filtered, sanitizing control bytes first (see
+// sanitizeControlBytes) so control characters in attacker-named scanned paths
+// cannot inject terminal escapes or forge log content. It is the single
+// filter-then-write step shared by Write's per-line and flood-flush paths and
+// by Flush.
 func (fw *FilteringWriter) emit(line []byte) error {
 	if shouldFilterLine(string(line)) {
 		return nil
 	}
-	_, err := fw.w.Write(line)
+	_, err := fw.w.Write(sanitizeControlBytes(line))
 	return err
 }
 
@@ -140,7 +200,7 @@ func (fw *FilteringWriter) Write(p []byte) (int, error) {
 			// already-emitted lines, so aliasing would pin their backing array.
 			// fw.buf is nil here, so append allocates a tight copy of just the tail.
 			fw.buf = append(fw.buf, buf...)
-			if len(fw.buf) > maxLineBytes {
+			if len(fw.buf) > MaxLineBytes {
 				fw.floods++
 				err := fw.emit(fw.buf)
 				fw.buf = nil
@@ -171,7 +231,7 @@ func (fw *FilteringWriter) Flush() error {
 	return fw.emit(line)
 }
 
-// Floods reports how many times the partial-line buffer exceeded maxLineBytes
+// Floods reports how many times the partial-line buffer exceeded MaxLineBytes
 // and was force-flushed (a no-newline output flood). It mirrors the visibility
 // LimitedBuffer.Total/Truncated give their cap: the caller logs a non-zero
 // count so the otherwise-silent flood bound is observable in Loki/Grafana.

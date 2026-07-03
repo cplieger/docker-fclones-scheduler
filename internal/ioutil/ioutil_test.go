@@ -319,6 +319,63 @@ func TestFilteringWriterHandlesPartialLines(t *testing.T) {
 	}
 }
 
+func TestFilteringWriterSanitizesControlBytes(t *testing.T) {
+	t.Parallel()
+	// fclones renders scanned filenames raw into its stderr diagnostics, and a
+	// filename is attacker-influenceable. A control byte embedded in one must not
+	// reach the log sink unescaped (CWE-117 log injection): emit rewrites C0
+	// bytes (except '\n' and '\t'), DEL, and any byte that is not part of a valid
+	// UTF-8 sequence (e.g. a standalone C1 control) to a visible \xNN escape, while
+	// leaving the '\n' line framing and valid multi-byte UTF-8 runes intact.
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "ANSI escape in a scanned filename is neutralized",
+			input: "[ts] fclones:  warn: cannot read file /scan/\x1b[31mevil\x1b[0m: denied\n",
+			want:  "[ts] fclones:  warn: cannot read file /scan/\\x1b[31mevil\\x1b[0m: denied\n",
+		},
+		{
+			name:  "carriage return and NUL are escaped",
+			input: "cannot read file /scan/keep\x0d\x00name: denied\n",
+			want:  "cannot read file /scan/keep\\x0d\\x00name: denied\n",
+		},
+		{
+			name:  "DEL is escaped",
+			input: "cannot read file /scan/a\x7fb: denied\n",
+			want:  "cannot read file /scan/a\\x7fb: denied\n",
+		},
+		{
+			name:  "tab and multibyte UTF-8 filename are preserved verbatim",
+			input: "cannot read file /scan/caf\u00e9\t\u65e5\u672c\u8a9e: denied\n",
+			want:  "cannot read file /scan/caf\u00e9\t\u65e5\u672c\u8a9e: denied\n",
+		},
+		{
+			// A bare 0x9B is the 8-bit C1 CSI (the single-byte equivalent of the
+			// ESC[ neutralized above); standing alone it is invalid UTF-8, so it is
+			// escaped, while the valid multi-byte rune beside it survives verbatim.
+			name:  "standalone C1 CSI byte is escaped while valid UTF-8 is preserved",
+			input: "cannot read file /scan/caf\u00e9\x9b: denied\n",
+			want:  "cannot read file /scan/caf\u00e9\\x9b: denied\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var out bytes.Buffer
+			fw := ioutil.NewFilteringWriter(&out)
+			if _, err := fw.Write([]byte(tc.input)); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			if got := out.String(); got != tc.want {
+				t.Errorf("sanitize mismatch\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // --- Tests: ReadFileWithLimit ---
 
 func TestReadFileWithLimit(t *testing.T) {
@@ -587,7 +644,7 @@ func (e *errOnWrite) Write(p []byte) (int, error) {
 func TestFilteringWriterCapsUnboundedNoNewlineFlood(t *testing.T) {
 	t.Parallel()
 
-	const cap = 1 << 20 // mirrors maxLineBytes
+	const cap = ioutil.MaxLineBytes
 
 	t.Run("flushes oversized non-filtered partial line and resets buffer", func(t *testing.T) {
 		t.Parallel()
@@ -664,7 +721,7 @@ func TestFilteringWriterCapsUnboundedNoNewlineFlood(t *testing.T) {
 
 func TestFilteringWriterCapFiresAcrossMultipleWrites(t *testing.T) {
 	t.Parallel()
-	const maxLine = 1 << 20
+	const maxLine = ioutil.MaxLineBytes
 	var out bytes.Buffer
 	fw := ioutil.NewFilteringWriter(&out)
 	half := bytes.Repeat([]byte("y"), maxLine/2+1)
@@ -684,7 +741,7 @@ func TestFilteringWriterCapFiresAcrossMultipleWrites(t *testing.T) {
 
 func TestFloodsCountsForcedFlushes(t *testing.T) {
 	t.Parallel()
-	const maxLine = 1 << 20 // mirrors maxLineBytes
+	const maxLine = ioutil.MaxLineBytes
 	var out bytes.Buffer
 	fw := ioutil.NewFilteringWriter(&out)
 
@@ -692,7 +749,7 @@ func TestFloodsCountsForcedFlushes(t *testing.T) {
 		t.Errorf("Floods() = %d before any write, want 0", got)
 	}
 
-	// Two separate no-newline runs each strictly exceed maxLineBytes, so each
+	// Two separate no-newline runs each strictly exceed MaxLineBytes, so each
 	// forces a cap-flush and bumps the flood counter.
 	if _, err := fw.Write(bytes.Repeat([]byte("x"), maxLine+1)); err != nil {
 		t.Fatalf("Write(flood #1): %v", err)
@@ -739,7 +796,7 @@ func TestFilteringWriterPropagatesSinkErrorOnCompleteLine(t *testing.T) {
 
 // TestProperty_FilteringWriterChunkInvariant asserts that FilteringWriter's
 // filtered output is independent of how the input byte stream is split across
-// Write calls, for inputs whose lines stay under maxLineBytes (the common
+// Write calls, for inputs whose lines stay under MaxLineBytes (the common
 // fclones-output case). Lines are capped at 40 bytes so the no-newline
 // cap-flush path never fires, under which chunk-invariance would not hold.
 func TestProperty_FilteringWriterChunkInvariant(t *testing.T) {
@@ -789,7 +846,7 @@ func TestProperty_FilteringWriterChunkInvariant(t *testing.T) {
 func TestFilteringWriterCapResetsBufferAfterSinkError(t *testing.T) {
 	t.Parallel()
 
-	const cap = 1 << 20 // mirrors maxLineBytes
+	const cap = ioutil.MaxLineBytes
 
 	sink := &failingThenRecordingSink{}
 	fw := ioutil.NewFilteringWriter(sink)
@@ -826,19 +883,19 @@ func (s *failingThenRecordingSink) Write(p []byte) (int, error) {
 func TestFilteringWriterCapNotTrippedAtExactBoundary(t *testing.T) {
 	t.Parallel()
 
-	const maxLine = 1 << 20 // mirrors maxLineBytes
+	const maxLine = ioutil.MaxLineBytes
 
 	var out bytes.Buffer
 	fw := ioutil.NewFilteringWriter(&out)
 
-	// A no-newline run of exactly maxLineBytes must NOT trip the cap: the guard
-	// is `len(fw.buf) > maxLineBytes`, so the buffer is held (not flushed) until
+	// A no-newline run of exactly MaxLineBytes must NOT trip the cap: the guard
+	// is `len(fw.buf) > MaxLineBytes`, so the buffer is held (not flushed) until
 	// it strictly exceeds the cap.
 	if _, err := fw.Write(bytes.Repeat([]byte("x"), maxLine)); err != nil {
 		t.Fatalf("Write(exact-cap): %v", err)
 	}
 	if out.Len() != 0 {
-		t.Errorf("sink got %d bytes after an exactly-maxLineBytes write, want 0 (cap not yet exceeded)", out.Len())
+		t.Errorf("sink got %d bytes after an exactly-MaxLineBytes write, want 0 (cap not yet exceeded)", out.Len())
 	}
 
 	// One more no-newline byte pushes the buffer strictly past the cap, flushing.
@@ -847,6 +904,38 @@ func TestFilteringWriterCapNotTrippedAtExactBoundary(t *testing.T) {
 	}
 	if out.Len() != maxLine+1 {
 		t.Errorf("sink got %d bytes after crossing the cap, want %d", out.Len(), maxLine+1)
+	}
+}
+
+// TestFilteringWriterFloodThresholdTracksMaxLineBytes pins the no-newline flood
+// threshold to the exported MaxLineBytes constant that scheduler.go logs as
+// cap_bytes alongside flood_count. A run of exactly MaxLineBytes is held
+// (Floods()==0); one byte past it force-flushes exactly once (Floods()==1), so
+// the operator-facing cap can never silently drift from the real flush boundary.
+func TestFilteringWriterFloodThresholdTracksMaxLineBytes(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	fw := ioutil.NewFilteringWriter(&out)
+
+	if _, err := fw.Write(bytes.Repeat([]byte("x"), ioutil.MaxLineBytes)); err != nil {
+		t.Fatalf("Write(exact MaxLineBytes): %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("sink got %d bytes at exactly MaxLineBytes, want 0 (held, cap not exceeded)", out.Len())
+	}
+	if got := fw.Floods(); got != 0 {
+		t.Errorf("Floods() = %d at exactly MaxLineBytes, want 0", got)
+	}
+
+	if _, err := fw.Write([]byte("y")); err != nil {
+		t.Fatalf("Write(+1 past MaxLineBytes): %v", err)
+	}
+	if out.Len() != ioutil.MaxLineBytes+1 {
+		t.Errorf("sink got %d bytes after crossing MaxLineBytes, want %d", out.Len(), ioutil.MaxLineBytes+1)
+	}
+	if got := fw.Floods(); got != 1 {
+		t.Errorf("Floods() = %d after crossing MaxLineBytes, want 1", got)
 	}
 }
 
