@@ -3,7 +3,6 @@
 [![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-fclones-scheduler/badges/size.json)](https://github.com/cplieger/docker-fclones-scheduler/pkgs/container/docker-fclones-scheduler)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Distroless](https://img.shields.io/badge/base-Distroless_nonroot-4285F4?logo=google)
-[![Go Report Card](https://goreportcard.com/badge/github.com/cplieger/docker-fclones-scheduler)](https://goreportcard.com/report/github.com/cplieger/docker-fclones-scheduler)
 [![Test coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-fclones-scheduler/badges/coverage.json)](https://github.com/cplieger/docker-fclones-scheduler/actions/workflows/coverage.yml)
 [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-fclones-scheduler/badges/mutation.json)](https://github.com/cplieger/docker-fclones-scheduler/issues?q=label%3Agremlins-tracker)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13204/badge)](https://www.bestpractices.dev/projects/13204)
@@ -104,7 +103,7 @@ Overlapping scans are prevented in both modes by an advisory file lock (`flock`)
 
 ### Run once
 
-Set `FCLONES_INTERVAL=0` (or `0s`). The container runs exactly one scan and dedup action, then exits — non-zero if the scan failed, timed out, was interrupted (SIGTERM/SIGINT) before it finished, **or was skipped because another process held the `/cache` scan lock**. This suits a batch or one-shot context (a Kubernetes `Job`, a CI step, or a manual `docker run --rm`) where an external system, not the container, decides when to run again: a run that did not complete a scan — whether cut short or skipped on lock contention — surfaces as a failed run (logged with `outcome=skipped` for the lock case) so the orchestrator retries rather than recording success. (In the long-running modes a SIGTERM is a clean shutdown and a lock conflict is a benign no-op, both exiting 0; only run-once treats "no scan actually ran" as a failure, because there the exit code is the job result.)
+Set `FCLONES_INTERVAL=0` (or `0s`). The container runs exactly one scan and dedup action, then exits — non-zero if the scan failed, timed out, was interrupted (SIGTERM/SIGINT) before it finished, **or was skipped because another process held the `/cache` scan lock**. This suits a batch or one-shot context (a Kubernetes `Job`, a CI step, or a manual `docker run --rm`) where an external system, not the container, decides when to run again: a run that did not complete a scan — whether cut short or skipped on lock contention — surfaces as a failed run (logged with `outcome=skipped` for the lock case) so the orchestrator retries rather than recording success. In the long-running modes a SIGTERM is a clean shutdown and a lock conflict a benign no-op, both exiting 0; only run-once treats a scan that never ran as a failure, because there the exit code is the job result.
 
 ## Configuration reference
 
@@ -171,11 +170,7 @@ files use `os.CreateTemp` with unpredictable names. Output reads
 are capped at 50 MB. Concurrent scans are guarded by an advisory
 file lock (`flock` on `/cache/.fclones.lock`), which serialises
 both the built-in ticker and externally triggered `scan`
-invocations. Semgrep flags the distroless nonroot image as "missing
-USER" (false positive, UID 65532 is baked in) and the
-`/tmp/.healthy` marker (fixed path, single-process container).
-Hadolint DL3008 applies to the Rust builder stage only, which is
-discarded in the final image.
+invocations.
 
 ## Dependencies
 
@@ -199,7 +194,7 @@ larger changes so the approach can be discussed before implementation.
 
 ## Disclaimer
 
-These images are built with care and follow security best practices, but they are intended for **homelab use**. No guarantees of fitness for production environments. Use at your own risk.
+This project is built with care and follows security best practices, but it is intended for personal / self-hosted use. No guarantees of fitness for production environments. Use at your own risk.
 
 This project was built with AI-assisted tooling using [Claude Opus](https://www.anthropic.com/claude) and [Kiro](https://kiro.dev). The human maintainer defines architecture, supervises implementation, and makes all final decisions.
 

@@ -78,8 +78,8 @@ intact when touching `config.go` or `scheduler.go`:
      `dangerousFlags` accordingly, and bump the audit comment to the new
      version (the go-builder grep gate refuses to build until it matches).
   4. The `internal/parsing` report parsers — re-check them against the new
-     fclones report format (`suspectDrift` is the runtime backstop, not a
-     substitute).
+     fclones report format (see the report-format drift note in Conventions and
+     gotchas).
 - Memory is bounded on purpose: per-stream capture (`streamCapBytes`, bounding
   fclones' stderr and the action phase's stdout), the report
   read (`outputCapBytes`, 50 MB), and the duplicate-log detail
