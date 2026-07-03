@@ -115,6 +115,8 @@ func FuzzParseDuplicateGroups(f *testing.F) {
 func FuzzParseActionSummary(f *testing.F) {
 	f.Add("some output\nProcessed 5 files and reclaimed 1.2 GB space\nmore output")
 	f.Add("Processed 0 files and reclaimed 0 B space\n")
+	f.Add("Processed 73 files and reclaimed up to 512 MB space")
+	f.Add("Processed 3 files and reclaimed up to")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, input string) {
 		summary := parsing.ParseActionSummary(input)

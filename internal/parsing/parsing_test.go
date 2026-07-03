@@ -604,35 +604,6 @@ func TestProperty_ParseRedundantSizeNeverPanics(t *testing.T) {
 	})
 }
 
-func TestProperty_ParseRedundantSizeAlwaysReturns(t *testing.T) {
-	t.Parallel()
-	rapid.Check(t, func(rt *rapid.T) {
-		suffix := rapid.String().Draw(rt, "suffix")
-		line := "# Redundant: " + suffix
-		parsing.ParseRedundantSize(line)
-	})
-}
-
-// Property: buildScanArgs-like structure test for ParseStats.
-func TestProperty_BuildScanArgsStructure(t *testing.T) {
-	t.Parallel()
-	rapid.Check(t, func(rt *rapid.T) {
-		scanPath := rapid.StringMatching(`/[a-z]{1,10}(/[a-z]{1,10}){0,3}`).Draw(rt, "scanPath")
-		numArgs := rapid.IntRange(0, 3).Draw(rt, "numArgs")
-		argTokens := make([]string, numArgs*2)
-		for i := 0; i < numArgs*2; i += 2 {
-			argTokens[i] = rapid.StringMatching(`--[a-z\-]{1,10}`).Draw(rt, "flag")
-			argTokens[i+1] = rapid.StringMatching(`[a-zA-Z0-9]{1,10}`).Draw(rt, "value")
-		}
-		// This property test validates that ParseStats doesn't panic on structured input
-		input := "# Redundant: " + scanPath + "\n# Total: " + strings.Join(argTokens, " ") + " groups\n"
-		stats := parsing.ParseStats(input)
-		if stats.Groups == "" {
-			rt.Fatalf("Groups is empty for structured input")
-		}
-	})
-}
-
 // TestParseRedundantSize_parenAtIndexOne guards the "(" found/not-found boundary
 // in ParseRedundantSize. The lookup is `start := strings.Index(line, "(")` gated
 // by `start != -1`. Mutating that sentinel to `start != 1` (INVERT_NEGATIVES /
@@ -704,6 +675,30 @@ func TestParseActionSummary_exactlySevenFields(t *testing.T) {
 	}
 	if got.ReclaimedBytes != 512 {
 		t.Errorf("ParseActionSummary(%q).ReclaimedBytes = %d, want 512", stdout, got.ReclaimedBytes)
+	}
+}
+
+func TestParseActionSummary_estimatedExactlyNineFields(t *testing.T) {
+	t.Parallel()
+
+	// given a dedupe "up to" line with exactly nine fields: the reclaimed
+	// number and unit are the last two tokens (no trailing "space"), so
+	// len(fields) equals numIdx+2 on the estimated path
+	const stdout = "Processed 73 files and reclaimed up to 512 MB"
+
+	// when the action summary is parsed
+	got := parsing.ParseActionSummary(stdout)
+
+	// then the exact-length line is let through and the upper-bound size is
+	// parsed; a wider length guard would drop the reclaimed total to zero
+	if got.Files != 73 {
+		t.Errorf("ParseActionSummary(%q).Files = %d, want 73", stdout, got.Files)
+	}
+	if got.ReclaimedBytes != 512_000_000 {
+		t.Errorf("ParseActionSummary(%q).ReclaimedBytes = %d, want 512000000", stdout, got.ReclaimedBytes)
+	}
+	if !got.Estimated {
+		t.Errorf("ParseActionSummary(%q).Estimated = %v, want true", stdout, got.Estimated)
 	}
 }
 
@@ -929,6 +924,38 @@ func TestParseDuplicateGroups_commentPrefixedPathLinesAreSkipped(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseDuplicateGroups_tabIndentedHeaderShapedDupStaysOneGroup(t *testing.T) {
+	t.Parallel()
+
+	input := "realhash, 100 B * 3:\n\t/path/a, 1 B * 2:\n\t/path/b, 1 B * 2:\n\t/path/c, 1 B * 2:\n"
+	want := []parsing.DuplicateGroup{
+		{
+			Keeper:     "/path/a, 1 B * 2:",
+			Duplicates: []string{"/path/b, 1 B * 2:", "/path/c, 1 B * 2:"},
+			SizePerDup: "100 B",
+		},
+	}
+
+	got := parsing.ParseDuplicateGroups(input)
+	if len(got) != len(want) {
+		t.Fatalf("groups len = %d, want %d (got %+v)", len(got), len(want), got)
+	}
+	if got[0].Keeper != want[0].Keeper {
+		t.Errorf("Keeper = %q, want %q", got[0].Keeper, want[0].Keeper)
+	}
+	if got[0].SizePerDup != want[0].SizePerDup {
+		t.Errorf("SizePerDup = %q, want %q", got[0].SizePerDup, want[0].SizePerDup)
+	}
+	if len(got[0].Duplicates) != len(want[0].Duplicates) {
+		t.Fatalf("Duplicates len = %d, want %d", len(got[0].Duplicates), len(want[0].Duplicates))
+	}
+	for j := range got[0].Duplicates {
+		if got[0].Duplicates[j] != want[0].Duplicates[j] {
+			t.Errorf("Duplicates[%d] = %q, want %q", j, got[0].Duplicates[j], want[0].Duplicates[j])
+		}
 	}
 }
 

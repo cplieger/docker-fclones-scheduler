@@ -1,3 +1,8 @@
+// Package parsing extracts structured data from fclones command output:
+// scan statistics (duplicate-group count and reclaimable size), duplicate
+// report groups (keeper plus its duplicates), and the action summary
+// (files processed and bytes reclaimed). Parsers tolerate output-format
+// drift so a changed upstream line is distinguishable from a genuine zero.
 package parsing
 
 import (
