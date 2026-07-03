@@ -638,6 +638,11 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 		"bytes_reclaimed", summary.ReclaimedBytes,
 		"reclaimed_human", parsing.HumanBytes(summary.ReclaimedBytes),
 	}
+	if summary.Estimated {
+		// dedupe reports an advisory upper bound ("reclaimed up to X"), so mark
+		// the figure as a ceiling rather than an exact reclaim.
+		attrs = append(attrs, "reclaimed_estimated", true)
+	}
 	if summary.Files == 0 && summary.ReclaimedBytes == 0 && summary.RawLine != "" {
 		attrs = append(attrs, "result", summary.RawLine)
 	}
