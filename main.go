@@ -199,11 +199,11 @@ func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
 		"phase_timeout", cfg.PhaseTimeout)
 
 	ran, err := runFclonesJob(ctx, marker, cfg, "once", defaultCommandRunner)
-	switch {
-	case err != nil:
+	switch outcome := classifyRunOnceOutcome(ran, err, ctx.Err()); outcome {
+	case runOnceFailed:
 		// Exec failure or timeout: already logged with full context; exit non-zero.
 		return err
-	case !ran:
+	case runOnceSkipped:
 		// The scan lock was held by another process, so no scan or action ran.
 		// runFclonesJob returns before its deferred marker update on this path, so
 		// the marker is untouched; set it unhealthy here so the exit code and the
@@ -214,13 +214,22 @@ func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
 		slog.Warn("run-once skipped: another process holds the scan lock; no scan ran",
 			logKeyOutcome, "skipped", "lock", lockFile)
 		return errors.New("run-once skipped: scan lock held by another process")
-	case ctx.Err() != nil:
+	case runOnceInterrupted:
 		// Interrupted before the single run completed: report a non-zero exit so
 		// a batch orchestrator treats the cut-short run as a failure, not a success.
+		// The phase logged this as INFO outcome=shutdown (benign for a daemon); re-log
+		// at WARN with the outcome tag so the batch failure is visible to a log-based
+		// alert and not mistaken for a clean daemon shutdown. Reuses the existing
+		// "shutdown" outcome value (as the skip path reuses "skipped"); WARN vs the
+		// phase's INFO disambiguates.
+		slog.Warn("run-once interrupted before completion; batch run failed",
+			logKeyOutcome, "shutdown", "cause", context.Cause(ctx))
 		return fmt.Errorf("run-once interrupted before completion: %w", context.Cause(ctx))
-	default:
+	case runOnceOK:
 		slog.Info("run once complete", logKeyOutcome, "success")
 		return nil
+	default:
+		panic(fmt.Sprintf("unhandled runOnceOutcome: %d", int(outcome)))
 	}
 }
 

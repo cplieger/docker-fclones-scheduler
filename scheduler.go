@@ -63,6 +63,11 @@ const logKeyDurationS = "duration_s"
 //   - "success" on the run-once happy path ("run once complete"), the one
 //     terminal success that is tagged so a one-shot's healthy completion is
 //     queryable alongside its failures;
+//   - on the run-once terminal paths (main.go runOnce), "shutdown" (interrupt
+//     mid-scan) and "skipped" (scan lock held) are re-emitted at WARN, so a
+//     one-shot's batch failure is queryable on this field; the benign daemon
+//     occurrences of both values above are INFO, so level disambiguates a
+//     run-once failure from a clean daemon shutdown / overlap skip;
 //   - the startup-failure literals "config_error" (invalid FCLONES_ACTION /
 //     FCLONES_SCAN_TIMEOUT / argument syntax / a dangerous flag), "cache_error"
 //     (cache directory verification failed), and "bad_subcommand" (an unknown
@@ -298,7 +303,7 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	scanFilter.Flush()
 	if n := scanFilter.Floods(); n > 0 {
 		log.Warn("fclones emitted a no-newline output flood; partial line force-flushed at cap",
-			"flood_count", n, "cap_bytes", streamCapBytes)
+			"flood_count", n, "cap_bytes", ioutil.MaxLineBytes)
 	}
 	if cerr := tmpFile.Close(); cerr != nil {
 		log.Warn("failed to close report temp file", "error", cerr)
@@ -313,7 +318,7 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	outputBytes, readErr := ioutil.ReadFileWithLimit(tmpPath, outputCapBytes)
 	reportParsed := readErr == nil
 	if !reportParsed {
-		log.Error("fclones report exceeded parse cap; scan and dedup still ran but stats are degraded. Narrow FCLONES_SCAN_PATHS or split into multiple runs",
+		log.Warn("fclones report exceeded parse cap; scan and dedup still ran but stats are degraded. Narrow FCLONES_SCAN_PATHS or split into multiple runs",
 			"error", readErr, "cap_bytes", outputCapBytes)
 		outputBytes = []byte{}
 	}
@@ -367,8 +372,8 @@ func reportedGroupCount(groups string) (count int, ok bool) {
 // itself could not be parsed (totalParsed false) -- the most severe drift mode,
 // silent in report-only group mode where shouldRunAction skips with no other
 // drift warning. No-op when the report was not parsed; when the "# Total:" line
-// parsed but fclones' count token is non-numeric (reportedOK false) the numeric
-// compare is skipped.
+// parsed but fclones' count token is non-numeric (reportedOK false) it warns
+// too, since that unreadable count is a drift mode suspectDrift also acts on.
 func maybeWarnGroupCountDrift(log *slog.Logger, reportParsed bool, reported int, reportedOK, totalParsed bool, parsed int) {
 	if !reportParsed {
 		return
@@ -382,6 +387,12 @@ func maybeWarnGroupCountDrift(log *slog.Logger, reportParsed bool, reported int,
 		return
 	}
 	if !reportedOK {
+		// The '# Total:' line parsed but its group-count token is non-numeric
+		// (e.g. a thousands separator or reformatted count), so we cannot read
+		// fclones' own count -- a drift mode suspectDrift also acts on. Surface
+		// it here since report-only group mode skips silently.
+		log.Warn("fclones '# Total:' group count is non-numeric, possible fclones format drift",
+			"parsed_groups", parsed)
 		return
 	}
 	if reported != parsed {
@@ -608,7 +619,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 	actionFilter.Flush()
 	if n := actionFilter.Floods(); n > 0 {
 		log.Warn("fclones emitted a no-newline output flood; partial line force-flushed at cap",
-			"flood_count", n, "cap_bytes", streamCapBytes)
+			"flood_count", n, "cap_bytes", ioutil.MaxLineBytes)
 	}
 	if done, phaseErr := classifyAndLogOutcome(ctx, actionCtx, log, "action", runErr,
 		cfg.PhaseTimeout, duration, actionStderr, actionStdout, "action", cfg.Action); done {
