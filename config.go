@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -134,19 +135,17 @@ const (
 // (`time=... level=... msg=... k=v`) to stderr.
 func setupLogger() {
 	raw := strings.TrimSpace(getEnv("FCLONES_LOG_LEVEL", "info"))
-	levelStr := strings.ToLower(raw)
+	// slog.Level.UnmarshalText parses debug/info/warn/error case-insensitively
+	// (and offset syntax such as "warn+1") but lacks the long-form "warning"
+	// alias, so map it before parsing. An unrecognized value keeps Info and warns.
+	name := raw
+	if strings.EqualFold(name, "warning") {
+		name = "warn"
+	}
 	level := slog.LevelInfo
 	recognized := true
-	switch levelStr {
-	case "debug":
-		level = slog.LevelDebug
-	case "info":
+	if err := level.UnmarshalText([]byte(name)); err != nil {
 		level = slog.LevelInfo
-	case "warn", "warning":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
 		recognized = false
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
@@ -274,10 +273,7 @@ func parseInterval(raw string) (interval time.Duration, mode runMode) {
 }
 
 func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
+	return cmp.Or(os.Getenv(key), fallback)
 }
 
 // Dangerous fclones flags that execute arbitrary commands.
