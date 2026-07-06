@@ -137,12 +137,77 @@ func FuzzShouldFilterLine(f *testing.F) {
 	})
 }
 
+// TestSanitizeControlBytesEscapesWellFormedC1 pins the C1 fix (l-f5): the C1
+// control block U+0080..U+009F must be escaped even when it arrives as its
+// well-formed 2-byte UTF-8 encoding (0xC2 0x80..0x9F), because those are
+// category-Cc control codepoints that drive terminal escape sequences and a
+// scanned filename can embed them (a residual CWE-117 vector the byte-only
+// escaper missed). The boundary is exact: U+00A0 (NBSP) and every higher rune
+// (accented Latin, CJK, emoji) is forwarded verbatim. Calls sanitizeControlBytes
+// directly (byte-in / byte-out) so both code paths are exercised: an input made
+// only of a C1 rune would otherwise take the no-alloc fast path.
+func TestSanitizeControlBytesEscapesWellFormedC1(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   []byte
+		want string
+	}{
+		{
+			name: "U+009B CSI as valid 2-byte UTF-8 is escaped",
+			in:   []byte("a\u009bb"), // 0x61 0xC2 0x9B 0x62
+			want: `a\xc2\x9bb`,
+		},
+		{
+			name: "U+0080 low edge of the C1 block is escaped",
+			in:   []byte("\u0080"), // 0xC2 0x80
+			want: `\xc2\x80`,
+		},
+		{
+			name: "U+009F high edge of the C1 block is escaped",
+			in:   []byte("\u009f"), // 0xC2 0x9F
+			want: `\xc2\x9f`,
+		},
+		{
+			name: "U+00A0 NBSP just past the C1 block is forwarded verbatim",
+			in:   []byte("x\u00a0y"), // 0xC2 0xA0
+			want: "x\u00a0y",
+		},
+		{
+			name: "U+00E9 e-acute is forwarded verbatim",
+			in:   []byte("caf\u00e9"), // 0xC3 0xA9
+			want: "caf\u00e9",
+		},
+		{
+			name: "CJK runes are forwarded verbatim",
+			in:   []byte("\u65e5\u672c\u8a9e"),
+			want: "\u65e5\u672c\u8a9e",
+		},
+		{
+			// A valid rune (é) adjacent to a C1 control forces the slow path: the
+			// é must survive verbatim while only the C1 rune's bytes are escaped.
+			name: "C1 escaped while an adjacent valid rune survives",
+			in:   []byte("caf\u00e9\u009b"),
+			want: "caf\u00e9" + `\xc2\x9b`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := string(sanitizeControlBytes(tc.in)); got != tc.want {
+				t.Errorf("sanitizeControlBytes(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // FuzzSanitizeControlBytes pins the properties of the unexported sanitizer
 // directly (FilteringWriter as a whole is not idempotent because of line
 // framing, so idempotency can only be asserted on the function itself). The
 // seed corpus runs deterministically every PR; the properties are asserted
 // against the post-UTF-8-awareness behavior (a standalone C1 / invalid byte is
-// escaped, valid multi-byte runes pass through verbatim).
+// escaped, valid multi-byte runes pass through verbatim EXCEPT well-formed C1
+// controls U+0080..U+009F, whose 2-byte UTF-8 encoding is escaped).
 func FuzzSanitizeControlBytes(f *testing.F) {
 	f.Add("clean printable text /scan/file.txt")
 	f.Add("esc \x1b[31mred\x1b[0m reset")
@@ -150,6 +215,7 @@ func FuzzSanitizeControlBytes(f *testing.F) {
 	f.Add("tab\there newline\nkept")
 	f.Add("valid multibyte caf\u00e9 \u65e5\u672c\u8a9e kept")
 	f.Add("standalone C1 \x9b and invalid \xff escaped")
+	f.Add("wellformed C1 \u009b escaped, nbsp \u00a0 and \u00e9 kept")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, input string) {
 		out := sanitizeControlBytes([]byte(input))
@@ -178,11 +244,25 @@ func FuzzSanitizeControlBytes(f *testing.F) {
 		// Identity fast path: input already valid UTF-8 with nothing to escape is
 		// returned verbatim. The verbatim condition is UTF-8-aware, so a standalone
 		// C1 / invalid byte (>=0x80 but not part of a valid rune) is NOT clean even
-		// though it is neither a C0 control nor DEL -- it is escaped instead.
+		// though it is neither a C0 control nor DEL -- it is escaped instead. A
+		// WELL-FORMED C1 control (U+0080..U+009F, e.g. 0xC2 0x9B) is likewise NOT
+		// clean: it drives terminal escapes and is escaped even though its 2-byte
+		// UTF-8 is valid, so the identity guarantee holds only for lines free of C1
+		// controls. The C1 exclusion is computed here via an independent rune scan
+		// (not the production byte-pair check), so a discrepancy between the two is
+		// caught rather than assumed away.
 		clean := utf8.Valid([]byte(input))
 		if clean {
 			for _, b := range []byte(input) {
 				if (b < 0x20 && b != '\n' && b != '\t') || b == 0x7f {
+					clean = false
+					break
+				}
+			}
+		}
+		if clean {
+			for _, r := range input {
+				if r >= 0x80 && r <= 0x9f {
 					clean = false
 					break
 				}

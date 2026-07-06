@@ -119,57 +119,109 @@ func shouldFilterLine(line string) bool {
 	return false
 }
 
-// sanitizeControlBytes neutralizes C0 control bytes (0x00-0x1F) other than
-// '\n' and '\t', DEL (0x7F), and any byte that is not part of a valid UTF-8
-// sequence (which includes a standalone C1 control such as the 8-bit CSI 0x9B),
-// by rewriting each to a visible "\xNN" escape before the line is forwarded to
-// the log sink. fclones renders scanned filenames raw into its stderr
-// diagnostics (e.g. "cannot read file <path>"), and <path> is
-// attacker-influenceable: a file whose name embeds ANSI escape sequences (ESC,
-// 0x1B), a carriage return, a NUL, or a raw C1 CSI (0x9B) would otherwise reach
-// an operator's terminal or Loki unescaped (CWE-117 log injection). '\n' is
-// left intact so the line-oriented framing is preserved (Write has already
-// split on it, so a line reaching emit holds at most a single trailing '\n');
-// '\t' is a benign, common separator. Valid multi-byte UTF-8 runes (accented
-// Latin, CJK, ...) are forwarded verbatim so legitimate non-ASCII filenames
-// survive; only bytes that cannot form a valid rune are escaped. The input is
-// returned unchanged, without allocating, when it is already valid UTF-8 with
-// nothing to escape (the common case), so well-formed fclones output pays no copy.
-func sanitizeControlBytes(line []byte) []byte {
-	needsEscape := func(b byte) bool {
-		return (b < 0x20 && b != '\n' && b != '\t') || b == 0x7f
+// hexDigits indexes the lowercase hex alphabet for the "\xNN" escape forms
+// produced by escHexByte.
+const hexDigits = "0123456789abcdef"
+
+// isC0OrDEL reports whether b is a C0 control byte (0x00-0x1F) other than the
+// framing-significant '\n' and the benign separator '\t', or DEL (0x7F) -- the
+// single bytes sanitizeControlBytes rewrites to a visible escape.
+func isC0OrDEL(b byte) bool {
+	return (b < 0x20 && b != '\n' && b != '\t') || b == 0x7f
+}
+
+// isC1Control reports whether r is in the C1 control block U+0080..U+009F
+// (category-Cc controls that drive terminal escape sequences). NBSP U+00A0 and
+// every higher rune are excluded, so they are forwarded verbatim.
+func isC1Control(r rune) bool {
+	return r >= 0x80 && r <= 0x9f
+}
+
+// containsC1Rune reports whether p (assumed valid UTF-8 by its caller) holds the
+// 2-byte encoding of any C1 control U+0080..U+009F. In valid UTF-8 that is
+// always 0xC2 followed by a continuation byte in [0x80,0x9F]; 0xC2 with a
+// [0xA0,0xBF] continuation is U+00A0..U+00BF (NBSP and other Latin-1 supplement)
+// and is left alone. It keeps a well-formed C1 rune from slipping through the
+// fast path verbatim.
+func containsC1Rune(p []byte) bool {
+	for i := 0; i+1 < len(p); i++ {
+		if p[i] == 0xc2 && p[i+1] >= 0x80 && p[i+1] <= 0x9f {
+			return true
+		}
 	}
-	// Fast path: valid UTF-8 with no C0/DEL control -> forward verbatim, no alloc.
-	if utf8.Valid(line) && !slices.ContainsFunc(line, needsEscape) {
-		return line
-	}
-	const hexDigits = "0123456789abcdef"
-	esc := func(dst []byte, b byte) []byte {
-		return append(dst, '\\', 'x', hexDigits[b>>4], hexDigits[b&0x0f])
-	}
+	return false
+}
+
+// escHexByte appends the visible "\xNN" escape of b to dst and returns the
+// extended slice.
+func escHexByte(dst []byte, b byte) []byte {
+	return append(dst, '\\', 'x', hexDigits[b>>4], hexDigits[b&0x0f])
+}
+
+// escapeControlBytes is the allocating slow path of sanitizeControlBytes. It
+// rewrites each C0/DEL byte, each byte that cannot form a valid rune (incl. a
+// bare 8-bit C1 control), and each well-formed C1 control U+0080..U+009F to a
+// visible "\xNN" escape, while forwarding every other valid rune verbatim.
+func escapeControlBytes(line []byte) []byte {
 	out := make([]byte, 0, len(line))
 	for i := 0; i < len(line); {
 		b := line[i]
-		switch {
-		case needsEscape(b):
-			out = esc(out, b)
+		if isC0OrDEL(b) {
+			out = escHexByte(out, b)
 			i++
-		case b < utf8.RuneSelf: // printable ASCII plus the exempt '\n', '\t'
+			continue
+		}
+		if b < utf8.RuneSelf { // printable ASCII plus the exempt '\n', '\t'
 			out = append(out, b)
 			i++
-		default:
-			// b >= 0x80: only forward it if it begins a valid multi-byte rune;
-			// a standalone/invalid byte (incl. a bare C1 control) is escaped.
-			if r, size := utf8.DecodeRune(line[i:]); r == utf8.RuneError && size == 1 {
-				out = esc(out, b)
-				i++
-			} else {
-				out = append(out, line[i:i+size]...)
-				i += size
-			}
+			continue
 		}
+		// b >= 0x80: decode the rune. A standalone/invalid byte (incl. a bare C1
+		// control) and a well-formed C1 control U+0080..U+009F are both escaped
+		// byte-by-byte (the latter drives terminal escapes despite being valid
+		// UTF-8); every other valid multi-byte rune is forwarded verbatim.
+		r, size := utf8.DecodeRune(line[i:])
+		if (r == utf8.RuneError && size == 1) || isC1Control(r) {
+			for j := range size {
+				out = escHexByte(out, line[i+j])
+			}
+			i += size
+			continue
+		}
+		out = append(out, line[i:i+size]...)
+		i += size
 	}
 	return out
+}
+
+// sanitizeControlBytes neutralizes C0 control bytes (0x00-0x1F) other than
+// '\n' and '\t', DEL (0x7F), the C1 control block U+0080..U+009F (Unicode
+// category-Cc controls that drive terminal escape sequences -- escaped even
+// when they arrive as their well-formed 2-byte UTF-8 encoding 0xC2 0x80..0x9F,
+// e.g. the 8-bit CSI U+009B = 0xC2 0x9B), and any byte that is not part of a
+// valid UTF-8 sequence (which includes a standalone C1 control such as the bare
+// 8-bit CSI 0x9B), by rewriting each to a visible "\xNN" escape before the line
+// is forwarded to the log sink. fclones renders scanned filenames raw into its
+// stderr diagnostics (e.g. "cannot read file <path>"), and <path> is
+// attacker-influenceable: a file whose name embeds ANSI escape sequences (ESC,
+// 0x1B), a carriage return, a NUL, or a C1 CSI (as the raw byte 0x9B OR its
+// valid UTF-8 form 0xC2 0x9B) would otherwise reach an operator's terminal or
+// Loki unescaped (CWE-117 log injection). '\n' is left intact so the
+// line-oriented framing is preserved (Write has already split on it, so a line
+// reaching emit holds at most a single trailing '\n'); '\t' is a benign, common
+// separator. Every other valid multi-byte UTF-8 rune (accented Latin such as
+// U+00E9, NBSP U+00A0, CJK, emoji) is forwarded verbatim so legitimate
+// non-ASCII filenames survive; only C0/DEL bytes, C1 controls, and bytes that
+// cannot form a valid rune are escaped. The input is returned unchanged, without
+// allocating, when it is already valid UTF-8 with nothing to escape (the common
+// case), so well-formed fclones output pays no copy.
+func sanitizeControlBytes(line []byte) []byte {
+	// Fast path: valid UTF-8 with no C0/DEL control and no well-formed C1 rune
+	// -> forward verbatim, no alloc.
+	if utf8.Valid(line) && !slices.ContainsFunc(line, isC0OrDEL) && !containsC1Rune(line) {
+		return line
+	}
+	return escapeControlBytes(line)
 }
 
 // emit applies the noise filter to a single line and writes it through to the

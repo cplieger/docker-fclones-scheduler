@@ -283,6 +283,39 @@ func TestProperty_LimitedBufferStringIsStable(t *testing.T) {
 	})
 }
 
+// TestProperty_LimitedBufferRetainsInputPrefix is the content oracle the other
+// LimitedBuffer property lacks. Across an arbitrary sequence of writes the
+// buffer must retain exactly the first min(total, Max) bytes of the
+// concatenated input, because Write greedily fills the remaining room with the
+// earliest bytes and drops the rest. TestProperty_LimitedBufferInvariants
+// asserts only length, Total, and Truncated, so a content- or
+// accumulation-corrupting mutant -- one that stores the tail instead of the
+// head, or resets the buffer on each write -- keeps those invariants and
+// survives it; this pins the retained bytes themselves.
+func TestProperty_LimitedBufferRetainsInputPrefix(t *testing.T) {
+	t.Parallel()
+	rapid.Check(t, func(rt *rapid.T) {
+		maxVal := rapid.IntRange(0, 256).Draw(rt, "max")
+		numWrites := rapid.IntRange(0, 20).Draw(rt, "numWrites")
+
+		lb := &ioutil.LimitedBuffer{Max: maxVal}
+		var concat []byte
+		for range numWrites {
+			payload := rapid.SliceOfN(rapid.Byte(), 0, 64).Draw(rt, "payload")
+			concat = append(concat, payload...)
+			if _, err := lb.Write(payload); err != nil {
+				rt.Fatalf("Write(len=%d): %v", len(payload), err)
+			}
+		}
+
+		want := concat[:min(len(concat), maxVal)]
+		if got := lb.String(); got != string(want) {
+			rt.Fatalf("String() = %q, want %q (first %d bytes of the %d-byte concatenated input)",
+				got, want, len(want), len(concat))
+		}
+	})
+}
+
 // --- Tests: filteringWriter ---
 
 func TestFilteringWriterDropsFilteredLines(t *testing.T) {
@@ -324,9 +357,11 @@ func TestFilteringWriterSanitizesControlBytes(t *testing.T) {
 	// fclones renders scanned filenames raw into its stderr diagnostics, and a
 	// filename is attacker-influenceable. A control byte embedded in one must not
 	// reach the log sink unescaped (CWE-117 log injection): emit rewrites C0
-	// bytes (except '\n' and '\t'), DEL, and any byte that is not part of a valid
-	// UTF-8 sequence (e.g. a standalone C1 control) to a visible \xNN escape, while
-	// leaving the '\n' line framing and valid multi-byte UTF-8 runes intact.
+	// bytes (except '\n' and '\t'), DEL, the C1 control block U+0080..U+009F
+	// (even when encoded as valid 2-byte UTF-8), and any byte that is not part of
+	// a valid UTF-8 sequence (e.g. a standalone C1 control) to a visible \xNN
+	// escape, while leaving the '\n' line framing and every other valid multi-byte
+	// UTF-8 rune intact.
 	tests := []struct {
 		name  string
 		input string
@@ -360,6 +395,18 @@ func TestFilteringWriterSanitizesControlBytes(t *testing.T) {
 			input: "cannot read file /scan/caf\u00e9\x9b: denied\n",
 			want:  "cannot read file /scan/caf\u00e9\\x9b: denied\n",
 		},
+		{
+			// The well-formed 2-byte UTF-8 C1 CSI (U+009B = 0xC2 0x9B) is the
+			// multibyte twin of the bare 0x9B above: a category-Cc control that
+			// drives terminal escapes, so it is escaped even though its encoding is
+			// valid UTF-8, while an accented rune (é) and an NBSP (U+00A0) beside it
+			// survive verbatim. Under the byte-only escaper this line would have
+			// taken the verbatim fast path (no C0/DEL byte present) and leaked the
+			// C1 to the terminal.
+			name:  "well-formed multibyte C1 CSI is escaped, NBSP and accents preserved",
+			input: "cannot read file /scan/caf\u00e9\u009b\u00a0x: denied\n",
+			want:  "cannot read file /scan/caf\u00e9\\xc2\\x9b\u00a0x: denied\n",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -373,6 +420,43 @@ func TestFilteringWriterSanitizesControlBytes(t *testing.T) {
 				t.Errorf("sanitize mismatch\n got: %q\nwant: %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestFilteringWriterPreservesMultibyteRuneSplitAcrossWrites guards the
+// interaction between FilteringWriter's cross-Write partial-line buffering and
+// its per-line sanitization: a multi-byte UTF-8 rune whose bytes arrive in
+// separate Write calls (as a subprocess pipe read can split mid-rune) must be
+// reassembled into the complete line before sanitizeControlBytes runs, so the
+// rune is forwarded verbatim rather than escaped as two standalone invalid
+// bytes. The existing chunk-invariance property restricts input to ASCII and
+// FuzzFilteringWriter issues a single Write, so neither reaches this boundary.
+func TestFilteringWriterPreservesMultibyteRuneSplitAcrossWrites(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	fw := ioutil.NewFilteringWriter(&out)
+
+	// "cafe" ends in an accented e (U+00E9 = 0xC3 0xA9); the line carries no
+	// fclones noise marker, so it is kept and sanitized. Deliver the 0xC3 lead
+	// byte and the 0xA9 continuation byte in separate Write calls.
+	line := []byte("cannot read file /scan/caf\u00e9: denied\n")
+	idx := bytes.IndexByte(line, 0xC3)
+	if idx < 0 {
+		t.Fatal("setup: expected a 0xC3 UTF-8 lead byte in the test line")
+	}
+
+	if _, err := fw.Write(line[:idx+1]); err != nil {
+		t.Fatalf("Write(head ending on the rune lead byte): %v", err)
+	}
+	if _, err := fw.Write(line[idx+1:]); err != nil {
+		t.Fatalf("Write(tail starting on the rune continuation byte): %v", err)
+	}
+	if err := fw.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	if got := out.String(); got != string(line) {
+		t.Errorf("split multibyte rune corrupted\n got: %q\nwant: %q", got, string(line))
 	}
 }
 
