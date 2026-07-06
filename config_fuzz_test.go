@@ -70,3 +70,34 @@ func FuzzParseAction(f *testing.F) {
 		}
 	})
 }
+
+func FuzzParseInterval(f *testing.F) {
+	f.Add("3h")
+	f.Add("90m")
+	f.Add("off")
+	f.Add("disabled")
+	f.Add("0")
+	f.Add("0s")
+	f.Add("-1h")
+	f.Add("not-a-duration")
+	f.Add("")
+	f.Add("   ")
+	f.Fuzz(func(t *testing.T, input string) {
+		interval, mode := parseInterval(input)
+
+		// The returned interval must always be positive: runBuiltin passes it
+		// to time.NewTicker (main.go), which panics on a non-positive duration.
+		// parseInterval is the sole gate protecting that call from an arbitrary
+		// FCLONES_INTERVAL env value.
+		if interval <= 0 {
+			t.Fatalf("parseInterval(%q) interval = %s, want > 0 (time.NewTicker panics on a non-positive duration)", input, interval)
+		}
+		// The mode must be one of the three defined run modes; a fourth value
+		// would panic run()'s and runMode.String()'s exhaustive switches.
+		switch mode {
+		case modeBuiltin, modeExternal, modeOnce:
+		default:
+			t.Fatalf("parseInterval(%q) mode = %d, want built-in, external, or once", input, int(mode))
+		}
+	})
+}

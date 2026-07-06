@@ -233,20 +233,6 @@ func TestRejectDangerousArgs(t *testing.T) {
 	}
 }
 
-func TestAllowedActions(t *testing.T) {
-	t.Parallel()
-	for _, valid := range []string{"group", "remove", "link", "dedupe"} {
-		if _, err := parseAction(valid); err != nil {
-			t.Errorf("parseAction(%q): unexpected error: %v", valid, err)
-		}
-	}
-	for _, invalid := range []string{"", "delete", "exec", "shell", "--command"} {
-		if _, err := parseAction(invalid); err == nil {
-			t.Errorf("parseAction(%q): expected error", invalid)
-		}
-	}
-}
-
 // --- Tests: verifyDir ---
 
 func TestVerifyDirHappyPath(t *testing.T) {
@@ -282,6 +268,30 @@ func TestVerifyDirReadOnly(t *testing.T) {
 	err := verifyDir(context.Background(), dir, 5*time.Second)
 	if err == nil {
 		t.Error("expected verifyDir on read-only dir to return an error")
+	}
+}
+
+func TestVerifyDirCreateProbeFileFails(t *testing.T) {
+	t.Parallel()
+	// Root-safe cover of writeProbe's os.Create error branch. The sibling
+	// TestVerifyDirReadOnly reaches it only via an EACCES denial, which
+	// os.Getuid()==0 skips -- and the suite runs as root in CI -- so under
+	// root the create-failure path is otherwise untested. A directory
+	// pre-created at the probe's ".write_test" path makes os.Create fail
+	// with EISDIR for any UID (unlike a permission denial), covering the
+	// branch with no root skip.
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".write_test"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	err := verifyDir(context.Background(), dir, 5*time.Second)
+
+	if err == nil {
+		t.Fatal("verifyDir with a directory occupying the .write_test probe path: error = nil, want an os.Create (EISDIR) failure")
+	}
+	if !strings.Contains(err.Error(), "create") {
+		t.Errorf("verifyDir error = %q, want it to mention 'create' (the writeProbe os.Create-branch wrap)", err)
 	}
 }
 
