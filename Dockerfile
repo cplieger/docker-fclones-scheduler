@@ -48,7 +48,7 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
           echo "fclones arm64 commit pin mismatch: ${FCLONES_VERSION} dereferences to $(git rev-parse HEAD) but FCLONES_COMMIT=${FCLONES_COMMIT}; update ARG FCLONES_COMMIT (and FCLONES_SHA256_AMD64) for the new version -- see CONTRIBUTING.md" >&2; \
           exit 1; \
         }; } && \
-      cargo build --release --target aarch64-unknown-linux-musl && \
+      cargo build --locked --release --target aarch64-unknown-linux-musl && \
       mv target/aarch64-unknown-linux-musl/release/fclones /usr/src/fclones/fclones; \
     else \
       echo "unsupported build architecture: ${ARCH} (expected amd64 or arm64); no integrity pin defined" >&2; \
