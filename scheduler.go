@@ -203,7 +203,9 @@ func classifyAndLogOutcome(
 		log.Info(phase+" interrupted", attrs...)
 		return true, nil
 	case outcomeTimeout:
-		attrs := make([]any, 0, 10+len(extra))
+		// 10 fixed attrs + up to 12 from streamAttrs (stderr trio +
+		// optional stdout trio) + caller extra; never under-allocates.
+		attrs := make([]any, 0, 22+len(extra))
 		attrs = append(attrs,
 			"reason", outcome.String(), logKeyOutcome, outcome,
 			"timeout", timeout, "duration", duration,
@@ -214,7 +216,9 @@ func classifyAndLogOutcome(
 		log.Error(phase+" timeout exceeded", attrs...)
 		return true, fmt.Errorf("%s timeout exceeded after %s", phase, timeout)
 	case outcomeExecError:
-		attrs := make([]any, 0, 10+len(extra))
+		// 10 fixed attrs + up to 12 from streamAttrs (stderr trio +
+		// optional stdout trio) + caller extra; never under-allocates.
+		attrs := make([]any, 0, 22+len(extra))
 		attrs = append(attrs,
 			"reason", outcome.String(), logKeyOutcome, outcome,
 			"duration", duration,
