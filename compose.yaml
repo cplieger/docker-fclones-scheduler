@@ -7,7 +7,6 @@ services:
     user: "1000:1000"  # match your host user
 
     environment:
-      TZ: "Europe/Paris"
       FCLONES_INTERVAL: "1h"  # Go duration; "off" = external trigger, "0" = run once; see README "Scheduling modes"
       FCLONES_SCAN_PATHS: "/scandir"  # must match a volume mount target below
       FCLONES_ARGS: "--rf-over 1"
