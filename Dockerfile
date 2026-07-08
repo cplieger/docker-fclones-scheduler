@@ -55,7 +55,7 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
       exit 1; \
     fi
 
-FROM golang:1.26-trixie@sha256:68b7145ec43d1820b9a56704554b53d1520aa2a15cb5233e374188a31b2a1bce AS go-builder
+FROM golang:1.26-trixie@sha256:8ad3a314b1039afcb9335d17bc12d34297470218c6cad5e15e3668674b8a7ef1 AS go-builder
 ENV GOTOOLCHAIN=auto
 
 WORKDIR /src
