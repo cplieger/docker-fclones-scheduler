@@ -32,7 +32,7 @@ aggregators (Alloy, Promtail, etc.) and alerting via Grafana or similar.
 - **Scheduler your way** — ships with a self-contained Go interval scheduler so you don't need external cron, systemd timers, or orchestrator-level scheduling. If you already run a central scheduler (Ofelia, cron), set `FCLONES_INTERVAL=off` and trigger scans with `docker exec fclones /app/wrapper scan` instead
 - **Distroless and rootless** — runs as `nonroot` (UID 65532) on `gcr.io/distroless/static-debian13` with no shell or package manager, minimizing attack surface
 - **Dangerous flags blocked by default** — `--command`, `--transform`, `--in-place`, and `--no-copy` are rejected unless you explicitly opt in with `FCLONES_ALLOW_UNSAFE=true`, preventing command injection via environment variables
-- **Structured logs for observability** — all output goes to stdout/stderr in a format ready for log aggregators, enabling alerting on scan failures or duplicate detection without custom exporters
+- **Structured logs for observability** — all output goes to stdout/stderr in a format ready for log aggregators, enabling alerting on scan failures or duplicate detection without custom exporters. Timestamps are UTC, so log lines are zone-stable regardless of the container's `TZ`
 
 ## Quick start
 
@@ -47,7 +47,6 @@ services:
     user: "1000:1000"  # match your host user
 
     environment:
-      TZ: "Europe/Paris"
       FCLONES_INTERVAL: "1h"  # Go duration (e.g. 1h, 30m, 12h)
       FCLONES_SCAN_PATHS: "/scandir"
       FCLONES_ARGS: "--rf-over 1"
@@ -85,7 +84,6 @@ services:
     restart: unless-stopped
     user: "1000:1000"
     environment:
-      TZ: "Europe/Paris"
       FCLONES_INTERVAL: "off"   # disable built-in loop; Ofelia drives it
       FCLONES_SCAN_PATHS: "/scandir"
       FCLONES_ACTION: "link"
@@ -111,7 +109,6 @@ Set `FCLONES_INTERVAL=0` (or `0s`). The container runs exactly one scan and dedu
 
 | Variable               | Description                                                                                                                                                                                                                                                                                                                                                                           | Default        | Required |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | -------- |
-| `TZ`                   | Container timezone                                                                                                                                                                                                                                                                                                                                                                    | `Europe/Paris` | No       |
 | `FCLONES_INTERVAL`     | Built-in scan interval as a Go duration (e.g. `1h`, `30m`, `12h`). The first scan runs at startup; subsequent scans fire every interval thereafter. Set to `off` (or `disabled`) to idle and trigger scans externally, or to `0` (or `0s`) to run a single scan and exit — see [Scheduling modes](#scheduling-modes). Falls back to `3h` on an unset, unparseable, or negative value. | `3h`           | No       |
 | `FCLONES_SCAN_PATHS`   | Paths inside the container to scan for duplicates. Must match the volume mounts. Multiple paths can be space-separated (e.g. `/media /photos`), each requiring a corresponding volume mount.                                                                                                                                                                                          | `/scandir`     | No       |
 | `FCLONES_ARGS`         | Extra arguments passed to `fclones group` scan phase                                                                                                                                                                                                                                                                                                                                  | `(none)`       | No       |

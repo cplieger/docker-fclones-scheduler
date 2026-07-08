@@ -87,7 +87,7 @@ intact when touching `config.go` or `scheduler.go`:
 
 ## Conventions and gotchas
 
-- Logs are slog logfmt to stderr (`key=value`). The `sloglint` linter is set
+- Logs are slog logfmt to stderr (`key=value`), with UTC timestamps via a `utcTimeAttr` `ReplaceAttr` (so the image needs no `TZ` and embeds no `time/tzdata`). The `sloglint` linter is set
   to `kv-only`, so always use key/value pairs — `slog.Info("scan complete",
 "groups", n)`, never a formatted string.
 - `main()` orchestration and the `exec.Command` calls to the `fclones` binary

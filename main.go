@@ -10,11 +10,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	// Embed the IANA tz database so TZ (e.g. the default Europe/Paris) is
-	// honored. The distroless static base ships no /usr/share/zoneinfo, so
-	// without this time.Local silently falls back to UTC and timestamps
-	// ignore TZ.
-	_ "time/tzdata"
 
 	"github.com/cplieger/health"
 )
