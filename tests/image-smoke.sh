@@ -23,7 +23,7 @@ IMG="${1:?usage: image-smoke.sh <image-ref>}"
 NAME="smoke-fclones-$$"
 TIMEOUT=90 # must cover the healthcheck start-period (15s) + a few 30s intervals
 
-# shellcheck disable=SC2329  # invoked indirectly via trap
+# shellcheck disable=SC2317,SC2329  # invoked indirectly via trap
 cleanup() {
   code=$?
   # Dump container logs only on failure (a passing run stays quiet).
