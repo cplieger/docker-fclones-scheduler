@@ -16,7 +16,7 @@ The Go module is `github.com/cplieger/fclones-wrapper`; the built binary is
   subcommands and the default long-running daemon, and wires config plus the
   health marker (`health.NewMarker` from `github.com/cplieger/health`). The
   daemon dispatches on `config.Mode` (derived from `FCLONES_INTERVAL`):
-  `runBuiltin` (a startup scan plus a `time.Ticker` loop), `runExternal` (idle
+  `runBuiltin` (a startup scan plus a `scheduler.RunLoop` interval loop), `runExternal` (idle
   until signalled, scans triggered out-of-band), and `runOnce` (a single
   scan+action, then exit — `FCLONES_INTERVAL=0`); `runScan` is the separate
   one-shot `scan`-subcommand path. Shutdown is driven by `signal.NotifyContext`
@@ -24,20 +24,23 @@ The Go module is `github.com/cplieger/fclones-wrapper`; the built binary is
 - `config.go` — environment loading (`loadConfig`), logger setup
   (`setupLogger`), the `FCLONES_ACTION` allowlist (`parseAction`), the
   dangerous-flag rejection (`rejectDangerousArgs`), and the `FCLONES_INTERVAL`
-  interpreter (`parseInterval` → interval + `runMode`: a positive duration runs
+  interpreter (`parseInterval`, delegating to `scheduler.ParseInterval` with
+  `WithZeroAsOnce`, maps `Schedule.Mode` → `runMode`: a positive duration runs
   built-in, `off`/`disabled` idles, `0`/`0s` runs once, and an empty,
   unparseable, or negative value warns and falls back to the `3h` default
   cadence rather than disabling scans).
 - `scheduler.go` — the two-phase run (`runFclonesJob`): `fclones group` scan
   (`buildScanArgs`) then the dedup action (`buildActionArgs` /
-  `runFclonesAction`). The action-decision logic (`shouldRunAction` /
+  `runFclonesAction`), each subprocess built via the `scheduler` library's
+  `NewCommandRunner`. The action-decision logic (`shouldRunAction` /
   `suspectDrift`) tolerates fclones report-format drift; see Conventions and
   gotchas.
-- `lock.go` — the advisory file lock (`tryLock`, `flock` on
-  `/cache/.fclones.lock`) that prevents overlapping scans with one mechanism
-  covering both the in-process built-in ticker and cross-process external
-  `scan` invocations; a racing scan skips rather than blocking, so it never
-  overlaps the next tick or corrupts the shared cache.
+- The overlap `flock` comes from the `scheduler` library (`scheduler.TryLock`
+  on `/cache/.fclones.lock`, called from `scheduler.go`) — one mechanism
+  covering both the in-process built-in loop and cross-process external `scan`
+  invocations; a racing scan skips rather than blocking, so it never overlaps
+  the next run or corrupts the shared cache. There is no in-repo `lock.go`
+  (removed when the app adopted `scheduler`).
 - `outcome.go` — `classifyExecOutcome` is the single source of truth for the
   success / timeout / shutdown / exec_error classification used by both
   phases.
@@ -87,7 +90,7 @@ intact when touching `config.go` or `scheduler.go`:
 
 ## Conventions and gotchas
 
-- Logs are slog logfmt to stderr (`key=value`), with UTC timestamps via a `utcTimeAttr` `ReplaceAttr` (so the image needs no `TZ` and embeds no `time/tzdata`). The `sloglint` linter is set
+- Logs are slog logfmt to stderr (`key=value`), with UTC timestamps via `slogx` (its `UTCTime` `ReplaceAttr`, so the image needs no `TZ` and embeds no `time/tzdata`). The `sloglint` linter is set
   to `kv-only`, so always use key/value pairs — `slog.Info("scan complete",
 "groups", n)`, never a formatted string.
 - `main()` orchestration and the `exec.Command` calls to the `fclones` binary

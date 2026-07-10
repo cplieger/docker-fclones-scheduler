@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/cplieger/fclones-wrapper/internal/args"
+	"github.com/cplieger/scheduler"
+	"github.com/cplieger/slogx"
 )
 
 // --- Configuration ---
@@ -135,38 +137,11 @@ const (
 // (`time=... level=... msg=... k=v`) to stderr.
 func setupLogger() {
 	raw := strings.TrimSpace(getEnv("FCLONES_LOG_LEVEL", "info"))
-	// slog.Level.UnmarshalText parses debug/info/warn/error case-insensitively
-	// (and offset syntax such as "warn+1") but lacks the long-form "warning"
-	// alias, so map it before parsing. An unrecognized value keeps Info and warns.
-	name := raw
-	if strings.EqualFold(name, "warning") {
-		name = "warn"
-	}
-	level := slog.LevelInfo
-	recognized := true
-	if err := level.UnmarshalText([]byte(name)); err != nil {
-		level = slog.LevelInfo
-		recognized = false
-	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level:       level,
-		ReplaceAttr: utcTimeAttr,
-	})))
+	level, recognized := slogx.ParseLevel(raw, slog.LevelInfo)
+	slogx.Setup(slogx.Options{Level: level})
 	if !recognized {
 		slog.Warn("unrecognized FCLONES_LOG_LEVEL, defaulting to info", "value", raw)
 	}
-}
-
-// utcTimeAttr is a slog ReplaceAttr that renders the record's built-in time
-// key in UTC, so log-line timestamps are zone-stable regardless of the
-// container's TZ (the fleet logs-in-UTC standard). It rewrites only the
-// top-level time attribute; a user attribute that happens to share the "time"
-// key inside a group is left untouched.
-func utcTimeAttr(groups []string, a slog.Attr) slog.Attr {
-	if len(groups) == 0 && a.Key == slog.TimeKey && a.Value.Kind() == slog.KindTime {
-		a.Value = slog.TimeValue(a.Value.Time().UTC())
-	}
-	return a
 }
 
 // --- Environment ---
@@ -248,40 +223,24 @@ func loadConfig() (config, error) {
 	}, nil
 }
 
-// parseInterval interprets FCLONES_INTERVAL into the built-in scan interval and the run mode.
-// "off"/"disabled" select external (idle) mode; a zero duration ("0"/"0s") selects run-once mode
-// (one scan, then exit). A positive duration sets the built-in cadence. An empty, unparseable, or
-// negative value falls back to defaultInterval in built-in mode so the container keeps scanning; a
-// negative value is a likely typo (e.g. "-1h" for "1h") and is warned about. Mirrors the sibling
-// schedulers' interval helpers (e.g. pg-autodump loadInterval).
+// parseInterval interprets FCLONES_INTERVAL into the built-in scan interval and
+// the run mode. It delegates to scheduler.ParseInterval with WithZeroAsOnce, so:
+// "off"/"disabled" select external (idle) mode; a zero duration ("0"/"0s")
+// selects run-once mode (one scan, then exit); a positive duration sets the
+// built-in cadence; and an empty, unparseable, or negative value falls back to
+// defaultInterval in built-in mode so the container keeps scanning (a negative
+// value is a likely typo and is warned about). The library's Schedule.Mode is
+// mapped onto the app's runMode.
 func parseInterval(raw string) (interval time.Duration, mode runMode) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return defaultInterval, modeBuiltin
-	}
-	switch strings.ToLower(raw) {
-	case "off", "disabled":
-		return defaultInterval, modeExternal
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil {
-		slog.Warn("cannot parse FCLONES_INTERVAL, using default",
-			"value", raw, "default", defaultInterval)
-		return defaultInterval, modeBuiltin
-	}
-	switch {
-	case d > 0:
-		return d, modeBuiltin
-	case d == 0:
-		// Zero duration ("0", "0s") runs exactly one scan, then exits.
-		return defaultInterval, modeOnce
+	s := scheduler.ParseInterval(raw, defaultInterval,
+		scheduler.WithZeroAsOnce(), scheduler.WithName("FCLONES_INTERVAL"))
+	switch s.Mode {
+	case scheduler.ModeExternal:
+		return s.Interval, modeExternal
+	case scheduler.ModeOnce:
+		return s.Interval, modeOnce
 	default:
-		// A negative duration is almost certainly a typo (e.g. "-1h" for "1h").
-		// Fall back to the default cadence rather than disabling scanning, but
-		// warn so the typo is visible.
-		slog.Warn("negative FCLONES_INTERVAL is invalid; falling back to default cadence; use a positive duration, '0' to run once, or 'off' to idle",
-			"value", raw, "default", defaultInterval)
-		return defaultInterval, modeBuiltin
+		return s.Interval, modeBuiltin
 	}
 }
 

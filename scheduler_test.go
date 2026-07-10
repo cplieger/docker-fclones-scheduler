@@ -103,55 +103,6 @@ func TestBuildScanArgs(t *testing.T) {
 	}
 }
 
-// --- Tests: scan overlap lock ---
-
-func TestFileLockMutualExclusion(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "scan.lock")
-
-	first, ok, err := tryLock(path)
-	if err != nil {
-		t.Fatalf("first tryLock: unexpected error: %v", err)
-	}
-	if !ok {
-		t.Fatal("first tryLock should acquire the lock")
-	}
-
-	if _, ok, err := tryLock(path); err != nil {
-		t.Fatalf("second tryLock: unexpected error: %v", err)
-	} else if ok {
-		t.Error("second tryLock should fail while the lock is held")
-	}
-
-	first.unlock()
-
-	again, ok, err := tryLock(path)
-	if err != nil {
-		t.Fatalf("third tryLock: unexpected error: %v", err)
-	}
-	if !ok {
-		t.Error("tryLock should re-acquire after unlock")
-	}
-	again.unlock()
-}
-
-func TestTryLockReturnsErrorWhenLockFileCannotBeCreated(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "missing-parent", "scan.lock")
-
-	l, ok, err := tryLock(path)
-
-	if err == nil {
-		t.Fatalf("tryLock(%q) error = nil, want a non-nil error when the parent directory does not exist", path)
-	}
-	if ok {
-		t.Errorf("tryLock(%q) ok = true, want false on open failure", path)
-	}
-	if l != nil {
-		t.Errorf("tryLock(%q) lock = %v, want nil on open failure", path, l)
-	}
-}
-
 // --- Tests: buildActionArgs ---
 
 func TestBuildActionArgs(t *testing.T) {

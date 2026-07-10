@@ -7,11 +7,10 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
-	"time"
 
 	"github.com/cplieger/health"
+	"github.com/cplieger/scheduler"
 )
 
 // --- Main ---
@@ -120,11 +119,14 @@ func bootstrap(ctx context.Context) (config, error) {
 	return cfg, nil
 }
 
-// runBuiltin runs the self-contained interval scheduler: a startup scan
-// that fires immediately plus a ticker loop that fires every cfg.Interval.
-// The flock in runFclonesJob guards against overlap if a scan runs longer
-// than the interval. Both goroutines share the wait group so shutdown
-// waits for in-flight work.
+// runBuiltin runs the self-contained interval scheduler via scheduler.RunLoop:
+// FireOnStart runs a scan immediately, then a scan fires every cfg.Interval.
+// RunLoop is sequential, so two scans never overlap in-process; the flock in
+// runFclonesJob still guards cross-process overlap (an external `wrapper scan`
+// racing the loop). RunLoop runs in a goroutine so this function can flip the
+// marker unhealthy the instant SIGTERM arrives — before the in-flight scan
+// drains, which may take minutes on a large filesystem — then wait out the
+// drain (RunLoop returns once ctx is cancelled and the in-flight scan returns).
 func runBuiltin(ctx context.Context, marker *health.Marker, cfg *config) {
 	// Built-in mode starts unhealthy: clear any stale health file from a
 	// previous run that crashed before its defer ran. The first successful
@@ -136,20 +138,22 @@ func runBuiltin(ctx context.Context, marker *health.Marker, cfg *config) {
 		"target", cfg.ScanPath, "action", cfg.Action,
 		"phase_timeout", cfg.PhaseTimeout)
 
-	var wg sync.WaitGroup
-	wg.Go(func() { _, _ = runFclonesJob(ctx, marker, cfg, "startup", defaultCommandRunner) })
-	wg.Go(func() {
-		ticker := time.NewTicker(cfg.Interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				_, _ = runFclonesJob(ctx, marker, cfg, "interval", defaultCommandRunner)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		// The first iteration is the startup scan, the rest are interval scans;
+		// label the trigger so the attribute matches the pre-RunLoop two-goroutine
+		// split. RunLoop calls the job sequentially, so startupDone needs no
+		// synchronization.
+		startupDone := false
+		scheduler.RunLoop(ctx, func(ctx context.Context) {
+			trigger := "interval"
+			if !startupDone {
+				trigger, startupDone = "startup", true
 			}
-		}
-	})
+			_, _ = runFclonesJob(ctx, marker, cfg, trigger, defaultCommandRunner)
+		}, scheduler.LoopOptions{Interval: cfg.Interval, FireOnStart: true})
+	}()
 
 	<-ctx.Done()
 	slog.Info("shutting down", "cause", context.Cause(ctx))
@@ -157,8 +161,8 @@ func runBuiltin(ctx context.Context, marker *health.Marker, cfg *config) {
 	// before the scan drain (which may take minutes on a large filesystem).
 	marker.Set(false)
 
-	// Wait for the startup scan and any in-flight ticker scan to drain.
-	wg.Wait()
+	// Wait for the in-flight scan (if any) to drain.
+	<-drained
 	slog.Info("shutdown complete")
 }
 

@@ -8,31 +8,23 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/cplieger/fclones-wrapper/internal/args"
 	"github.com/cplieger/fclones-wrapper/internal/ioutil"
 	"github.com/cplieger/fclones-wrapper/internal/parsing"
 	"github.com/cplieger/health"
+	"github.com/cplieger/scheduler"
 )
 
-// commandRunner creates a configured *exec.Cmd for the given context and
-// arguments. It decouples orchestration from subprocess construction,
-// allowing tests to inject a fake runner.
-type commandRunner func(ctx context.Context, name string, args ...string) *exec.Cmd
-
-// defaultCommandRunner returns an exec.Cmd with graceful shutdown:
-// SIGTERM on context cancellation with a 5s grace period before SIGKILL.
-func defaultCommandRunner(ctx context.Context, name string, cmdArgs ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, name, cmdArgs...)
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = 5 * time.Second
-	return cmd
-}
+// defaultCommandRunner builds the fclones subprocess commands with graceful
+// shutdown — SIGTERM on context cancellation, then a DefaultGrace (5s) window
+// before os/exec escalates to SIGKILL — via the shared scheduler library
+// (identical to the hand-rolled runner it replaces). The caller wires
+// Stdout/Stderr on the returned command before Run.
+var defaultCommandRunner = scheduler.NewCommandRunner(scheduler.DefaultGrace)
 
 // reportTempPattern is the os.CreateTemp filename pattern for the per-scan fclones
 // report under /cache. cleanStaleReports globs the identical pattern to reclaim
@@ -94,7 +86,7 @@ func cleanStaleReports() {
 	// Acquiring the lock first guarantees no scan is in flight in any process, so
 	// every match is a genuine orphan. If the lock is held, skip the sweep -- the
 	// orphans (if any) are reclaimed on a later startup when no scan races.
-	lock, ok, lockErr := tryLock(lockFile)
+	lock, ok, lockErr := scheduler.TryLock(lockFile)
 	if lockErr != nil {
 		slog.Warn("cannot acquire scan lock for stale-report sweep, skipping; orphaned report temp files (if any) will be reclaimed on a later startup",
 			"path", lockFile, "error", lockErr)
@@ -104,7 +96,7 @@ func cleanStaleReports() {
 		slog.Debug("scan in flight, skipping stale-report sweep")
 		return
 	}
-	defer lock.unlock()
+	defer lock.Unlock()
 
 	sweepStaleReports(cacheDir)
 }
@@ -244,8 +236,8 @@ func classifyAndLogOutcome(
 // not just err. The built-in ticker ignores ran (overlap is a benign no-op there);
 // run-once consults it so a contended one-shot exits non-zero rather than
 // reporting a no-op as success.
-func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trigger string, newCmd commandRunner) (ran bool, err error) {
-	lock, ok, lockErr := tryLock(lockFile)
+func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trigger string, newCmd scheduler.CommandRunner) (ran bool, err error) {
+	lock, ok, lockErr := scheduler.TryLock(lockFile)
 	if lockErr != nil {
 		slog.Error("cannot acquire scan lock", "trigger", trigger, logKeyOutcome, "lock_error", "path", lockFile, "error", lockErr)
 		marker.Set(false)
@@ -255,7 +247,7 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 		slog.Info("job already running, skipping overlapping request", "trigger", trigger, logKeyOutcome, "skipped")
 		return false, nil
 	}
-	defer lock.unlock()
+	defer lock.Unlock()
 
 	// marker reflects this run's outcome: healthy on success, unhealthy on
 	// failure. On interrupt (parent ctx cancelled) the run neither completed
@@ -580,7 +572,7 @@ func phaseContext(ctx context.Context, timeout time.Duration) (context.Context, 
 // the report file. It returns nil on success (including the group-only case
 // with no action to run, and shutdown mid-action) and a non-nil error when
 // the action times out or exits non-zero.
-func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *slog.Logger, newCmd commandRunner) error {
+func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *slog.Logger, newCmd scheduler.CommandRunner) error {
 	actionCmdArgs, err := buildActionArgs(cfg)
 	if err != nil {
 		log.Error("invalid FCLONES_ACTION_ARGS syntax", logKeyOutcome, "start_error", "error", err)
