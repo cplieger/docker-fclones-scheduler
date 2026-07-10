@@ -125,6 +125,69 @@ Set `FCLONES_INTERVAL=0` (or `0s`). The container runs exactly one scan and dedu
 | `/scandir` | Directory to scan for duplicate files. Must match the paths in `FCLONES_SCAN_PATHS` (space-separated for multiple mounts). The `group` action needs read access only; **`link`/`remove`/`dedupe` modify files here, so `/scandir` must be writable by the `user:` UID** (not a `:ro` mount) for those actions.                         |
 | `/cache`   | fclones cache and state directory. **Must be writable by the UID set in `user:`** (the example uses `1000:1000`). The wrapper write-probes `/cache` at startup; if it is read-only or owned by another UID the container logs `cache directory verification failed uid=<n>` and exits (crash-looping under `restart: unless-stopped`). |
 
+## Alerting
+
+docker-fclones-scheduler has no metrics endpoint; its operational state is in
+its logs. Ship the container's logs to Loki (Grafana Alloy's Docker log
+discovery does this with no configuration) and evaluate these with
+[Loki's ruler](https://grafana.com/docs/loki/latest/alert/); firing alerts
+deliver through your Alertmanager exactly like Prometheus metric alerts.
+
+```yaml
+groups:
+  - name: docker-fclones-scheduler
+    rules:
+      - alert: FclonesLinkEstablished
+        expr: |
+          sum by (files_deduped, reclaimed_human) (
+            count_over_time(
+              {container="fclones"} |= "action complete" | logfmt | action="link" | files_deduped > 0 [15m]
+            )
+          ) > 0
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "fclones linked {{ $labels.files_deduped }} duplicate files (reclaimed {{ $labels.reclaimed_human }})"
+          description: >
+            fclones established hardlinks for {{ $labels.files_deduped }} duplicate
+            files, reclaiming {{ $labels.reclaimed_human }}. The individual linked
+            paths are in the same run's `duplicate file` log lines (capped at 500
+            pairs / 64 KB), viewable in Loki: {container="fclones"} |= "duplicate
+            file" (filter by the run's scan_id). Success notification, no action
+            required.
+      - alert: FclonesFormatDrift
+        expr: |
+          sum(count_over_time({container="fclones"} |= "possible fclones format drift" [2h])) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "fclones output-format drift detected (duplicate stats may be unreliable)"
+          description: >
+            The wrapper logged a group-count mismatch or unreadable group total
+            ("possible fclones format drift"): its report parser no longer
+            recognizes fclones' output format, so the duplicate-group counts in the
+            scan-complete log line may be reported as zero even when duplicates
+            exist. Any configured dedup action still runs (the wrapper falls back to
+            piping fclones' own report to it) and the run still exits 0, so a
+            job-failure or container-restart alert would not catch it; duplicate
+            reporting is silently degraded. Check the fclones version and the
+            wrapper's report parser.
+```
+
+Thresholds and the `severity` labels are starting points. Adjust the
+`container` selector (or `job` / `service`, depending on your log collector) to
+your deployment; if you run `remove` or `dedupe` instead of `link`, change
+`action="link"` in the first rule to match your `FCLONES_ACTION`. Route by
+whatever labels your Alertmanager uses.
+
+These rules assume the built-in scheduler (`FCLONES_INTERVAL` set to a
+duration), where the scan runs as PID 1 and its logs reach your collector.
+Under `FCLONES_INTERVAL=off` each `wrapper scan` is a `docker exec` child whose
+output goes to the trigger, not the container's log stream, so neither rule
+fires; alert on your external scheduler's own job result instead.
+
 ## Healthcheck
 
 The built-in healthcheck (`/app/wrapper health`) checks for a marker file created after each successful scan and action phase. The container becomes unhealthy when fclones exits non-zero (e.g. scan path missing, permission denied, corrupted cache) or the action phase fails (e.g. hardlink across filesystems), or a scan lock cannot be acquired (e.g. `/cache` is full or read-only). It recovers automatically on the next successful scan — no restart required. In built-in mode the container begins unhealthy and transitions to healthy after the first successful scan completes, so size `healthcheck.start_period` accordingly for large filesystems where the initial scan may take minutes. In external mode the container starts healthy (idle, nothing has failed) and each triggered `scan` updates the marker.
