@@ -1,27 +1,59 @@
 #!/bin/sh
-# Runtime image smoke test for docker-fclones-scheduler. Invoked by the central
-# CI docker job:  sh tests/image-smoke.sh <image-ref>
+# Runtime image smoke-test harness — CANONICAL COPY in cplieger/ci
+# (configs/image-smoke.sh), synced to each serving app's tests/image-smoke.sh
+# by scripts/classify-repos.sh (a repo enrolls by committing a
+# tests/image-smoke.conf; see below). DO NOT edit the synced copy in an app
+# repo — change it here and let the sync land it.
 #
-# Starts the assembled image in external-trigger mode (FCLONES_INTERVAL=off) and
-# waits for the container's own HEALTHCHECK - the distroless `wrapper health`
-# file-marker probe - to report "healthy": proves the binary runs in the real
-# distroless base, config parsing works, the /cache write-preflight passes, and
-# the file-marker health probe works.
+# Invoked by the shared CI docker job:  sh tests/image-smoke.sh <image-ref>
 #
-# Why external mode: runExternal sets the health marker healthy at boot (an
-# idle, not-yet-triggered container is healthy by design) WITHOUT running
-# fclones, so no scan directory, no real duplicate files, and no external
-# scheduler are needed. Built-in mode would require fclones to actually scan a
-# directory to flip healthy, and run-once exits after a single scan so it never
-# stays running to report healthy. The only runtime requirement external mode
-# has is a writable /cache: bootstrap's verifyCacheDir does a MkdirAll + write
-# probe there before the marker is set, and the container runs nonroot (UID
-# 65532), so /cache is supplied as a world-writable tmpfs.
+# It starts the assembled image and waits for the container's own HEALTHCHECK
+# to report "healthy" — proving the binary runs in the final image, loads its
+# config, binds any listener, and its health probe works, catching failures the
+# build cannot see (a broken //go:embed frontend, a missing runtime dependency,
+# a server that never binds, a broken HEALTHCHECK). It fails fast on an early
+# exit (a crash-boot is reported by its exit code, more debuggable than
+# "unhealthy") and dumps the container log tail only on failure.
+#
+# Per-app knobs come from tests/image-smoke.conf beside this script; everything
+# below the config block is identical across apps. The .conf is a POSIX-sh
+# fragment sourced for these variables (all optional):
+#
+#   SMOKE_APP_NAME   label for log lines + container name (default: "image")
+#   SMOKE_TIMEOUT    seconds to wait for "healthy" (default: 120). Size it to
+#                    cover the image's HEALTHCHECK start-period plus a couple of
+#                    intervals; a slow-but-OK cold boot must not be failed early.
+#   SMOKE_RUN_ARGS   extra `docker run` args (env, tmpfs, ...) as a word-split
+#                    string, e.g. "-e FOO=bar --tmpfs /input". Values must not
+#                    contain spaces (these are controlled test configs).
+#
+# The harness also exports $SMOKE_DIR (this script's own absolute directory)
+# before sourcing the .conf, so an app that needs a config/fixture file on disk
+# can bind-mount a committed fixture dir, e.g.:
+#   SMOKE_RUN_ARGS="-e SYNC_INTERVAL=off -v ${SMOKE_DIR}/fixtures:/config:ro"
 set -eu
 
 IMG="${1:?usage: image-smoke.sh <image-ref>}"
-NAME="smoke-fclones-$$"
-TIMEOUT=90 # must cover the healthcheck start-period (15s) + a few 30s intervals
+
+# Absolute directory of this script (also holds image-smoke.conf and any per-app
+# fixtures). Exposed to the .conf as $SMOKE_DIR so a .conf can bind-mount a
+# committed fixture dir with an absolute source path (docker -v requires one).
+SMOKE_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+
+# Per-app config lives beside this script (repo-local, NOT synced). Pre-set the
+# knobs so `set -u` is safe and a repo with no .conf still runs with defaults.
+SMOKE_APP_NAME=""
+SMOKE_TIMEOUT=""
+SMOKE_RUN_ARGS=""
+CONF="$SMOKE_DIR/image-smoke.conf"
+if [ -f "$CONF" ]; then
+  # shellcheck disable=SC1090  # per-app config path, resolved at runtime
+  . "$CONF"
+fi
+
+APP="${SMOKE_APP_NAME:-image}"
+TIMEOUT="${SMOKE_TIMEOUT:-120}"
+NAME="smoke-${APP}-$$"
 
 # shellcheck disable=SC2317,SC2329  # invoked indirectly via trap
 cleanup() {
@@ -35,14 +67,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# FCLONES_INTERVAL=off selects external (idle) mode, which marks the container
-# healthy at boot without running fclones. verifyCacheDir write-probes /cache
-# before that and the container is nonroot, so mount /cache as a world-writable
-# tmpfs (mode 1777, matching the sibling pg-autodump smoke test).
-docker run -d --name "$NAME" \
-  -e FCLONES_INTERVAL=off \
-  --tmpfs /cache:size=16m,mode=1777 \
-  "$IMG" >/dev/null
+# SMOKE_RUN_ARGS is intentionally word-split (simple test args, no spaces).
+# shellcheck disable=SC2086
+docker run -d --name "$NAME" $SMOKE_RUN_ARGS "$IMG" >/dev/null
 
 i=0
 status=starting
@@ -52,17 +79,17 @@ while [ "$i" -lt "$TIMEOUT" ]; do
   # and the verdict never depends on what health a stopped container reports.
   if [ "$(docker inspect --format '{{ .State.Running }}' "$NAME" 2>/dev/null || echo missing)" != "true" ]; then
     ec=$(docker inspect --format '{{ .State.ExitCode }}' "$NAME" 2>/dev/null || echo '?')
-    printf 'FAIL: docker-fclones-scheduler container exited early (exit code %s)\n' "$ec" >&2
+    printf 'FAIL: %s container exited early (exit code %s)\n' "$APP" "$ec" >&2
     exit 1
   fi
   status=$(docker inspect --format '{{ if .State.Health }}{{ .State.Health.Status }}{{ else }}no-healthcheck{{ end }}' "$NAME" 2>/dev/null || echo gone)
   case "$status" in
     healthy)
-      printf 'docker-fclones-scheduler image smoke: ok (healthy after %ss)\n' "$i"
+      printf '%s image smoke: ok (healthy after %ss)\n' "$APP" "$i"
       exit 0
       ;;
     unhealthy)
-      printf 'FAIL: docker-fclones-scheduler reported unhealthy\n' >&2
+      printf 'FAIL: %s reported unhealthy\n' "$APP" >&2
       exit 1
       ;;
     no-healthcheck)
@@ -70,12 +97,12 @@ while [ "$i" -lt "$TIMEOUT" ]; do
       exit 1
       ;;
     gone)
-      printf 'FAIL: docker-fclones-scheduler container is gone\n' >&2
+      printf 'FAIL: %s container is gone\n' "$APP" >&2
       exit 1
       ;;
   esac
   i=$((i + 1))
   sleep 1
 done
-printf 'FAIL: docker-fclones-scheduler did not become healthy within %ss (last status: %s)\n' "$TIMEOUT" "$status" >&2
+printf 'FAIL: %s did not become healthy within %ss (last status: %s)\n' "$APP" "$TIMEOUT" "$status" >&2
 exit 1
