@@ -3,7 +3,7 @@ module github.com/cplieger/fclones-wrapper
 go 1.26.5
 
 require (
-	github.com/cplieger/health v1.1.6
+	github.com/cplieger/health v1.1.7
 	pgregory.net/rapid v1.3.0
 )
 
