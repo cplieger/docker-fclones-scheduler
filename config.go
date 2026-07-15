@@ -3,7 +3,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cplieger/envx"
 	"github.com/cplieger/fclones-wrapper/internal/args"
 	"github.com/cplieger/scheduler"
 	"github.com/cplieger/slogx"
@@ -136,7 +136,7 @@ const (
 // setupLogger installs a slog text handler that emits canonical logfmt
 // (`time=... level=... msg=... k=v`) to stderr.
 func setupLogger() {
-	raw := strings.TrimSpace(getEnv("FCLONES_LOG_LEVEL", "info"))
+	raw := strings.TrimSpace(envx.String("FCLONES_LOG_LEVEL", "info"))
 	level, recognized := slogx.ParseLevel(raw, slog.LevelInfo)
 	slogx.Setup(slogx.Options{Level: level})
 	if !recognized {
@@ -147,17 +147,17 @@ func setupLogger() {
 // --- Environment ---
 
 func loadConfig() (config, error) {
-	actionStr := getEnv("FCLONES_ACTION", string(actionGroup))
+	actionStr := envx.String("FCLONES_ACTION", string(actionGroup))
 	parsedAction, parseErr := parseAction(actionStr)
 	if parseErr != nil {
 		slog.Error("invalid FCLONES_ACTION", "action", actionStr, logKeyOutcome, "config_error", "error", parseErr)
 		return config{}, parseErr
 	}
 
-	scanPaths := getEnv("FCLONES_SCAN_PATHS", scanDir)
-	argsStr := getEnv("FCLONES_ARGS", "")
-	actionArgs := getEnv("FCLONES_ACTION_ARGS", "")
-	if strings.EqualFold(getEnv("FCLONES_ALLOW_UNSAFE", "false"), "true") {
+	scanPaths := envx.String("FCLONES_SCAN_PATHS", scanDir)
+	argsStr := envx.String("FCLONES_ARGS", "")
+	actionArgs := envx.String("FCLONES_ACTION_ARGS", "")
+	if strings.EqualFold(envx.String("FCLONES_ALLOW_UNSAFE", "false"), "true") {
 		slog.Warn("unsafe flags allowed, command injection guardrails disabled",
 			"env", "FCLONES_ALLOW_UNSAFE")
 		// Unsafe mode skips the dangerous-flag check but must still validate
@@ -191,7 +191,7 @@ func loadConfig() (config, error) {
 			"value", scanPaths)
 	}
 
-	timeoutStr := getEnv("FCLONES_SCAN_TIMEOUT", "12h")
+	timeoutStr := envx.String("FCLONES_SCAN_TIMEOUT", "12h")
 	scanTimeout, err := time.ParseDuration(timeoutStr)
 	if err != nil {
 		slog.Error("invalid FCLONES_SCAN_TIMEOUT", "value", timeoutStr, logKeyOutcome, "config_error", "error", err)
@@ -242,10 +242,6 @@ func parseInterval(raw string) (interval time.Duration, mode runMode) {
 	default:
 		return s.Interval, modeBuiltin
 	}
-}
-
-func getEnv(key, fallback string) string {
-	return cmp.Or(os.Getenv(key), fallback)
 }
 
 // Dangerous fclones flags that execute arbitrary commands.

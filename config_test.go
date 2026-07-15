@@ -297,33 +297,6 @@ func TestVerifyDirCreateProbeFileFails(t *testing.T) {
 
 // --- Tests: getEnv ---
 
-func TestGetEnv(t *testing.T) {
-	t.Setenv("TEST_FCLONES_ENV", "value")
-	if got := getEnv("TEST_FCLONES_ENV", "default"); got != "value" {
-		t.Errorf("getEnv = %q, want value", got)
-	}
-	t.Setenv("TEST_FCLONES_ENV", "")
-	if got := getEnv("TEST_FCLONES_ENV", "default"); got != "default" {
-		t.Errorf("getEnv = %q, want default", got)
-	}
-}
-
-func TestGetEnvUnset(t *testing.T) {
-	t.Parallel()
-	got := getEnv("FCLONES_TEST_UNSET_VAR_12345", "fallback")
-	if got != "fallback" {
-		t.Errorf("getEnv unset = %q, want \"fallback\"", got)
-	}
-}
-
-func TestGetEnvEmptyFallback(t *testing.T) {
-	t.Parallel()
-	got := getEnv("FCLONES_TEST_UNSET_VAR_12345", "")
-	if got != "" {
-		t.Errorf("getEnv empty fallback = %q, want \"\"", got)
-	}
-}
-
 // --- Tests: loadConfig error paths (direct, no subprocess needed) ---
 
 func TestLoadConfigErrorOnInvalidAction(t *testing.T) {
