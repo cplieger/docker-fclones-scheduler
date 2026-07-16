@@ -131,6 +131,11 @@ const (
 	// default and is conservative enough to avoid disk thrash on large
 	// libraries while still catching new duplicates within a workday.
 	defaultInterval = 3 * time.Hour
+
+	// defaultScanTimeout is the per-phase deadline when FCLONES_SCAN_TIMEOUT
+	// is unset; see loadConfig for the zero (disable) and negative (reject)
+	// rules.
+	defaultScanTimeout = 12 * time.Hour
 )
 
 // setupLogger installs a slog text handler that emits canonical logfmt
@@ -146,6 +151,33 @@ func setupLogger() {
 
 // --- Environment ---
 
+// loadScanTimeout reads FCLONES_SCAN_TIMEOUT via envx.DurationStrict,
+// defaulting to defaultScanTimeout when unset. Zero (FCLONES_SCAN_TIMEOUT=0/0s)
+// disables the per-phase deadline: the phase then runs under the parent
+// context (see phaseContext) with no time limit. A malformed value is
+// rejected at startup, and so is a negative duration — that is almost
+// certainly a typo (e.g. "-1h" for "1h") and would otherwise build an
+// already-expired context that fails every scan, silently bricking the
+// container.
+func loadScanTimeout() (time.Duration, error) {
+	scanTimeout, ok, err := envx.DurationStrict("FCLONES_SCAN_TIMEOUT")
+	if err != nil {
+		raw := os.Getenv("FCLONES_SCAN_TIMEOUT")
+		slog.Error("invalid FCLONES_SCAN_TIMEOUT", "value", raw, logKeyOutcome, "config_error", "error", err)
+		return 0, fmt.Errorf("invalid FCLONES_SCAN_TIMEOUT %q: %w", raw, err)
+	}
+	if !ok {
+		return defaultScanTimeout, nil
+	}
+	if scanTimeout < 0 {
+		raw := os.Getenv("FCLONES_SCAN_TIMEOUT")
+		slog.Error("invalid FCLONES_SCAN_TIMEOUT",
+			"value", raw, logKeyOutcome, "config_error", "error", "must be zero (no timeout) or a positive duration")
+		return 0, fmt.Errorf("invalid FCLONES_SCAN_TIMEOUT %q: must be zero (no timeout) or positive", raw)
+	}
+	return scanTimeout, nil
+}
+
 func loadConfig() (config, error) {
 	actionStr := envx.String("FCLONES_ACTION", string(actionGroup))
 	parsedAction, parseErr := parseAction(actionStr)
@@ -157,6 +189,10 @@ func loadConfig() (config, error) {
 	scanPaths := envx.String("FCLONES_SCAN_PATHS", scanDir)
 	argsStr := envx.String("FCLONES_ARGS", "")
 	actionArgs := envx.String("FCLONES_ACTION_ARGS", "")
+	// FCLONES_ALLOW_UNSAFE deliberately accepts ONLY the exact spelling
+	// "true" (case-insensitive), not envx.Bool's tolerant 1/yes/on set: the
+	// flag disables command-injection guardrails, so the accepted vocabulary
+	// stays as narrow as possible. Do not "clean up" to envx.Bool.
 	if strings.EqualFold(envx.String("FCLONES_ALLOW_UNSAFE", "false"), "true") {
 		slog.Warn("unsafe flags allowed, command injection guardrails disabled",
 			"env", "FCLONES_ALLOW_UNSAFE")
@@ -191,21 +227,9 @@ func loadConfig() (config, error) {
 			"value", scanPaths)
 	}
 
-	timeoutStr := envx.String("FCLONES_SCAN_TIMEOUT", "12h")
-	scanTimeout, err := time.ParseDuration(timeoutStr)
-	if err != nil {
-		slog.Error("invalid FCLONES_SCAN_TIMEOUT", "value", timeoutStr, logKeyOutcome, "config_error", "error", err)
-		return config{}, fmt.Errorf("invalid FCLONES_SCAN_TIMEOUT %q: %w", timeoutStr, err)
-	}
-	// Zero (FCLONES_SCAN_TIMEOUT=0/0s) disables the per-phase deadline: the
-	// phase then runs under the parent context (see phaseContext) with no time
-	// limit. A negative duration is almost certainly a typo (e.g. "-1h" for
-	// "1h") and would otherwise build an already-expired context that fails
-	// every scan, so reject it rather than silently bricking the container.
-	if scanTimeout < 0 {
-		slog.Error("invalid FCLONES_SCAN_TIMEOUT",
-			"value", timeoutStr, logKeyOutcome, "config_error", "error", "must be zero (no timeout) or a positive duration")
-		return config{}, fmt.Errorf("invalid FCLONES_SCAN_TIMEOUT %q: must be zero (no timeout) or positive", timeoutStr)
+	scanTimeout, timeoutErr := loadScanTimeout()
+	if timeoutErr != nil {
+		return config{}, timeoutErr
 	}
 
 	// FCLONES_INTERVAL sets the built-in scan cadence; see parseInterval for the
