@@ -16,7 +16,7 @@ import (
 	"github.com/cplieger/fclones-wrapper/internal/ioutil"
 	"github.com/cplieger/fclones-wrapper/internal/parsing"
 	"github.com/cplieger/health"
-	"github.com/cplieger/scheduler"
+	"github.com/cplieger/scheduler/v2"
 )
 
 // defaultCommandRunner builds the fclones subprocess commands with graceful

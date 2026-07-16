@@ -14,7 +14,7 @@ import (
 
 	"github.com/cplieger/envx"
 	"github.com/cplieger/fclones-wrapper/internal/args"
-	"github.com/cplieger/scheduler"
+	"github.com/cplieger/scheduler/v2"
 	"github.com/cplieger/slogx"
 )
 
