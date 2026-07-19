@@ -1,6 +1,7 @@
 package parsing_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -8,294 +9,304 @@ import (
 	"pgregory.net/rapid"
 )
 
-func TestParseStats(t *testing.T) {
+// minimalHeader is a valid report header with the given stats JSON (pass
+// "null" or omit fields to build error cases).
+func reportDoc(statsJSON, groupsJSON string) string {
+	return `{"header":{"version":"0.35.0","timestamp":"2026-07-17T00:00:00+00:00",` +
+		`"command":["fclones","group","/scandir","-f","json"],"base_dir":"/","stats":` +
+		statsJSON + `},"groups":` + groupsJSON + `}`
+}
+
+// statsJSON renders a stats block with the given group/redundant counts.
+func statsJSON(groupCount, redundantCount int, redundantSize int64) string {
+	var b strings.Builder
+	b.WriteString(`{"group_count":`)
+	b.WriteString(jsonInt(groupCount))
+	b.WriteString(`,"total_file_count":10,"total_file_size":99999,"redundant_file_count":`)
+	b.WriteString(jsonInt(redundantCount))
+	b.WriteString(`,"redundant_file_size":`)
+	b.WriteString(jsonInt64(redundantSize))
+	b.WriteString(`,"missing_file_count":0,"missing_file_size":0}`)
+	return b.String()
+}
+
+func jsonInt(n int) string     { b, _ := json.Marshal(n); return string(b) }
+func jsonInt64(n int64) string { b, _ := json.Marshal(n); return string(b) }
+
+func TestDecodeReport(t *testing.T) {
 	t.Parallel()
+
+	twoGroups := `[
+		{"file_len":6274,"file_hash":"49165422","files":["/keep/a","/dup/a1","/dup/a2"]},
+		{"file_len":41,"file_hash":"dcf2e111","files":["/keep/b","/dup/b1"]}
+	]`
+
+	t.Run("happy path maps stats, keeper, and sizes", func(t *testing.T) {
+		t.Parallel()
+		got, err := parsing.DecodeReport(strings.NewReader(reportDoc(statsJSON(2, 3, 6315), twoGroups)), 100)
+		if err != nil {
+			t.Fatalf("DecodeReport: %v", err)
+		}
+		if got.Stats.GroupCount != 2 || got.Stats.RedundantFileCount != 3 || got.Stats.RedundantFileSize != 6315 {
+			t.Errorf("Stats = %+v, want group_count=2 redundant_file_count=3 redundant_file_size=6315", got.Stats)
+		}
+		if got.TotalGroups != 2 || got.TotalDuplicates != 3 {
+			t.Errorf("totals = %d groups / %d duplicates, want 2 / 3", got.TotalGroups, got.TotalDuplicates)
+		}
+		if len(got.Groups) != 2 {
+			t.Fatalf("retained groups = %d, want 2", len(got.Groups))
+		}
+		first := got.Groups[0]
+		if first.Keeper != "/keep/a" {
+			t.Errorf("group 0 Keeper = %q, want %q (files[0] keep-first)", first.Keeper, "/keep/a")
+		}
+		if len(first.Duplicates) != 2 || first.Duplicates[0] != "/dup/a1" || first.Duplicates[1] != "/dup/a2" {
+			t.Errorf("group 0 Duplicates = %v, want [/dup/a1 /dup/a2]", first.Duplicates)
+		}
+		if first.SizePerDup != parsing.HumanBytes(6274) {
+			t.Errorf("group 0 SizePerDup = %q, want %q", first.SizePerDup, parsing.HumanBytes(6274))
+		}
+		if got.Groups[1].SizePerDup != "41 B" {
+			t.Errorf("group 1 SizePerDup = %q, want %q", got.Groups[1].SizePerDup, "41 B")
+		}
+	})
+
+	t.Run("empty groups with zero count is a genuine zero", func(t *testing.T) {
+		t.Parallel()
+		got, err := parsing.DecodeReport(strings.NewReader(reportDoc(statsJSON(0, 0, 0), `[]`)), 100)
+		if err != nil {
+			t.Fatalf("DecodeReport: %v", err)
+		}
+		if got.TotalGroups != 0 || got.TotalDuplicates != 0 || len(got.Groups) != 0 {
+			t.Errorf("got %+v, want empty report", got)
+		}
+	})
+
+	t.Run("keepGroups caps retention while totals cover the document", func(t *testing.T) {
+		t.Parallel()
+		three := `[
+			{"file_len":10,"file_hash":"h1","files":["/k1","/d1"]},
+			{"file_len":20,"file_hash":"h2","files":["/k2","/d2","/d3"]},
+			{"file_len":30,"file_hash":"h3","files":["/k3","/d4"]}
+		]`
+		got, err := parsing.DecodeReport(strings.NewReader(reportDoc(statsJSON(3, 4, 80), three)), 1)
+		if err != nil {
+			t.Fatalf("DecodeReport: %v", err)
+		}
+		if len(got.Groups) != 1 || got.Groups[0].Keeper != "/k1" {
+			t.Errorf("retained = %+v, want only the first group", got.Groups)
+		}
+		if got.TotalGroups != 3 || got.TotalDuplicates != 4 {
+			t.Errorf("totals = %d/%d, want 3/4 despite the retention cap", got.TotalGroups, got.TotalDuplicates)
+		}
+	})
+
+	t.Run("non-positive keepGroups retains nothing", func(t *testing.T) {
+		t.Parallel()
+		for _, keep := range []int{0, -1} {
+			got, err := parsing.DecodeReport(strings.NewReader(reportDoc(statsJSON(2, 3, 6315), twoGroups)), keep)
+			if err != nil {
+				t.Fatalf("DecodeReport(keep=%d): %v", keep, err)
+			}
+			if len(got.Groups) != 0 || got.TotalGroups != 2 || got.TotalDuplicates != 3 {
+				t.Errorf("keep=%d: got %+v, want no retained groups with full totals", keep, got)
+			}
+		}
+	})
+
+	t.Run("unknown fields are tolerated at every level", func(t *testing.T) {
+		t.Parallel()
+		doc := `{"future_top":123,"header":{"version":"9.9.9","new_header_field":{"a":1},` +
+			`"stats":{"group_count":1,"total_file_count":2,"total_file_size":20,` +
+			`"redundant_file_count":1,"redundant_file_size":10,"missing_file_count":0,` +
+			`"missing_file_size":0,"future_stat":7}},` +
+			`"groups":[{"file_len":10,"file_hash":"h","files":["/k","/d"],"future_group_field":true}]}`
+		got, err := parsing.DecodeReport(strings.NewReader(doc), 100)
+		if err != nil {
+			t.Fatalf("DecodeReport with unknown fields: %v", err)
+		}
+		if got.TotalGroups != 1 || got.Groups[0].Keeper != "/k" {
+			t.Errorf("got %+v, want the known fields decoded", got)
+		}
+	})
+
+	t.Run("groups before header decodes order-independently", func(t *testing.T) {
+		t.Parallel()
+		doc := `{"groups":[{"file_len":10,"file_hash":"h","files":["/k","/d"]}],` +
+			`"header":{"stats":` + statsJSON(1, 1, 10) + `}}`
+		got, err := parsing.DecodeReport(strings.NewReader(doc), 100)
+		if err != nil {
+			t.Fatalf("DecodeReport: %v", err)
+		}
+		if got.TotalGroups != 1 || got.Stats.GroupCount != 1 {
+			t.Errorf("got %+v, want one group with matching stats", got)
+		}
+	})
+}
+
+func TestDecodeReport_errors(t *testing.T) {
+	t.Parallel()
+	oneGroup := `[{"file_len":10,"file_hash":"h","files":["/k","/d"]}]`
+
 	tests := []struct {
-		name        string
-		input       string
-		groups      string
-		size        string
-		totalParsed bool
+		name    string
+		doc     string
+		wantSub string
 	}{
 		{
-			name:        "standard output with parenthesized size",
-			input:       "# Redundant: 5 files (1.2 GB)\n# Total: 10 3 groups",
-			groups:      "3",
-			size:        "1.2 GB",
-			totalParsed: true,
+			name:    "text report is not JSON",
+			doc:     "# Redundant: 5 files (1.2 GB)\n# Total: 10 3 groups\n",
+			wantSub: "report",
 		},
 		{
-			name:        "size without parentheses",
-			input:       "# Redundant: 512 MB\n# Total: 5 2 groups",
-			groups:      "2",
-			size:        "512 MB",
-			totalParsed: true,
+			name:    "truncated document",
+			doc:     reportDoc(statsJSON(1, 1, 10), oneGroup)[:40],
+			wantSub: "report",
 		},
 		{
-			name:        "no duplicates",
-			input:       "# Redundant: 0 files\n# Total: 0 0 groups",
-			groups:      "0",
-			size:        "0 files",
-			totalParsed: true,
+			name:    "missing header",
+			doc:     `{"groups":` + oneGroup + `}`,
+			wantSub: "missing header",
 		},
 		{
-			name:        "real output with commas and extra fields",
-			input:       "# Redundant: 1,234 files (5.6 GB) in 789 groups\n# Total: 2,000 789 groups",
-			groups:      "789",
-			size:        "5.6 GB",
-			totalParsed: true,
+			name:    "null stats",
+			doc:     reportDoc("null", oneGroup),
+			wantSub: "no stats",
 		},
 		{
-			name:        "empty input returns defaults",
-			input:       "",
-			groups:      "0",
-			size:        "0 B",
-			totalParsed: false,
+			name:    "absent stats field",
+			doc:     `{"header":{"version":"0.35.0"},"groups":` + oneGroup + `}`,
+			wantSub: "no stats",
 		},
 		{
-			name:        "partial output with Total line only",
-			input:       "# Total: 5 groups\n",
-			groups:      "5",
-			size:        "0 B",
-			totalParsed: true,
+			name:    "missing groups array",
+			doc:     `{"header":{"stats":` + statsJSON(0, 0, 0) + `}}`,
+			wantSub: "missing groups",
 		},
 		{
-			name:        "Total line without groups suffix",
-			input:       "# Total: 100 files\n",
-			groups:      "0",
-			size:        "0 B",
-			totalParsed: false,
+			name:    "single-file group",
+			doc:     reportDoc(statsJSON(1, 0, 0), `[{"file_len":10,"file_hash":"h","files":["/only"]}]`),
+			wantSub: "at least a keeper",
 		},
 		{
-			name:        "Redundant only without Total",
-			input:       "# Redundant: 3 files (42 MB)\n",
-			groups:      "0",
-			size:        "42 MB",
-			totalParsed: false,
+			name:    "empty files group",
+			doc:     reportDoc(statsJSON(1, 0, 0), `[{"file_len":10,"file_hash":"h","files":[]}]`),
+			wantSub: "at least a keeper",
 		},
 		{
-			name:        "Redundant without Total larger size",
-			input:       "# Redundant: 10 files (2.5 GB)\n",
-			groups:      "0",
-			size:        "2.5 GB",
-			totalParsed: false,
+			name:    "negative file_len",
+			doc:     reportDoc(statsJSON(1, 1, 10), `[{"file_len":-5,"file_hash":"h","files":["/k","/d"]}]`),
+			wantSub: "negative file_len",
 		},
 		{
-			name:        "multiple Redundant lines last wins",
-			input:       "# Redundant: 1 files (100 MB)\n# Redundant: 2 files (200 MB)\n",
-			groups:      "0",
-			size:        "200 MB",
-			totalParsed: false,
+			name:    "header count disagrees with document",
+			doc:     reportDoc(statsJSON(5, 1, 10), oneGroup),
+			wantSub: "claim 5 groups but the document carries 1",
 		},
 		{
-			name:        "multiple Total lines last wins",
-			input:       "# Total: 10 3 groups\n# Total: 20 5 groups",
-			groups:      "5",
-			size:        "0 B",
-			totalParsed: true,
+			name:    "top-level array",
+			doc:     `[]`,
+			wantSub: "report",
 		},
 		{
-			name:        "Total line with no count fields returns defaults",
-			input:       "# Total:",
-			groups:      "0",
-			size:        "0 B",
-			totalParsed: false,
+			name:    "groups is an object",
+			doc:     reportDoc(statsJSON(0, 0, 0), `{}`),
+			wantSub: "groups",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			stats := parsing.ParseStats(tt.input)
-			if stats.Groups != tt.groups {
-				t.Errorf("Groups = %q, want %q", stats.Groups, tt.groups)
+			got, err := parsing.DecodeReport(strings.NewReader(tt.doc), 100)
+			if err == nil {
+				t.Fatalf("DecodeReport(%q) = nil error, want one containing %q", tt.doc, tt.wantSub)
 			}
-			if stats.Size != tt.size {
-				t.Errorf("Size = %q, want %q", stats.Size, tt.size)
+			if !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("error = %q, want it to contain %q", err, tt.wantSub)
 			}
-			if stats.TotalParsed != tt.totalParsed {
-				t.Errorf("TotalParsed = %v, want %v", stats.TotalParsed, tt.totalParsed)
+			if got.TotalGroups != 0 || got.TotalDuplicates != 0 || len(got.Groups) != 0 || got.Stats != (parsing.ReportStats{}) {
+				t.Errorf("error path returned non-zero Report %+v, want zero value", got)
 			}
 		})
 	}
 }
 
-func TestParseDuplicateGroups(t *testing.T) {
+// TestProperty_DecodeReportRoundTrip generates arbitrary well-formed reports,
+// encodes them in the upstream wire shape, and asserts DecodeReport recovers
+// the exact totals, retention-capped groups, and keeper mapping.
+func TestProperty_DecodeReportRoundTrip(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name  string
-		input string
-		want  []parsing.DuplicateGroup
-	}{
-		{
-			name:  "comments only, no groups",
-			input: "# some comment\n",
-			want:  nil,
-		},
-		{
-			name:  "group header with two files",
-			input: "# comment\n\n3a2b, 1024 B (1.0 KB) * 2:\n/path/file1\n/path/file2\n",
-			want: []parsing.DuplicateGroup{
-				{
-					Keeper:     "/path/file1",
-					Duplicates: []string{"/path/file2"},
-					SizePerDup: "1024 B (1.0 KB)",
-				},
-			},
-		},
-		{
-			name: "multiple groups with headers",
-			input: "# comment\n\nabc, 100 B * 2:\n/group1/a\n/group1/b\n\n" +
-				"def, 200 KB (200.0 KB) * 3:\n/group2/a\n/group2/b\n/group2/c\n",
-			want: []parsing.DuplicateGroup{
-				{
-					Keeper:     "/group1/a",
-					Duplicates: []string{"/group1/b"},
-					SizePerDup: "100 B",
-				},
-				{
-					Keeper:     "/group2/a",
-					Duplicates: []string{"/group2/b", "/group2/c"},
-					SizePerDup: "200 KB (200.0 KB)",
-				},
-			},
-		},
-		{
-			name:  "files without a group header are ignored",
-			input: "# comment\n/path/lonely\n",
-			want:  nil,
-		},
-		{
-			name:  "empty input",
-			input: "",
-			want:  nil,
-		},
-		{
-			name:  "only blank lines",
-			input: "\n\n\n",
-			want:  nil,
-		},
-		{
-			name:  "header but no files",
-			input: "abc, 100 B * 2:\n\n",
-			want:  nil,
-		},
-		{
-			name:  "header with single file no duplicates",
-			input: "abc, 100 B * 2:\n/path/only\n",
-			want:  nil,
-		},
-		{
-			name:  "whitespace in paths is trimmed",
-			input: "abc, 100 B * 2:\n  /path/with spaces  \n  /path/another  \n",
-			want: []parsing.DuplicateGroup{
-				{
-					Keeper:     "/path/with spaces",
-					Duplicates: []string{"/path/another"},
-					SizePerDup: "100 B",
-				},
-			},
-		},
-		{
-			name:  "multiple headers sequential",
-			input: "abc, 100 B * 2:\n/file1\n/file2\n\nxyz, 200 B * 2:\n/file3\n/file4\n",
-			want: []parsing.DuplicateGroup{
-				{
-					Keeper:     "/file1",
-					Duplicates: []string{"/file2"},
-					SizePerDup: "100 B",
-				},
-				{
-					Keeper:     "/file3",
-					Duplicates: []string{"/file4"},
-					SizePerDup: "200 B",
-				},
-			},
-		},
-		{
-			name:  "large group with many files",
-			input: "abc, 10 B * 5:\n/f1\n/f2\n/f3\n/f4\n/f5\n",
-			want: []parsing.DuplicateGroup{
-				{
-					Keeper:     "/f1",
-					Duplicates: []string{"/f2", "/f3", "/f4", "/f5"},
-					SizePerDup: "10 B",
-				},
-			},
-		},
-		{
-			// Oracle the fuzz invariants miss: in the real report every path is
-			// indented, so a duplicate filename that embeds the header
-			// delimiters (',', '*', trailing ':') is still a path, not a new
-			// group header. Indentation is the discriminator, so the whole
-			// block stays ONE group with the expected keeper and duplicate count.
-			name:  "duplicate filenames that look like group headers stay one group",
-			input: "realhash, 100 B * 3:\n    /path/a, 1 B * 2:\n    /path/b, 1 B * 2:\n    /path/c, 1 B * 2:\n",
-			want: []parsing.DuplicateGroup{
-				{
-					Keeper:     "/path/a, 1 B * 2:",
-					Duplicates: []string{"/path/b, 1 B * 2:", "/path/c, 1 B * 2:"},
-					SizePerDup: "100 B",
-				},
-			},
-		},
-		{
-			// Regression test for the FclonesFormatDrift incident: fclones does
-			// NOT put a blank line between groups, so group blocks arrive
-			// back-to-back (header at column 0, paths indented). The parser must
-			// split them on the non-indented header rather than collapse them
-			// into one group and absorb the later headers as duplicate paths.
-			name: "back-to-back groups without blank-line separators",
-			input: "h1, 100 B * 2:\n    /a/keeper\n    /a/dup\n" +
-				"h2, 200 B * 3:\n    /b/keeper\n    /b/dup1\n    /b/dup2\n" +
-				"h3, 300 B * 2:\n    /c/keeper\n    /c/dup\n",
-			want: []parsing.DuplicateGroup{
-				{Keeper: "/a/keeper", Duplicates: []string{"/a/dup"}, SizePerDup: "100 B"},
-				{Keeper: "/b/keeper", Duplicates: []string{"/b/dup1", "/b/dup2"}, SizePerDup: "200 B"},
-				{Keeper: "/c/keeper", Duplicates: []string{"/c/dup"}, SizePerDup: "300 B"},
-			},
-		},
-		{
-			// fclones' separator emission is inconsistent: a single report may
-			// mix blank-separated and back-to-back groups. Both forms must split.
-			name: "mixed separators (blank line then back-to-back)",
-			input: "h1, 10 B * 2:\n    /a\n    /a2\n\n" +
-				"h2, 20 B * 2:\n    /b\n    /b2\n" +
-				"h3, 30 B * 2:\n    /c\n    /c2\n",
-			want: []parsing.DuplicateGroup{
-				{Keeper: "/a", Duplicates: []string{"/a2"}, SizePerDup: "10 B"},
-				{Keeper: "/b", Duplicates: []string{"/b2"}, SizePerDup: "20 B"},
-				{Keeper: "/c", Duplicates: []string{"/c2"}, SizePerDup: "30 B"},
-			},
-		},
+
+	type wireGroup struct {
+		FileLen  int64    `json:"file_len"`
+		FileHash string   `json:"file_hash"`
+		Files    []string `json:"files"`
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := parsing.ParseDuplicateGroups(tt.input)
-			if len(got) != len(tt.want) {
-				t.Fatalf("groups len = %d, want %d (got %+v)", len(got), len(tt.want), got)
+	rapid.Check(t, func(rt *rapid.T) {
+		nGroups := rapid.IntRange(0, 20).Draw(rt, "nGroups")
+		keep := rapid.IntRange(0, 25).Draw(rt, "keep")
+
+		groups := make([]wireGroup, 0, nGroups)
+		wantDups := 0
+		for i := range nGroups {
+			nFiles := rapid.IntRange(2, 6).Draw(rt, "nFiles")
+			files := make([]string, 0, nFiles)
+			for j := range nFiles {
+				// Arbitrary path strings, including delimiter-laden ones: JSON
+				// escaping must round-trip them verbatim.
+				files = append(files, rapid.StringMatching(`/[ -~]{0,30}`).Draw(rt, "path")+
+					jsonInt(i)+"_"+jsonInt(j))
 			}
-			for i := range got {
-				if got[i].Keeper != tt.want[i].Keeper {
-					t.Errorf("group %d Keeper = %q, want %q", i, got[i].Keeper, tt.want[i].Keeper)
-				}
-				if got[i].SizePerDup != tt.want[i].SizePerDup {
-					t.Errorf("group %d SizePerDup = %q, want %q", i, got[i].SizePerDup, tt.want[i].SizePerDup)
-				}
-				if len(got[i].Duplicates) != len(tt.want[i].Duplicates) {
-					t.Fatalf("group %d Duplicates len = %d, want %d", i, len(got[i].Duplicates), len(tt.want[i].Duplicates))
-				}
-				for j := range got[i].Duplicates {
-					if got[i].Duplicates[j] != tt.want[i].Duplicates[j] {
-						t.Errorf("group %d Duplicates[%d] = %q, want %q",
-							i, j, got[i].Duplicates[j], tt.want[i].Duplicates[j])
-					}
-				}
+			groups = append(groups, wireGroup{
+				FileLen:  rapid.Int64Range(0, 1<<40).Draw(rt, "fileLen"),
+				FileHash: "h",
+				Files:    files,
+			})
+			wantDups += nFiles - 1
+		}
+
+		doc := map[string]any{
+			"header": map[string]any{
+				"version": "0.35.0",
+				"stats": map[string]any{
+					"group_count":          nGroups,
+					"total_file_count":     0,
+					"total_file_size":      0,
+					"redundant_file_count": wantDups,
+					"redundant_file_size":  0,
+					"missing_file_count":   0,
+					"missing_file_size":    0,
+				},
+			},
+			"groups": groups,
+		}
+		encoded, err := json.Marshal(doc)
+		if err != nil {
+			rt.Fatalf("marshal fixture: %v", err)
+		}
+
+		got, err := parsing.DecodeReport(strings.NewReader(string(encoded)), keep)
+		if err != nil {
+			rt.Fatalf("DecodeReport: %v", err)
+		}
+		if got.TotalGroups != nGroups || got.TotalDuplicates != wantDups {
+			rt.Fatalf("totals = %d/%d, want %d/%d", got.TotalGroups, got.TotalDuplicates, nGroups, wantDups)
+		}
+		wantRetained := min(nGroups, keep)
+		if len(got.Groups) != wantRetained {
+			rt.Fatalf("retained = %d, want %d", len(got.Groups), wantRetained)
+		}
+		for i, g := range got.Groups {
+			if g.Keeper != groups[i].Files[0] {
+				rt.Fatalf("group %d keeper = %q, want %q", i, g.Keeper, groups[i].Files[0])
 			}
-		})
-	}
+			if len(g.Duplicates) != len(groups[i].Files)-1 {
+				rt.Fatalf("group %d duplicates = %d, want %d", i, len(g.Duplicates), len(groups[i].Files)-1)
+			}
+		}
+	})
 }
 
 func TestParseActionSummary(t *testing.T) {
@@ -307,6 +318,7 @@ func TestParseActionSummary(t *testing.T) {
 		wantFiles      int
 		wantReclaimed  int64
 		wantEstimated  bool
+		wantMatched    bool
 	}{
 		{
 			name:           "standard Processed line",
@@ -314,6 +326,7 @@ func TestParseActionSummary(t *testing.T) {
 			wantFiles:      5,
 			wantReclaimed:  1_200_000_000,
 			wantRawContain: "Processed 5 files",
+			wantMatched:    true,
 		},
 		{
 			name:           "zero files zero bytes",
@@ -321,6 +334,7 @@ func TestParseActionSummary(t *testing.T) {
 			wantFiles:      0,
 			wantReclaimed:  0,
 			wantRawContain: "Processed 0 files",
+			wantMatched:    true,
 		},
 		{
 			name:           "falls back to last non-empty line",
@@ -342,6 +356,7 @@ func TestParseActionSummary(t *testing.T) {
 			wantFiles:      2,
 			wantReclaimed:  512_000,
 			wantRawContain: "Processed 2 files",
+			wantMatched:    true,
 		},
 		{
 			name:           "only whitespace",
@@ -363,6 +378,7 @@ func TestParseActionSummary(t *testing.T) {
 			wantFiles:      10,
 			wantReclaimed:  500_000_000,
 			wantRawContain: "Processed",
+			wantMatched:    true,
 		},
 		{
 			name:           "first Processed match wins",
@@ -370,6 +386,7 @@ func TestParseActionSummary(t *testing.T) {
 			wantFiles:      5,
 			wantReclaimed:  1_000_000_000,
 			wantRawContain: "Processed 5 files",
+			wantMatched:    true,
 		},
 		{
 			name:           "reclaimed without Processed falls back",
@@ -384,6 +401,7 @@ func TestParseActionSummary(t *testing.T) {
 			wantFiles:      0,
 			wantReclaimed:  4,
 			wantRawContain: "Processed 0 files",
+			wantMatched:    true,
 		},
 		{
 			name:           "negative file count is rejected, reclaim still parsed",
@@ -391,6 +409,7 @@ func TestParseActionSummary(t *testing.T) {
 			wantFiles:      0,
 			wantReclaimed:  4,
 			wantRawContain: "Processed",
+			wantMatched:    true,
 		},
 		{
 			name:           "dedupe reclaimed up to is parsed as an upper-bound estimate",
@@ -399,6 +418,7 @@ func TestParseActionSummary(t *testing.T) {
 			wantReclaimed:  512_000_000,
 			wantRawContain: "reclaimed up to",
 			wantEstimated:  true,
+			wantMatched:    true,
 		},
 		{
 			name:           "reclaimed up to truncated yields files but zero reclaimed",
@@ -407,6 +427,7 @@ func TestParseActionSummary(t *testing.T) {
 			wantReclaimed:  0,
 			wantRawContain: "Processed 3 files",
 			wantEstimated:  true,
+			wantMatched:    true,
 		},
 	}
 
@@ -423,6 +444,9 @@ func TestParseActionSummary(t *testing.T) {
 			if got.Estimated != tt.wantEstimated {
 				t.Errorf("Estimated = %v, want %v", got.Estimated, tt.wantEstimated)
 			}
+			if got.Matched != tt.wantMatched {
+				t.Errorf("Matched = %v, want %v", got.Matched, tt.wantMatched)
+			}
 			if tt.wantRawContain != "" && !strings.Contains(got.RawLine, tt.wantRawContain) {
 				t.Errorf("RawLine = %q, want to contain %q", got.RawLine, tt.wantRawContain)
 			}
@@ -431,57 +455,6 @@ func TestParseActionSummary(t *testing.T) {
 				if strings.TrimSpace(tt.input) == "" && got.RawLine != "" {
 					t.Errorf("RawLine = %q, want empty for whitespace-only input", got.RawLine)
 				}
-			}
-		})
-	}
-}
-
-func TestParseRedundantSize(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		line string
-		want string
-	}{
-		{"parenthesized", "# Redundant: 5 files (1.2 GB)", "1.2 GB"},
-		{"bare size", "# Redundant: 512 MB", "512 MB"},
-		{"too few fields", "# Redundant:", "0 B"},
-		{"unmatched paren", "# Redundant: 5 files (1.2 GB", "5 files"},
-		{"empty parens", "# Redundant: 5 files ()", "5 files"},
-		{"nested parens", "# Redundant: 5 files (1.2 GB (approx))", "1.2 GB (approx"},
-		{"close paren before open paren", "a ) (", "0 B"},
-		{"three fields no parens falls through", "# Redundant: 512", "0 B"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := parsing.ParseRedundantSize(tt.line)
-			if got != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestExtractGroupSize(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		header string
-		want   string
-	}{
-		{"677a3ec86f3207b994f1ec816f4b3dcc, 5000 B (5.0 KB) * 3:", "5000 B (5.0 KB)"},
-		{"abc, 100 B * 2:", "100 B"},
-		{"def, 200 KB (200.0 KB) * 3:", "200 KB (200.0 KB)"},
-		{"abc,100 B,2 * 50 B:", "100 B,2"},
-		{"abc, 100 B * 2", "100 B"},
-		{"", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.header, func(t *testing.T) {
-			t.Parallel()
-			if got := parsing.ExtractGroupSize(tt.header); got != tt.want {
-				t.Errorf("ExtractGroupSize(%q) = %q, want %q", tt.header, got, tt.want)
 			}
 		})
 	}
@@ -518,56 +491,6 @@ func TestHumanBytes(t *testing.T) {
 
 // --- Property-based tests ---
 
-func TestProperty_ParseStatsAlwaysReturnsDefaults(t *testing.T) {
-	t.Parallel()
-	rapid.Check(t, func(rt *rapid.T) {
-		input := rapid.String().Draw(rt, "input")
-		stats := parsing.ParseStats(input)
-		if stats.Groups == "" {
-			rt.Fatalf("ParseStats(%q).Groups is empty", input)
-		}
-		if stats.Size == "" {
-			rt.Fatalf("ParseStats(%q).Size is empty", input)
-		}
-	})
-}
-
-func TestProperty_ParseStatsIsDeterministic(t *testing.T) {
-	t.Parallel()
-	rapid.Check(t, func(rt *rapid.T) {
-		input := rapid.String().Draw(rt, "input")
-		a := parsing.ParseStats(input)
-		b := parsing.ParseStats(input)
-		if a.Groups != b.Groups {
-			rt.Fatalf("ParseStats(%q) non-deterministic: Groups %q vs %q", input, a.Groups, b.Groups)
-		}
-		if a.Size != b.Size {
-			rt.Fatalf("ParseStats(%q) non-deterministic: Size %q vs %q", input, a.Size, b.Size)
-		}
-	})
-}
-
-func TestProperty_ParseDuplicateGroupsNeverPanics(t *testing.T) {
-	t.Parallel()
-	rapid.Check(t, func(rt *rapid.T) {
-		input := rapid.String().Draw(rt, "input")
-		got := parsing.ParseDuplicateGroups(input)
-		for i, g := range got {
-			if g.Keeper == "" {
-				rt.Fatalf("group %d has empty Keeper: input=%q", i, input)
-			}
-			if len(g.Duplicates) == 0 {
-				rt.Fatalf("group %d has no Duplicates: input=%q", i, input)
-			}
-			for j, d := range g.Duplicates {
-				if d == "" {
-					rt.Fatalf("group %d Duplicates[%d] is empty: input=%q", i, j, input)
-				}
-			}
-		}
-	})
-}
-
 func TestProperty_ParseActionSummaryNeverNegative(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -590,67 +513,10 @@ func TestProperty_ParseActionSummaryIsDeterministic(t *testing.T) {
 		a := parsing.ParseActionSummary(input)
 		b := parsing.ParseActionSummary(input)
 		if a.Files != b.Files || a.ReclaimedBytes != b.ReclaimedBytes ||
-			a.RawLine != b.RawLine || a.Estimated != b.Estimated {
+			a.RawLine != b.RawLine || a.Estimated != b.Estimated || a.Matched != b.Matched {
 			rt.Fatalf("ParseActionSummary(%q) non-deterministic: %+v vs %+v", input, a, b)
 		}
 	})
-}
-
-func TestProperty_ParseRedundantSizeNeverPanics(t *testing.T) {
-	t.Parallel()
-	rapid.Check(t, func(rt *rapid.T) {
-		input := rapid.String().Draw(rt, "input")
-		parsing.ParseRedundantSize(input)
-	})
-}
-
-// TestParseRedundantSize_parenAtIndexOne guards the "(" found/not-found boundary
-// in ParseRedundantSize. The lookup is `start := strings.Index(line, "(")` gated
-// by `start != -1`. Mutating that sentinel to `start != 1` (INVERT_NEGATIVES /
-// ARITHMETIC_BASE on the -1 literal) makes the function skip the parenthesised
-// branch precisely when "(" sits at index 1, falling back to the bare-fields
-// path. A "(" at any other index (as in every other test case) hides the
-// mutation, so this case pins the sentinel value itself.
-func TestParseRedundantSize_parenAtIndexOne(t *testing.T) {
-	t.Parallel()
-
-	// given a line whose "(" is at index 1 and a "512 MB" payload inside it
-	line := "x(512 MB)"
-
-	// when the redundant size is parsed
-	got := parsing.ParseRedundantSize(line)
-
-	// then the parenthesised payload wins (real code), not the "0 B" fallback
-	// that `start != 1` would force
-	want := "512 MB"
-	if got != want {
-		t.Errorf("ParseRedundantSize(%q) = %q, want %q", line, got, want)
-	}
-}
-
-// TestExtractGroupSize_commaAtIndexOne guards the comma found/not-found boundary
-// in ExtractGroupSize. After trimming the trailing ":" and the " * <per-dup>"
-// suffix, the remaining header is split at its first comma via
-// `idx := strings.Index(h, ",")` gated by `idx != -1`. Mutating that sentinel to
-// `idx != 1` (INVERT_NEGATIVES / ARITHMETIC_BASE on the -1 literal) skips the
-// hash-stripping step exactly when the comma is at index 1, i.e. when the hash
-// is a single character. Every other test uses a multi-character hash, so the
-// comma never lands at index 1 and the mutation survives.
-func TestExtractGroupSize_commaAtIndexOne(t *testing.T) {
-	t.Parallel()
-
-	// given a group header with a single-character hash "a" (comma at index 1)
-	header := "a,100 B,2 * 50 B:"
-
-	// when the per-duplicate size is extracted
-	got := parsing.ExtractGroupSize(header)
-
-	// then the leading hash is stripped (real code); `idx != 1` would leave it,
-	// yielding "a,100 B,2"
-	want := "100 B,2"
-	if got != want {
-		t.Errorf("ExtractGroupSize(%q) = %q, want %q", header, got, want)
-	}
 }
 
 // TestParseActionSummary_exactlySevenFields guards the `len(fields) >= 7`
@@ -773,11 +639,15 @@ func TestParseHumanBytes(t *testing.T) {
 		{"megabytes float", "1.5 MB", 1_500_000},
 		{"gigabytes", "1 GB", 1_000_000_000},
 		{"terabytes float", "1.5 TB", 1_500_000_000_000},
+		{"petabytes", "1 PB", 1_000_000_000_000_000},
+		{"exabytes", "1 EB", 1_000_000_000_000_000_000},
 		{"zero kilobytes", "0 KB", 0},
 		{"single-letter K alias", "5 K", 5_000},
 		{"single-letter M alias", "5 M", 5_000_000},
 		{"single-letter G alias", "2 G", 2_000_000_000},
 		{"single-letter T alias", "3 T", 3_000_000_000_000},
+		{"single-letter P alias", "2 P", 2_000_000_000_000_000},
+		{"single-letter E alias", "2 E", 2_000_000_000_000_000_000},
 		{"lowercase unit is uppercased", "5 kb", 5_000},
 		{"invalid unit returns zero", "100 XB", 0},
 		{"non-numeric value returns zero", "abc MB", 0},
@@ -795,33 +665,17 @@ func TestParseHumanBytes(t *testing.T) {
 	}
 }
 
-func TestParseHumanBytes_IECUnits(t *testing.T) {
+// TestParseHumanBytes_IECUnitsRejected pins the deliberate deletion of the
+// IEC binary-unit tolerance: the pinned fclones (bytesize 1.3.0) renders
+// decimal SI units only, so KiB..EiB parse to 0 like any unknown unit, and a
+// future upstream switch to IEC surfaces as the action-summary drift warning
+// instead of being silently absorbed by a unit table nothing exercises.
+func TestParseHumanBytes_IECUnitsRejected(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name string
-		in   string
-		want int64
-	}{
-		{"kibibytes", "1 KiB", 1024},
-		{"mebibytes", "1 MiB", 1_048_576},
-		{"mebibytes float", "1.5 MiB", 1_572_864},
-		{"gibibytes", "1 GiB", 1_073_741_824},
-		{"tebibytes", "1 TiB", 1_099_511_627_776},
-		{"pebibytes", "1 PiB", 1_125_899_906_842_624},
-		{"exbibytes", "1 EiB", 1_152_921_504_606_846_976},
-		{"lowercase iec is uppercased", "1 gib", 1_073_741_824},
-		{"petabytes decimal", "1 PB", 1_000_000_000_000_000},
-		{"single-letter P alias", "2 P", 2_000_000_000_000_000},
-		{"exabytes decimal", "1 EB", 1_000_000_000_000_000_000},
-		{"single-letter E alias", "2 E", 2_000_000_000_000_000_000},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := parsing.ParseHumanBytes(tt.in); got != tt.want {
-				t.Errorf("ParseHumanBytes(%q) = %d, want %d", tt.in, got, tt.want)
-			}
-		})
+	for _, in := range []string{"1 KiB", "1 MiB", "1.5 GiB", "1 TiB", "1 PiB", "1 EiB", "1 kib"} {
+		if got := parsing.ParseHumanBytes(in); got != 0 {
+			t.Errorf("ParseHumanBytes(%q) = %d, want 0 (IEC units are deliberately not accepted)", in, got)
+		}
 	}
 }
 
@@ -845,117 +699,6 @@ func TestParseHumanBytes_rejectsNonFiniteAndNegative(t *testing.T) {
 				t.Errorf("ParseHumanBytes(%q) = %d, want %d", tt.in, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestIsGroupHeader(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		line string
-		want bool
-	}{
-		{"valid header with comma star and trailing colon", "3a2b, 512 B * 2:", true},
-		{"missing comma", "3a2b 512 B * 2:", false},
-		{"missing star", "3a2b, 512 B 2:", false},
-		{"missing trailing colon", "3a2b, 512 B * 2", false},
-		{"empty string", "", false},
-		{"duplicate path embedding all delimiters is still a header", "/x, 1 B * 2:", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := parsing.IsGroupHeader(tt.line); got != tt.want {
-				t.Errorf("IsGroupHeader(%q) = %v, want %v", tt.line, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestParseDuplicateGroups_commentPrefixedPathLinesAreSkipped(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name  string
-		input string
-		want  []parsing.DuplicateGroup
-	}{
-		{
-			name:  "hash-prefixed line after keeper is skipped and group survives",
-			input: "h, 100 B * 2:\n/keeper\n#hashline\n/dup\n",
-			want: []parsing.DuplicateGroup{
-				{Keeper: "/keeper", Duplicates: []string{"/dup"}, SizePerDup: "100 B"},
-			},
-		},
-		{
-			name:  "hash-prefixed duplicate path is silently omitted",
-			input: "h, 100 B * 2:\n/keeper\n/dup1\n#dup2\n/dup3\n",
-			want: []parsing.DuplicateGroup{
-				{Keeper: "/keeper", Duplicates: []string{"/dup1", "/dup3"}, SizePerDup: "100 B"},
-			},
-		},
-		{
-			name:  "hash-prefixed keeper line collapses the group to nothing",
-			input: "h, 100 B * 2:\n#keeperline\n/realdup\n",
-			want:  nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := parsing.ParseDuplicateGroups(tt.input)
-			if len(got) != len(tt.want) {
-				t.Fatalf("ParseDuplicateGroups(%q) len = %d, want %d (got %+v)", tt.input, len(got), len(tt.want), got)
-			}
-			for i := range got {
-				if got[i].Keeper != tt.want[i].Keeper {
-					t.Errorf("group %d Keeper = %q, want %q", i, got[i].Keeper, tt.want[i].Keeper)
-				}
-				if got[i].SizePerDup != tt.want[i].SizePerDup {
-					t.Errorf("group %d SizePerDup = %q, want %q", i, got[i].SizePerDup, tt.want[i].SizePerDup)
-				}
-				if len(got[i].Duplicates) != len(tt.want[i].Duplicates) {
-					t.Fatalf("group %d Duplicates len = %d, want %d", i, len(got[i].Duplicates), len(tt.want[i].Duplicates))
-				}
-				for j := range got[i].Duplicates {
-					if got[i].Duplicates[j] != tt.want[i].Duplicates[j] {
-						t.Errorf("group %d Duplicates[%d] = %q, want %q", i, j, got[i].Duplicates[j], tt.want[i].Duplicates[j])
-					}
-				}
-			}
-		})
-	}
-}
-
-func TestParseDuplicateGroups_tabIndentedHeaderShapedDupStaysOneGroup(t *testing.T) {
-	t.Parallel()
-
-	input := "realhash, 100 B * 3:\n\t/path/a, 1 B * 2:\n\t/path/b, 1 B * 2:\n\t/path/c, 1 B * 2:\n"
-	want := []parsing.DuplicateGroup{
-		{
-			Keeper:     "/path/a, 1 B * 2:",
-			Duplicates: []string{"/path/b, 1 B * 2:", "/path/c, 1 B * 2:"},
-			SizePerDup: "100 B",
-		},
-	}
-
-	got := parsing.ParseDuplicateGroups(input)
-	if len(got) != len(want) {
-		t.Fatalf("groups len = %d, want %d (got %+v)", len(got), len(want), got)
-	}
-	if got[0].Keeper != want[0].Keeper {
-		t.Errorf("Keeper = %q, want %q", got[0].Keeper, want[0].Keeper)
-	}
-	if got[0].SizePerDup != want[0].SizePerDup {
-		t.Errorf("SizePerDup = %q, want %q", got[0].SizePerDup, want[0].SizePerDup)
-	}
-	if len(got[0].Duplicates) != len(want[0].Duplicates) {
-		t.Fatalf("Duplicates len = %d, want %d", len(got[0].Duplicates), len(want[0].Duplicates))
-	}
-	for j := range got[0].Duplicates {
-		if got[0].Duplicates[j] != want[0].Duplicates[j] {
-			t.Errorf("Duplicates[%d] = %q, want %q", j, got[0].Duplicates[j], want[0].Duplicates[j])
-		}
 	}
 }
 

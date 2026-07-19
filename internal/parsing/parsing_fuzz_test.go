@@ -8,105 +8,50 @@ import (
 	"github.com/cplieger/fclones-wrapper/internal/parsing"
 )
 
-func FuzzParseStats(f *testing.F) {
-	f.Add("# Redundant: 5 files (1.2 GB)\n# Total: 10 3 groups")
-	f.Add("# Redundant: 512 MB\n# Total: 5 2 groups")
-	f.Add("")
-	f.Fuzz(func(t *testing.T, input string) {
-		stats := parsing.ParseStats(input)
-		// Groups must be non-empty (at least "0")
-		if stats.Groups == "" {
-			t.Fatal("Groups must not be empty")
-		}
-		// Size must be non-empty (at least defaultSizeStr)
-		if stats.Size == "" {
-			t.Fatal("Size must not be empty")
-		}
-		// If input has no "# Total:" line with "groups", Groups must be "0"
-		hasTotal := false
-		for line := range strings.SplitSeq(input, "\n") {
-			if strings.HasPrefix(line, "# Total:") {
-				parts := strings.Fields(line)
-				if len(parts) >= 2 && parts[len(parts)-1] == "groups" {
-					hasTotal = true
-				}
+func FuzzDecodeReport(f *testing.F) {
+	valid := `{"header":{"version":"0.35.0","stats":{"group_count":1,` +
+		`"total_file_count":2,"total_file_size":20,"redundant_file_count":1,` +
+		`"redundant_file_size":10,"missing_file_count":0,"missing_file_size":0}},` +
+		`"groups":[{"file_len":10,"file_hash":"h","files":["/k","/d"]}]}`
+	f.Add(valid, 100)
+	f.Add(valid[:40], 100)                                         // truncated
+	f.Add(`{"header":{"stats":null},"groups":[]}`, 1)              // null stats
+	f.Add(`{"groups":[]}`, 0)                                      // missing header
+	f.Add(`{"header":{"stats":{"group_count":9}},"groups":[]}`, 5) // count mismatch
+	f.Add("# Redundant: 5 files (1.2 GB)\n", 100)                  // old text format
+	f.Add("", -1)
+	f.Fuzz(func(t *testing.T, doc string, keep int) {
+		got, err := parsing.DecodeReport(strings.NewReader(doc), keep)
+		if err != nil {
+			// Loud-failure contract: an error never leaks partial output.
+			if got.TotalGroups != 0 || got.TotalDuplicates != 0 ||
+				len(got.Groups) != 0 || got.Stats != (parsing.ReportStats{}) {
+				t.Fatalf("error path returned non-zero Report %+v: doc=%q", got, doc)
 			}
+			return
 		}
-		if !hasTotal && stats.Groups != "0" {
-			t.Fatalf("Groups should be '0' without valid Total line, got %q", stats.Groups)
+		// Success invariants: the header count matches the streamed count,
+		// retention respects the cap, and every retained group is structurally
+		// sound (keep-first keeper plus at least one duplicate).
+		if got.Stats.GroupCount != got.TotalGroups {
+			t.Fatalf("GroupCount %d != TotalGroups %d: doc=%q", got.Stats.GroupCount, got.TotalGroups, doc)
 		}
-		// TotalParsed is the format-drift signal scheduler.go's suspectDrift relies
-		// on, so it must track exactly whether a recognizable Total line was seen.
-		if stats.TotalParsed != hasTotal {
-			t.Fatalf("TotalParsed=%v but a recognizable Total line present=%v: input=%q",
-				stats.TotalParsed, hasTotal, input)
+		if keep >= 0 && len(got.Groups) > keep {
+			t.Fatalf("retained %d groups exceeds keep=%d: doc=%q", len(got.Groups), keep, doc)
 		}
-		// When the Total line parsed, Groups must echo its real count token, never
-		// the "0" default placeholder (a regression that set TotalParsed without
-		// assigning Groups would otherwise pass).
-		if stats.TotalParsed {
-			// Production keeps the LAST recognizable Total line's count token
-			// (ParseStats reassigns Groups on every match), matching the
-			// last-wins semantics suspectDrift depends on. Re-derive the same
-			// way -- independently from the input -- then assert once. Checking
-			// the FIRST match instead falsely fires on two distinct Total lines.
-			wantGroups := ""
-			haveWant := false
-			for line := range strings.SplitSeq(input, "\n") {
-				if strings.HasPrefix(line, "# Total:") {
-					if parts := strings.Fields(line); len(parts) >= 2 && parts[len(parts)-1] == "groups" {
-						wantGroups = parts[len(parts)-2]
-						haveWant = true
-					}
-				}
-			}
-			if haveWant && stats.Groups != wantGroups {
-				t.Fatalf("TotalParsed but Groups=%q, want %q from input=%q",
-					stats.Groups, wantGroups, input)
-			}
+		if len(got.Groups) > got.TotalGroups {
+			t.Fatalf("retained %d groups exceeds total %d: doc=%q", len(got.Groups), got.TotalGroups, doc)
 		}
-	})
-}
-
-func FuzzParseDuplicateGroups(f *testing.F) {
-	f.Add("# comment\n\n3a2b,1024 B,2 * 512 B:\n/path/file1\n/path/file2\n")
-	f.Add("# comment\n/path/lonely\n")
-	// Adversarial: header-shaped tokens. In the real report every path is
-	// indented, so an indented header-shaped filename stays a path (injection
-	// safety), while a non-indented header-shaped line is a genuine new-group
-	// boundary. These seeds exercise both sides of that indentation
-	// discriminator plus the panic/structure invariants under it. The last is
-	// the FclonesFormatDrift shape: back-to-back groups with no blank line.
-	f.Add("h, 1 B * 2:\n/x, 1 B * 2:\n/y, 1 B * 2:\n\n")                  // non-indented header-shaped => new groups
-	f.Add("h, 1 B * 2:\n    /x, 1 B * 2:\n    /y, 1 B * 2:\n")            // indented header-shaped => still paths
-	f.Add("h1, 1 B * 2:\n    /a\n    /b\nh2, 2 B * 2:\n    /c\n    /d\n") // back-to-back groups, no blank line
-	// Adversarial: filenames that embed a newline (legal on Unix). fclones
-	// writes scanned paths into a newline-delimited report, so an embedded
-	// newline can split one path across two parser lines or fake the
-	// blank-line group terminator. These seeds lock panic-freedom and the
-	// keeper/duplicate structural invariants under newline injection;
-	// attribution is best-effort and display-only (see scheduler.go), so no
-	// oracle assertion is needed.
-	f.Add("h, 1 B * 2:\n/keeper\n/dup-line1\ndup-line2\n")     // one dup path split across two lines
-	f.Add("h, 1 B * 2:\n/keeper\n/dup-part\n\ntrailing\n")     // embedded blank line fakes the group terminator
-	f.Add("h, 1 B * 2:\n/keeper\n# Total: 0 0 groups\n/dup\n") // embedded '#'-segment masquerades as a comment line
-	f.Add("")
-	f.Fuzz(func(t *testing.T, input string) {
-		groups := parsing.ParseDuplicateGroups(input)
-		for i, g := range groups {
-			// Every returned group must have a keeper
-			if g.Keeper == "" {
-				t.Fatalf("group %d: Keeper must not be empty", i)
+		if got.TotalDuplicates < got.TotalGroups {
+			t.Fatalf("TotalDuplicates %d < TotalGroups %d (every group has >= 1 duplicate): doc=%q",
+				got.TotalDuplicates, got.TotalGroups, doc)
+		}
+		for i, g := range got.Groups {
+			if g.Keeper == "" && len(g.Duplicates) == 0 {
+				t.Fatalf("group %d empty: doc=%q", i, doc)
 			}
-			// Every returned group must have at least one duplicate
-			if len(g.Duplicates) == 0 {
-				t.Fatalf("group %d: must have at least one duplicate", i)
-			}
-			// Every duplicate path must be non-empty.
-			for _, d := range g.Duplicates {
-				if d == "" {
-					t.Fatalf("group %d: empty duplicate path", i)
-				}
+			if len(g.Duplicates) < 1 {
+				t.Fatalf("group %d has no duplicates: doc=%q", i, doc)
 			}
 		}
 	})
@@ -131,6 +76,20 @@ func FuzzParseActionSummary(f *testing.F) {
 		if (summary.Files > 0 || summary.ReclaimedBytes > 0) && summary.RawLine == "" {
 			t.Fatalf("Files=%d ReclaimedBytes=%d set but RawLine empty: input=%q",
 				summary.Files, summary.ReclaimedBytes, input)
+		}
+		// Matched is the metrics' provenance flag: metrics and Estimated are
+		// parsed only from a recognized summary line, so on the fallback path
+		// (Matched false) all of them must be zero values. A matched summary's
+		// RawLine must carry the anchors the match keyed on.
+		if !summary.Matched && (summary.Files != 0 || summary.ReclaimedBytes != 0 || summary.Estimated) {
+			t.Fatalf("Matched=false but metrics set: %+v input=%q", summary, input)
+		}
+		// (Only the "Processed" anchor is guaranteed in RawLine: the match's
+		// "reclaimed" anchor is tested against the whole source line, which
+		// may place it before the "Processed" offset RawLine starts at.)
+		if summary.Matched && !strings.HasPrefix(summary.RawLine, "Processed") {
+			t.Fatalf("Matched=true but RawLine does not start at the match anchor: %q input=%q",
+				summary.RawLine, input)
 		}
 		// Provenance: a non-empty RawLine must be derivable from the input --
 		// either the TrimSpace of a whole line (fallback path) or
@@ -158,29 +117,6 @@ func FuzzParseActionSummary(f *testing.F) {
 	})
 }
 
-func FuzzParseRedundantSize(f *testing.F) {
-	f.Add("# Redundant: 5 files (1.2 GB)")
-	f.Add("# Redundant: 512 MB")
-	f.Add("# Redundant: 512")
-	f.Add("# Redundant:")
-	f.Fuzz(func(t *testing.T, input string) {
-		result := parsing.ParseRedundantSize(input)
-		// Result must never be empty
-		if result == "" {
-			t.Fatal("ParseRedundantSize must never return empty string")
-		}
-		// If input has non-empty parenthesized content, result should be that content
-		if start := strings.Index(input, "("); start != -1 {
-			if end := strings.Index(input, ")"); end > start {
-				expected := input[start+1 : end]
-				if expected != "" && result != expected {
-					t.Fatalf("expected %q from parens, got %q", expected, result)
-				}
-			}
-		}
-	})
-}
-
 func FuzzParseHumanBytes(f *testing.F) {
 	f.Add("1.5 MB")
 	f.Add("512 B")
@@ -188,12 +124,14 @@ func FuzzParseHumanBytes(f *testing.F) {
 	f.Add("3.7 TB")
 	f.Add("garbage")
 	f.Add("")
-	// Guard regression seeds: NaN/Inf/overflow/negative all clamp to 0.
+	// Guard regression seeds: NaN/Inf/overflow/negative all clamp to 0, and
+	// the deleted IEC tolerance stays deleted (KiB parses to 0).
 	f.Add("Inf KB")
 	f.Add("-Inf KB")
 	f.Add("NaN MB")
 	f.Add("-5 KB")
 	f.Add("99999999 TB")
+	f.Add("1 KiB")
 	f.Fuzz(func(t *testing.T, input string) {
 		result := parsing.ParseHumanBytes(input)
 		// Result must be non-negative
@@ -248,47 +186,6 @@ func FuzzHumanBytesRoundTrip(f *testing.F) {
 			if float64(diff) > 0.1*float64(n) {
 				t.Fatalf("round-trip exceeded 10%% tolerance: HumanBytes(%d)=%q -> %d", n, s, parsed)
 			}
-		}
-	})
-}
-
-func FuzzIsGroupHeader(f *testing.F) {
-	f.Add("3a2b,1024 B,2 * 512 B:")
-	f.Add("some random line")
-	// Adversarial: a duplicate-file path that embeds the header delimiters
-	// (',', '*', trailing ':') and is therefore indistinguishable from a real
-	// group header by IsGroupHeader alone.
-	f.Add("/x, 1 B * 2:")
-	f.Add("")
-	f.Fuzz(func(t *testing.T, input string) {
-		result := parsing.IsGroupHeader(input)
-		// If true, input must contain comma, star, and end with colon
-		if result {
-			if !strings.Contains(input, ",") {
-				t.Fatal("IsGroupHeader true but no comma")
-			}
-			if !strings.Contains(input, "*") {
-				t.Fatal("IsGroupHeader true but no star")
-			}
-			if !strings.HasSuffix(input, ":") {
-				t.Fatal("IsGroupHeader true but no trailing colon")
-			}
-		}
-	})
-}
-
-func FuzzExtractGroupSize(f *testing.F) {
-	f.Add("3a2b, 512 B * 2:")
-	f.Add("hash, 100 KB, 3 * 100 KB:")
-	f.Add("")
-	f.Fuzz(func(t *testing.T, input string) {
-		result := parsing.ExtractGroupSize(input)
-		if result != strings.TrimSpace(result) {
-			t.Fatalf("ExtractGroupSize(%q) = %q, not whitespace-trimmed", input, result)
-		}
-		if len(result) > len(input) {
-			t.Fatalf("ExtractGroupSize(%q) = %q longer than input (%d > %d)",
-				input, result, len(result), len(input))
 		}
 	})
 }

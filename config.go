@@ -119,11 +119,10 @@ const (
 
 	// Memory caps. Each captured subprocess stream (fclones' stderr, and the
 	// action phase's stdout) is bounded so a chatty fclones cannot OOM the
-	// container; the output report read is bounded against very large
-	// duplicate reports; the duplicate-log detail is bounded against Loki's
-	// line-length limit.
-	streamCapBytes    = 1 << 20  // 1 MB
-	outputCapBytes    = 50 << 20 // 50 MB
+	// container; the duplicate-log detail is bounded against Loki's
+	// line-length limit. The scan report itself needs no cap: DecodeReport
+	// streams it group by group, retaining at most maxLoggedGroups.
+	streamCapBytes    = 1 << 20 // 1 MB
 	logDetailCapBytes = 64 * 1024
 
 	// defaultInterval is the fallback scan cadence when FCLONES_INTERVAL
@@ -219,6 +218,13 @@ func loadConfig() (config, error) {
 		}
 	}
 
+	// Wrapper-owned flags are rejected unconditionally -- even under
+	// FCLONES_ALLOW_UNSAFE, which relaxes the safety guardrails, not the
+	// wrapper's own report/cache contract.
+	if err := rejectWrapperOwnedArgs(argsStr); err != nil {
+		return config{}, err
+	}
+
 	// A whitespace- or quote-only FCLONES_SCAN_PATHS parses to zero tokens, so fclones
 	// would run with no scan target. Warn at startup so the cause is obvious instead of
 	// surfacing later as a cryptic exec error.
@@ -283,6 +289,43 @@ const (
 // command-executing / in-place flag. Re-verify both in fclones config.rs/main.rs
 // on a version bump, in addition to diffing `--help` for new exec/in-place flags.
 var dangerousFlags = []string{flagCommand, flagTransform, flagInPlace, flagNoCopy}
+
+// wrapperOwnedFlags are fclones long flags the wrapper itself appends to the
+// scan invocation (buildScanArgs): --cache shares the hash cache across runs,
+// and --format is the JSON report contract DecodeReport is built against. A
+// user-supplied copy would duplicate or fight them, so both are rejected in
+// FCLONES_ARGS at startup regardless of FCLONES_ALLOW_UNSAFE (this is a
+// functional contract, not a safety guardrail). The short form -f is handled
+// separately in rejectWrapperOwnedArgs: clap accepts `-f json`, `-f=json`,
+// and the attached `-fjson`, so ANY single-dash token starting with -f is the
+// format flag.
+var wrapperOwnedFlags = []string{"--format", "--cache"}
+
+// rejectWrapperOwnedArgs blocks wrapper-owned fclones flags (see
+// wrapperOwnedFlags) in FCLONES_ARGS so a user config cannot silently break
+// the report contract or redirect the shared cache.
+func rejectWrapperOwnedArgs(raw string) error {
+	parsed, err := parseArgString(raw, "FCLONES_ARGS")
+	if err != nil {
+		return err
+	}
+	for _, arg := range parsed {
+		lower := strings.ToLower(arg)
+		owned := strings.HasPrefix(lower, "-f") && !strings.HasPrefix(lower, "--")
+		for _, flag := range wrapperOwnedFlags {
+			if lower == flag || strings.HasPrefix(lower, flag+"=") {
+				owned = true
+				break
+			}
+		}
+		if owned {
+			slog.Error("wrapper-owned flag not allowed",
+				"flag", arg, "env", "FCLONES_ARGS", logKeyOutcome, "config_error")
+			return fmt.Errorf("wrapper-owned flag %q not allowed in FCLONES_ARGS (the wrapper sets --cache and -f json itself)", arg)
+		}
+	}
+	return nil
+}
 
 // parseArgString splits a shell-style env value into tokens, logging and
 // wrapping any syntax error with the env var name so every caller surfaces

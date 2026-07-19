@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -9,13 +10,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/cplieger/fclones-wrapper/internal/args"
 	"github.com/cplieger/fclones-wrapper/internal/ioutil"
 	"github.com/cplieger/fclones-wrapper/internal/parsing"
-	"github.com/cplieger/health"
 	"github.com/cplieger/scheduler/v2"
 )
 
@@ -228,39 +227,28 @@ func classifyAndLogOutcome(
 
 // runFclonesJob attempts one scan+action. It returns ran=false ONLY when the
 // scan lock was already held by another process (the advisory-flock overlap
-// skip): no scan or action ran, and the caller decides what a no-op means for
-// its mode. In every other outcome (success, bad args, exec failure, timeout,
-// interrupt) ran=true -- the job acquired the lock and did its work or tried to.
-// err is non-nil on a genuine failure; on the lock-skip and on a clean run it is
-// nil, so callers that care about "did a scan actually happen" must inspect ran,
-// not just err. The built-in ticker ignores ran (overlap is a benign no-op there);
-// run-once consults it so a contended one-shot exits non-zero rather than
-// reporting a no-op as success.
-func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trigger string, newCmd scheduler.CommandRunner) (ran bool, err error) {
+// skip; with the daemon owning all in-process runs, that means a DIFFERENT
+// container or a manual `docker run` sharing this /cache): no scan or action
+// ran, and the caller decides what a no-op means for its mode. In every
+// other outcome (success, bad args, exec failure, timeout, interrupt)
+// ran=true -- the job acquired the lock and did its work or tried to. err is
+// non-nil on a genuine failure; on the lock-skip and on a clean run it is
+// nil, so callers that care about "did a scan actually happen" must inspect
+// ran, not just err. Marker writes are the CALLER's job (the daemon's
+// healthController, or runOnce directly), routed through jobHealthSignal so
+// a skip writes nothing and an interrupted run leaves the last real
+// outcome in place.
+func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd scheduler.CommandRunner) (ran bool, err error) {
 	lock, ok, lockErr := scheduler.TryLock(lockFile)
 	if lockErr != nil {
 		slog.Error("cannot acquire scan lock", "trigger", trigger, logKeyOutcome, "lock_error", "path", lockFile, "error", lockErr)
-		marker.Set(false)
 		return true, lockErr
 	}
 	if !ok {
-		slog.Info("job already running, skipping overlapping request", "trigger", trigger, logKeyOutcome, "skipped")
+		slog.Info("job already running elsewhere, skipping overlapping request", "trigger", trigger, logKeyOutcome, "skipped")
 		return false, nil
 	}
 	defer lock.Unlock()
-
-	// marker reflects this run's outcome: healthy on success, unhealthy on
-	// failure. On interrupt (parent ctx cancelled) the run neither completed
-	// nor failed, so the marker is left as-is, reflecting the last finished
-	// run. The daemon sets the marker unhealthy explicitly on its own shutdown
-	// path and removes it via marker.Cleanup(); a one-shot `wrapper scan` must
-	// NOT flip a still-running healthy daemon unhealthy just because an
-	// operator or scheduler interrupted a manual scan (it also exits 0).
-	defer func() {
-		if set, healthy := markerAction(ctx.Err(), err); set {
-			marker.Set(healthy)
-		}
-	}()
 
 	scanID := newScanID()
 	log := slog.With("scan_id", scanID, "trigger", trigger)
@@ -311,181 +299,82 @@ func runFclonesJob(ctx context.Context, marker *health.Marker, cfg *config, trig
 	}
 	// success: continue to report parsing
 
-	outputBytes, readErr := ioutil.ReadFileWithLimit(tmpPath, outputCapBytes)
-	reportParsed := readErr == nil
-	if !reportParsed {
-		log.Warn("fclones report exceeded parse cap; scan and dedup still ran but stats are degraded. Narrow FCLONES_SCAN_PATHS or split into multiple runs",
-			"error", readErr, "cap_bytes", outputCapBytes)
-		outputBytes = []byte{}
+	reportFile, err := os.Open(tmpPath)
+	if err != nil {
+		log.Error("failed to open report for decode",
+			"reason", "decode_error", logKeyOutcome, "decode_error", "error", err)
+		return true, err
 	}
-	outputStr := string(outputBytes)
+	report, decErr := parsing.DecodeReport(bufio.NewReaderSize(reportFile, 64*1024), maxLoggedGroups)
+	if cerr := reportFile.Close(); cerr != nil {
+		log.Warn("failed to close report file after decode", "error", cerr)
+	}
+	if decErr != nil {
+		// The scan succeeded but its report is not the contract the wrapper
+		// was built against -- upstream format drift, an interrupted write, or
+		// a corrupt report. Fail the run loudly (non-zero, unhealthy marker):
+		// silently degraded stats are exactly what the JSON contract rules out.
+		log.Error("fclones report decode failed; failing the run",
+			"reason", "decode_error", logKeyOutcome, "decode_error", "error", decErr)
+		return true, fmt.Errorf("decode fclones report: %w", decErr)
+	}
 
-	stats := parsing.ParseStats(outputStr)
-	groups := parsing.ParseDuplicateGroups(outputStr)
-	hasDuplicates := len(groups) > 0
-
-	reportedGroups, reportedOK := reportedGroupCount(stats.Groups)
-	maybeWarnGroupCountDrift(log, reportParsed, reportedGroups, reportedOK, stats.TotalParsed, len(groups))
-
-	driftSuspected := suspectDrift(reportParsed, hasDuplicates, stats.TotalParsed, reportedOK, reportedGroups)
+	hasDuplicates := report.TotalGroups > 0
 
 	log.Info("scan complete",
 		logKeyDurationS, int(duration.Round(time.Second).Seconds()),
-		"redundant_human", stats.Size,
-		"groups", len(groups),
-		"duplicate_files", countDuplicateFiles(groups),
-		"duplicates_found", hasDuplicates,
-		"report_parsed", reportParsed)
+		"redundant_human", parsing.HumanBytes(report.Stats.RedundantFileSize),
+		"groups", report.TotalGroups,
+		"duplicate_files", report.TotalDuplicates,
+		"duplicates_found", hasDuplicates)
 
-	if reportParsed && hasDuplicates {
-		logDuplicateGroups(log, groups)
+	if hasDuplicates {
+		logDuplicateGroups(log, &report)
 	}
 
-	if !shouldRunAction(log, cfg, reportParsed, hasDuplicates, driftSuspected) {
+	if !shouldRunAction(log, cfg, hasDuplicates) {
 		return true, nil
 	}
 
 	return true, runFclonesAction(ctx, cfg, tmpPath, log, newCmd)
 }
 
-// reportedGroupCount parses fclones' own group count from Stats.Groups (the
-// "# Total: N groups" line). ok is false when the value is non-numeric, so
-// callers can distinguish "fclones reported zero" from "we couldn't read it".
-func reportedGroupCount(groups string) (count int, ok bool) {
-	n, err := strconv.Atoi(groups)
-	if err != nil {
-		return 0, false
-	}
-	return n, true
-}
-
-// maybeWarnGroupCountDrift cross-checks fclones' own group count (from the
-// report's "# Total:" line) against the number of groups we parsed. On a
-// successfully read report a mismatch is the signature of an fclones
-// output-format change our parser no longer recognises; surfacing it avoids
-// silently treating drift as "no duplicates" (which skips the dedup action
-// while the healthcheck stays green). It also warns when the "# Total:" line
-// itself could not be parsed (totalParsed false) -- the most severe drift mode,
-// silent in report-only group mode where shouldRunAction skips with no other
-// drift warning. No-op when the report was not parsed; when the "# Total:" line
-// parsed but fclones' count token is non-numeric (reportedOK false) it warns
-// too, since that unreadable count is a drift mode suspectDrift also acts on.
-func maybeWarnGroupCountDrift(log *slog.Logger, reportParsed bool, reported int, reportedOK, totalParsed bool, parsed int) {
-	if !reportParsed {
-		return
-	}
-	if !totalParsed {
-		// The '# Total:' line is absent or its format changed, so we cannot read fclones'
-		// own group count -- the most severe drift mode. Surface it even in report-only
-		// group mode, where shouldRunAction skips silently and no other drift warning fires.
-		log.Warn("fclones '# Total:' line missing or reformatted, possible fclones format drift",
-			"parsed_groups", parsed)
-		return
-	}
-	if !reportedOK {
-		// The '# Total:' line parsed but its group-count token is non-numeric
-		// (e.g. a thousands separator or reformatted count), so we cannot read
-		// fclones' own count -- a drift mode suspectDrift also acts on. Surface
-		// it here since report-only group mode skips silently.
-		log.Warn("fclones '# Total:' group count is non-numeric, possible fclones format drift",
-			"parsed_groups", parsed)
-		return
-	}
-	if reported != parsed {
-		log.Warn("group count mismatch, possible fclones format drift",
-			"reported_groups", reported, "parsed_groups", parsed)
-	}
-}
-
-// suspectDrift reports whether the scan report indicates fclones found
-// duplicates our parser missed -- fclones output-format drift. It fires only
-// when the report parsed but our parser extracted no duplicate groups, AND
-// fclones' own report disagrees in one of two ways:
-//
-//   - it reported a positive group count (reportedGroups > 0), or
-//   - we could not read its group count at all: the "# Total:" line is absent
-//     or its format changed (!totalParsed), or the count token is non-numeric
-//     (!reportedOK).
-//
-// The second case is the drift mode a bare "reportedGroups > 0" check misses:
-// when the "# Total:" line itself drifts, ParseStats falls back to a "0" group
-// count indistinguishable from a genuine zero, so dedup would be silently
-// skipped while the run reports healthy. Treating an unreadable count as drift
-// runs the action against the full report via stdin instead (fclones re-parses
-// its own report). A genuinely empty scan still emits a well-formed
-// "# Total: 0 ... groups" line, so totalParsed is true and the action is
-// correctly skipped -- no redundant action spawn on normal no-duplicate runs.
-func suspectDrift(reportParsed, hasDuplicates, totalParsed, reportedOK bool, reportedGroups int) bool {
-	if !reportParsed || hasDuplicates {
+// shouldRunAction reports whether the dedup action phase should run after a
+// scan. Report-only mode never runs an action; otherwise the action runs
+// exactly when the decoded report carries duplicate groups (the decode is
+// strict, so a zero here is a genuine zero -- the old drift-suspicion
+// fallback died with the text parser).
+func shouldRunAction(log *slog.Logger, cfg *config, hasDuplicates bool) bool {
+	if cfg.Action == actionGroup {
+		// Report-only: there is no action to run.
 		return false
 	}
-	return reportedGroups > 0 || !totalParsed || !reportedOK
-}
-
-// shouldRunAction reports whether the dedup action phase should run after a
-// scan. It returns false (logging "action skipped") when the report parsed
-// cleanly and found no duplicates -- UNLESS drift is suspected (see
-// suspectDrift), in which case it still runs the action against the full report
-// via stdin rather than silently skipping dedup. When the report could not be
-// parsed it warns that the action will run without duplicate stats, then
-// returns true so the action still runs.
-func shouldRunAction(log *slog.Logger, cfg *config, reportParsed, hasDuplicates, driftSuspected bool) bool {
-	if reportParsed && !hasDuplicates {
-		if cfg.Action == actionGroup {
-			// Report-only: there is no action to run regardless of drift.
-			return false
-		}
-		if driftSuspected {
-			// Output-format drift: our parser extracted no duplicate groups but
-			// fclones' own report disagrees -- it reported groups, or we could
-			// not read its group count (see suspectDrift). Run the action against
-			// the full report via stdin anyway -- fclones re-parses its own
-			// report, so the action is correct even when our parser missed the
-			// groups. Same fallback the report-unparseable case below uses;
-			// without it, drift would silently stop reclaiming space while the
-			// run still reports healthy.
-			log.Warn("running action despite zero parsed groups; possible fclones format drift",
-				"action", cfg.Action, "reason", "group_count_drift")
-			return true
-		}
+	if !hasDuplicates {
 		log.Info("action skipped",
 			"action", cfg.Action, "reason", "no_duplicates")
 		return false
 	}
-	if !reportParsed && cfg.Action != actionGroup {
-		// Report exceeded the parse cap, so duplicate stats are unknown; the "scan
-		// complete" line logs duplicates_found=false only because the parse was
-		// skipped. The action still runs on the full report via stdin -- flag the
-		// degraded run.
-		log.Warn("running action without parsed report; duplicate stats unavailable",
-			"action", cfg.Action, "reason", "report_unparseable")
-	}
 	return true
 }
 
-// countDuplicateFiles returns the total number of duplicate (non-keeper)
-// files across all groups.
-func countDuplicateFiles(groups []parsing.DuplicateGroup) int {
-	n := 0
-	for _, g := range groups {
-		n += len(g.Duplicates)
-	}
-	return n
-}
+// Duplicate-detail log caps. maxLoggedGroups also bounds how many decoded
+// groups DecodeReport retains in memory (the streamed totals cover the rest),
+// so the caps govern memory as well as log volume.
+const (
+	maxLoggedGroups = 100
+	maxLoggedPairs  = 500
+)
 
-// logDuplicateGroups emits one `duplicate file` Info line per (keeper, duplicate) pair.
-func logDuplicateGroups(log *slog.Logger, groups []parsing.DuplicateGroup) {
-	const (
-		maxLoggedGroups = 100
-		maxLoggedPairs  = 500
-	)
-
-	emit := min(len(groups), maxLoggedGroups)
+// logDuplicateGroups emits one `duplicate file` Info line per (keeper,
+// duplicate) pair from the report's retained groups, bounded by the pair and
+// byte caps; the truncation line reports full-document totals from the
+// streamed counts.
+func logDuplicateGroups(log *slog.Logger, report *parsing.Report) {
 	pairsEmitted := 0
 	detailBytes := 0
 
 pairs:
-	for i, g := range groups[:emit] {
+	for i, g := range report.Groups {
 		for _, dup := range g.Duplicates {
 			if pairsEmitted >= maxLoggedPairs {
 				break pairs
@@ -506,13 +395,12 @@ pairs:
 		}
 	}
 
-	totalPairs := countDuplicateFiles(groups)
-	if pairsEmitted < totalPairs {
+	if pairsEmitted < report.TotalDuplicates {
 		log.Info("duplicate pairs truncated",
 			"logged_pairs", pairsEmitted,
-			"total_pairs", totalPairs,
-			"logged_groups", emit,
-			"total_groups", len(groups))
+			"total_pairs", report.TotalDuplicates,
+			"logged_groups", len(report.Groups),
+			"total_groups", report.TotalGroups)
 	}
 }
 
@@ -533,7 +421,11 @@ func buildScanArgs(cfg *config) ([]string, error) {
 		cmdArgs = append(cmdArgs, extraArgs...)
 	}
 
-	cmdArgs = append(cmdArgs, "--cache")
+	// Wrapper-owned flags: --cache shares the fclones hash cache across runs,
+	// and -f json is the report contract DecodeReport is built against. Both
+	// are rejected in FCLONES_ARGS at startup (rejectWrapperOwnedArgs), so
+	// user args can never fight them.
+	cmdArgs = append(cmdArgs, "--cache", "-f", "json")
 	return cmdArgs, nil
 }
 
@@ -566,6 +458,32 @@ func phaseContext(ctx context.Context, timeout time.Duration) (context.Context, 
 		return context.WithCancel(ctx)
 	}
 	return context.WithTimeout(ctx, timeout)
+}
+
+// resolveActionSummary parses the action phase's captured streams into an
+// ActionSummary, preferring a recognized "Processed ... reclaimed ..." line
+// from stderr (where fclones prints its summary) and falling back to stdout.
+// A matched stdout summary wins over an unmatched stderr fallback line, so
+// stderr diagnostics can never mask a real summary that went to stdout; when
+// stderr matches nothing and is empty, stdout's parse is used either way,
+// preserving the original fallback precedence. When NEITHER stream contains a
+// recognizable summary but output exists, it warns with the "possible fclones
+// format drift" marker: the summary parse is the action-phase analogue of the
+// group-report parse, and without this warning an upstream wording change
+// silently zeroes the files_deduped/bytes_reclaimed fields that log-based
+// success notifications key on, while the run stays healthy.
+func resolveActionSummary(log *slog.Logger, act action, stderrOut, stdoutOut string) parsing.ActionSummary {
+	summary := parsing.ParseActionSummary(stderrOut)
+	if !summary.Matched {
+		if alt := parsing.ParseActionSummary(stdoutOut); alt.Matched || summary.RawLine == "" {
+			summary = alt
+		}
+	}
+	if !summary.Matched && summary.RawLine != "" {
+		log.Warn("action summary not recognized, possible fclones format drift",
+			"action", act, "result", summary.RawLine)
+	}
+	return summary
 }
 
 // runFclonesAction executes the post-scan action (remove, link, dedupe) on
@@ -623,10 +541,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 	}
 	// success: continue to summary parsing
 
-	summary := parsing.ParseActionSummary(actionStderr.String())
-	if summary.RawLine == "" {
-		summary = parsing.ParseActionSummary(actionStdout.String())
-	}
+	summary := resolveActionSummary(log, cfg.Action, actionStderr.String(), actionStdout.String())
 
 	if actionStdout.Truncated() || actionStderr.Truncated() {
 		log.Warn("action output exceeded capture cap; summary stats may be incomplete",

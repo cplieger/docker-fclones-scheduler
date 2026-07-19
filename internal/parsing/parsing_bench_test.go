@@ -8,23 +8,33 @@ import (
 	"github.com/cplieger/fclones-wrapper/internal/parsing"
 )
 
-// generateReport builds a synthetic fclones report with n groups, each having
-// filesPerGroup paths (1 keeper + filesPerGroup-1 duplicates).
-func generateReport(groups, filesPerGroup int) string {
+// generateJSONReport builds a synthetic fclones JSON report with n groups,
+// each having filesPerGroup paths (1 keeper + filesPerGroup-1 duplicates),
+// matching the pinned upstream wire shape.
+func generateJSONReport(groups, filesPerGroup int) string {
 	var b strings.Builder
-	b.WriteString("# Redundant: 1000 files (5.6 GB)\n")
-	fmt.Fprintf(&b, "# Total: %d %d groups\n\n", groups*filesPerGroup, groups)
+	b.WriteString(`{"header":{"version":"0.35.0","timestamp":"2026-07-17T00:00:00+00:00","command":["fclones","group"],"base_dir":"/","stats":{`)
+	fmt.Fprintf(&b, `"group_count":%d,"total_file_count":%d,"total_file_size":%d,"redundant_file_count":%d,"redundant_file_size":%d,"missing_file_count":0,"missing_file_size":0}},"groups":[`,
+		groups, groups*filesPerGroup, groups*filesPerGroup*1024,
+		groups*(filesPerGroup-1), groups*(filesPerGroup-1)*1024)
 	for i := range groups {
-		fmt.Fprintf(&b, "abc%08x, 1024 B * %d:\n", i, filesPerGroup)
-		for j := range filesPerGroup {
-			fmt.Fprintf(&b, "/data/media/group%d/file%d.mkv\n", i, j)
+		if i > 0 {
+			b.WriteByte(',')
 		}
-		b.WriteByte('\n')
+		fmt.Fprintf(&b, `{"file_len":1024,"file_hash":"abc%08x","files":[`, i)
+		for j := range filesPerGroup {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			fmt.Fprintf(&b, `"/data/media/group%d/file%d.mkv"`, i, j)
+		}
+		b.WriteString(`]}`)
 	}
+	b.WriteString(`]}`)
 	return b.String()
 }
 
-func BenchmarkParseDuplicateGroups(b *testing.B) {
+func BenchmarkDecodeReport(b *testing.B) {
 	cases := []struct {
 		name          string
 		groups        int
@@ -35,32 +45,13 @@ func BenchmarkParseDuplicateGroups(b *testing.B) {
 		{"large_1000x2", 1000, 2},
 	}
 	for _, tc := range cases {
-		report := generateReport(tc.groups, tc.filesPerGroup)
+		report := generateJSONReport(tc.groups, tc.filesPerGroup)
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				parsing.ParseDuplicateGroups(report)
-			}
-		})
-	}
-}
-
-func BenchmarkParseStats(b *testing.B) {
-	cases := []struct {
-		name          string
-		groups        int
-		filesPerGroup int
-	}{
-		{"small_10x2", 10, 2},
-		{"medium_100x3", 100, 3},
-		{"large_1000x2", 1000, 2},
-	}
-	for _, tc := range cases {
-		report := generateReport(tc.groups, tc.filesPerGroup)
-		b.Run(tc.name, func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				parsing.ParseStats(report)
+				if _, err := parsing.DecodeReport(strings.NewReader(report), 100); err != nil {
+					b.Fatalf("DecodeReport: %v", err)
+				}
 			}
 		})
 	}

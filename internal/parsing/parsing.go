@@ -1,38 +1,225 @@
-// Package parsing extracts structured data from fclones command output:
-// scan statistics (duplicate-group count and reclaimable size), duplicate
-// report groups (keeper plus its duplicates), and the action summary
-// (files processed and bytes reclaimed). Parsers tolerate output-format
-// drift so a changed upstream line is distinguishable from a genuine zero.
+// Package parsing extracts structured data from fclones command output: the
+// JSON scan report (exact header statistics plus duplicate groups, decoded
+// strictly and streamed so report size never pressures memory) and the text
+// action summary (files processed and bytes reclaimed). The report decode
+// fails loudly on anything malformed -- degraded stats never masquerade as a
+// healthy zero -- while the summary parser tolerates drift and flags an
+// unrecognized summary via ActionSummary.Matched.
 package parsing
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"strconv"
 	"strings"
 )
 
-// defaultSizeStr is the fallback size string when no duplicates are found.
-const defaultSizeStr = "0 B"
-
-// Stats holds parsed statistics from fclones output.
-type Stats struct {
-	Groups string
-	Size   string
-	// TotalParsed reports whether a recognizable "# Total: ... N groups" line
-	// was found. It is false when that line is absent or its format changed;
-	// the count token in Groups may still be non-numeric when it is true.
-	// Callers use it to tell "fclones reported 0 groups" apart from "we could
-	// not read the group count at all" -- the latter is output-format drift.
-	TotalParsed bool
+// Report is a decoded fclones JSON scan report: the header's exact numeric
+// statistics, the first groups mapped into display form for per-pair logging,
+// and the full-document totals counted while streaming.
+type Report struct {
+	// Groups holds at most the keepGroups first duplicate groups, mapped
+	// into display form (keeper, duplicates, human-readable size).
+	Groups []DuplicateGroup
+	// Stats is the report header's statistics block (never nil-derived:
+	// DecodeReport rejects a report whose header carries no stats).
+	Stats ReportStats
+	// TotalGroups counts every group in the document, including those
+	// beyond the keepGroups retention cap.
+	TotalGroups int
+	// TotalDuplicates counts every duplicate (non-keeper) file across all
+	// groups in the document, including those beyond the retention cap.
+	TotalDuplicates int
 }
 
-// DuplicateGroup is a parsed fclones report group: one keeper file plus its
-// duplicates, with the per-file size echoed from the group header for display.
+// ReportStats carries the fclones report-header statistics. Upstream
+// (fclones FileStats, serialized by serde as snake_case bare integers)
+// declares the container Option<FileStats>; DecodeReport rejects the
+// null/absent case, so consumers always see concrete values.
+type ReportStats struct {
+	GroupCount         int   `json:"group_count"`
+	TotalFileCount     int   `json:"total_file_count"`
+	TotalFileSize      int64 `json:"total_file_size"`
+	RedundantFileCount int   `json:"redundant_file_count"`
+	RedundantFileSize  int64 `json:"redundant_file_size"`
+	MissingFileCount   int   `json:"missing_file_count"`
+	MissingFileSize    int64 `json:"missing_file_size"`
+}
+
+// reportHeaderJSON mirrors the fclones ReportHeader fields the decoder
+// consumes. Stats is a pointer because upstream declares it
+// Option<FileStats>: null and absent are real wire states, and both are
+// decode errors here.
+type reportHeaderJSON struct {
+	Stats *ReportStats `json:"stats"`
+}
+
+// reportGroupJSON mirrors one fclones FileGroup entry. file_hash is
+// deliberately not consumed.
+type reportGroupJSON struct {
+	Files   []string `json:"files"`
+	FileLen int64    `json:"file_len"`
+}
+
+// DuplicateGroup is a scan-report group in display form: one keeper file
+// plus its duplicates, with the per-file size rendered for log lines.
 type DuplicateGroup struct {
 	Keeper     string
 	SizePerDup string
 	Duplicates []string
+}
+
+// DecodeReport strictly decodes an fclones JSON report (`fclones group -f
+// json`) from r, streaming the groups array element by element so memory is
+// bounded by the retained groups plus one in-flight group, never by report
+// size. keepGroups caps how many groups are retained in Report.Groups for
+// per-pair logging (non-positive retains none); totals are counted across
+// the whole document regardless.
+//
+// Strictness contract: a malformed or truncated document, a missing header,
+// an absent or null header.stats, a missing groups array, a group with fewer
+// than two files or a negative file_len, or a header group_count that
+// disagrees with the streamed group count is an error -- the caller fails
+// the run loudly. Unknown fields at any level are tolerated so additive
+// upstream changes do not break the wrapper. The keeper is files[0]
+// (fclones' own keep-first semantics).
+//
+// Wire shape verified against pinned upstream fclones v0.35.0
+// (fclones/src/report.rs: SerializableReport{header, groups},
+// ReportHeader.stats Option<FileStats>, FileGroup{file_len, file_hash,
+// files}); the format is stable since fclones 0.18. Re-verify on every
+// FCLONES_VERSION bump (see CONTRIBUTING).
+func DecodeReport(r io.Reader, keepGroups int) (Report, error) {
+	dec := json.NewDecoder(r)
+
+	if err := expectDelim(dec, json.Delim('{')); err != nil {
+		return Report{}, fmt.Errorf("report: %w", err)
+	}
+	header, report, groupsSeen, err := decodeReportBody(dec, keepGroups)
+	if err != nil {
+		return Report{}, err
+	}
+	if err := expectDelim(dec, json.Delim('}')); err != nil {
+		return Report{}, fmt.Errorf("report: %w", err)
+	}
+
+	switch {
+	case header == nil:
+		return Report{}, errors.New("report: missing header")
+	case header.Stats == nil:
+		return Report{}, errors.New("report: header carries no stats (null or absent)")
+	case !groupsSeen:
+		return Report{}, errors.New("report: missing groups array")
+	case header.Stats.GroupCount != report.TotalGroups:
+		return Report{}, fmt.Errorf("report: header stats claim %d groups but the document carries %d",
+			header.Stats.GroupCount, report.TotalGroups)
+	}
+
+	report.Stats = *header.Stats
+	return report, nil
+}
+
+// reportDecoder carries the mutable accounting for decodeReportBody as it
+// walks the top-level object's key/value pairs.
+type reportDecoder struct {
+	header     *reportHeaderJSON
+	report     Report
+	keepGroups int
+	groupsSeen bool
+}
+
+// field dispatches one top-level key: the header is decoded eagerly (it is
+// small), the groups array is streamed via decodeGroups, and unknown fields
+// are skipped so additive upstream changes do not break the wrapper.
+func (d *reportDecoder) field(dec *json.Decoder, key string) error {
+	switch key {
+	case "header":
+		d.header = new(reportHeaderJSON)
+		if err := dec.Decode(d.header); err != nil {
+			return fmt.Errorf("report header: %w", err)
+		}
+	case "groups":
+		d.groupsSeen = true
+		return decodeGroups(dec, d.keepGroups, &d.report)
+	default:
+		// Unknown top-level fields are tolerated: skip the value.
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return fmt.Errorf("report field %q: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// decodeReportBody consumes the top-level object's key/value pairs into a
+// reportDecoder and returns its accounting.
+func decodeReportBody(dec *json.Decoder, keepGroups int) (header *reportHeaderJSON, report Report, groupsSeen bool, err error) {
+	d := reportDecoder{keepGroups: keepGroups}
+	for dec.More() {
+		keyTok, tokErr := dec.Token()
+		if tokErr != nil {
+			return nil, Report{}, false, fmt.Errorf("report key: %w", tokErr)
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil, Report{}, false, fmt.Errorf("report: unexpected token %v where an object key was expected", keyTok)
+		}
+		if fieldErr := d.field(dec, key); fieldErr != nil {
+			return nil, Report{}, false, fieldErr
+		}
+	}
+	return d.header, d.report, d.groupsSeen, nil
+}
+
+// decodeGroups streams the groups array, retaining at most keepGroups mapped
+// groups in report.Groups while counting full-document totals, and validates
+// each group's structure as it passes.
+func decodeGroups(dec *json.Decoder, keepGroups int, report *Report) error {
+	if err := expectDelim(dec, json.Delim('[')); err != nil {
+		return fmt.Errorf("report groups: %w", err)
+	}
+	for dec.More() {
+		var g reportGroupJSON
+		if err := dec.Decode(&g); err != nil {
+			return fmt.Errorf("report group %d: %w", report.TotalGroups, err)
+		}
+		if len(g.Files) < 2 {
+			return fmt.Errorf("report group %d: %d files, want at least a keeper and one duplicate",
+				report.TotalGroups, len(g.Files))
+		}
+		if g.FileLen < 0 {
+			return fmt.Errorf("report group %d: negative file_len %d", report.TotalGroups, g.FileLen)
+		}
+		if len(report.Groups) < keepGroups {
+			report.Groups = append(report.Groups, DuplicateGroup{
+				Keeper:     g.Files[0],
+				SizePerDup: HumanBytes(g.FileLen),
+				Duplicates: g.Files[1:],
+			})
+		}
+		report.TotalGroups++
+		report.TotalDuplicates += len(g.Files) - 1
+	}
+	if err := expectDelim(dec, json.Delim(']')); err != nil {
+		return fmt.Errorf("report groups: %w", err)
+	}
+	return nil
+}
+
+// expectDelim consumes one token from dec and verifies it is the wanted
+// structural delimiter.
+func expectDelim(dec *json.Decoder, want json.Delim) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if d, ok := tok.(json.Delim); !ok || d != want {
+		return fmt.Errorf("unexpected token %v, want %q", tok, want)
+	}
+	return nil
 }
 
 // ActionSummary holds the parsed "Processed N files and reclaimed X Y space"
@@ -45,149 +232,12 @@ type ActionSummary struct {
 	// bound ("reclaimed up to X"). The dedupe action does this because the
 	// dedup ioctl is advisory; link and remove report an exact figure.
 	Estimated bool
-}
-
-// ParseStats extracts statistics from fclones output.
-//
-// The output embeds scanned filenames, which are attacker-influenceable and may contain
-// newlines; a crafted path can therefore inject a line that looks like a "# Total:" or
-// "# Redundant:" stat. The returned Stats are advisory (logging and Grafana alerting
-// only) and never drive file operations, so this is an accepted log-integrity tradeoff.
-func ParseStats(output string) Stats {
-	stats := Stats{Groups: "0", Size: defaultSizeStr}
-
-	for line := range strings.SplitSeq(output, "\n") {
-		switch {
-		case strings.HasPrefix(line, "# Redundant:"):
-			stats.Size = parseRedundantSize(line)
-		case strings.HasPrefix(line, "# Total:"):
-			if parts := strings.Fields(line); len(parts) >= 2 && parts[len(parts)-1] == "groups" {
-				stats.Groups = parts[len(parts)-2]
-				stats.TotalParsed = true
-			}
-		}
-	}
-
-	return stats
-}
-
-// parseRedundantSize extracts the human-readable size from a "# Redundant:" line.
-// Prefers the parenthesized form "(1.2 GB)" over the bare "512 MB" form.
-func parseRedundantSize(line string) string {
-	if start := strings.Index(line, "("); start != -1 {
-		if end := strings.Index(line, ")"); end > start {
-			if s := line[start+1 : end]; s != "" {
-				return s
-			}
-		}
-	}
-	if parts := strings.Fields(line); len(parts) >= 4 {
-		return parts[2] + " " + parts[3]
-	}
-	return defaultSizeStr
-}
-
-// isGroupHeader reports whether a line is an fclones group header like
-// "3a2b, 512 B * 2:" (comma, star, trailing colon).
-func isGroupHeader(line string) bool {
-	return strings.Contains(line, ",") &&
-		strings.Contains(line, "*") &&
-		strings.HasSuffix(line, ":")
-}
-
-// groupParser carries the mutable accounting for ParseDuplicateGroups as it
-// scans an fclones report line by line.
-type groupParser struct {
-	groups  []DuplicateGroup
-	current DuplicateGroup
-	inGroup bool
-}
-
-// flush finalizes the current group, keeping it only when it collected at
-// least one duplicate, then resets the accumulator for the next group.
-func (p *groupParser) flush() {
-	if p.inGroup && len(p.current.Duplicates) > 0 {
-		p.groups = append(p.groups, p.current)
-	}
-	p.current = DuplicateGroup{}
-	p.inGroup = false
-}
-
-// step feeds one report line into the parser, updating its accounting.
-func (p *groupParser) step(line string) {
-	if strings.HasPrefix(line, "#") {
-		return
-	}
-	if strings.TrimSpace(line) == "" {
-		p.flush()
-		return
-	}
-	// fclones writes each group header at column 0 and indents every file path
-	// beneath it. A non-indented header-shaped line therefore begins a new
-	// group even when no blank line precedes it. This matters because fclones'
-	// default report does NOT reliably separate groups with a blank line:
-	// relying on the blank line alone collapses consecutive groups into one and
-	// absorbs the following groups' headers as bogus "duplicate" paths (the
-	// FclonesFormatDrift incident). Indentation is the guard that keeps an
-	// attacker-influenced duplicate path -- always indented in the report --
-	// from being reclassified as a header, so header delimiters (',', '*',
-	// trailing ':') embedded in a filename stay part of the path.
-	if !isIndented(line) && isGroupHeader(line) {
-		p.flush()
-		p.current.SizePerDup = extractGroupSize(line)
-		p.inGroup = true
-		return
-	}
-	if !p.inGroup {
-		return
-	}
-	trimmed := strings.TrimSpace(line)
-	if p.current.Keeper == "" {
-		p.current.Keeper = trimmed
-	} else {
-		p.current.Duplicates = append(p.current.Duplicates, trimmed)
-	}
-}
-
-// isIndented reports whether a line begins with leading whitespace. fclones
-// indents duplicate-file path lines beneath their group header (which sits at
-// column 0), so indentation is what distinguishes a path from a header even
-// when the path's basename embeds the header delimiters (',', '*', trailing
-// ':').
-func isIndented(line string) bool {
-	return line != "" && (line[0] == ' ' || line[0] == '\t')
-}
-
-// ParseDuplicateGroups parses an fclones custom-format report into structured
-// groups. Each group header looks like:
-//
-//	3a2b, 512 B * 2:
-//
-// and is followed by one indented path per line (one "keeper" and one or more
-// duplicates). A group ends at the next group header or a blank line, whichever
-// comes first. fclones does not reliably emit a blank line between groups, so
-// the parser relies on the structural distinction instead: headers sit at
-// column 0, paths are indented, and a non-indented header-shaped line opens a
-// new group (see step).
-func ParseDuplicateGroups(report string) []DuplicateGroup {
-	var p groupParser
-	for line := range strings.SplitSeq(report, "\n") {
-		p.step(line)
-	}
-	p.flush()
-	return p.groups
-}
-
-// extractGroupSize pulls the single-file size from a group header.
-func extractGroupSize(header string) string {
-	h := strings.TrimSuffix(header, ":")
-	if idx := strings.LastIndex(h, " * "); idx != -1 {
-		h = h[:idx]
-	}
-	if idx := strings.Index(h, ","); idx != -1 {
-		h = h[idx+1:]
-	}
-	return strings.TrimSpace(h)
+	// Matched is true when a recognizable "Processed ... reclaimed ..."
+	// summary line was found and Files/ReclaimedBytes/Estimated were parsed
+	// from it. It is false on the fallback path, where RawLine carries the
+	// last non-empty output line (or nothing): there the zero metrics mean
+	// "no summary recognized", not "nothing reclaimed".
+	Matched bool
 }
 
 // reclaimedMetrics parses the file count and reclaimed byte total from a trimmed
@@ -233,6 +283,7 @@ func ParseActionSummary(stdout string) ActionSummary {
 			strings.Contains(line, "reclaimed") {
 			summary.RawLine = strings.TrimSpace(line[idx:])
 			summary.Files, summary.ReclaimedBytes, summary.Estimated = reclaimedMetrics(summary.RawLine)
+			summary.Matched = true
 			return summary
 		}
 	}
@@ -245,14 +296,12 @@ func ParseActionSummary(stdout string) ActionSummary {
 
 // byteUnitMultipliers maps an upper-cased size unit to its byte multiplier.
 // fclones (via bytesize 1.3.0, the pinned version) renders DECIMAL SI units
-// (KB..EB) by default -- the same system HumanBytes emits, so today both the
-// parse and format sides agree. The IEC binary units (KiB..EiB) are accepted
-// defensively so parseHumanBytes still parses correctly if a future
-// fclones/bytesize bump switches its output to IEC.
+// (KB..EB) -- the same system HumanBytes emits, so the parse and format sides
+// agree. Re-verify the unit system on FCLONES_VERSION bumps (CONTRIBUTING);
+// an unrecognized unit parses to 0, which the action-summary drift warning
+// then surfaces.
 var byteUnitMultipliers = map[string]int64{
-	"B":   1,
-	"KIB": 1 << 10, "MIB": 1 << 20, "GIB": 1 << 30,
-	"TIB": 1 << 40, "PIB": 1 << 50, "EIB": 1 << 60,
+	"B":  1,
 	"KB": 1_000, "K": 1_000,
 	"MB": 1_000_000, "M": 1_000_000,
 	"GB": 1_000_000_000, "G": 1_000_000_000,

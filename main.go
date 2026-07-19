@@ -10,62 +10,67 @@ import (
 	"syscall"
 
 	"github.com/cplieger/health"
-	"github.com/cplieger/scheduler/v2"
 )
 
 // --- Main ---
 
+// main dispatches on the first argument: `health` runs the Docker probe,
+// `scan` triggers one run via the daemon's socket and exits with that run's
+// result (the external-trigger entry point), and anything else (including no
+// argument) runs the long-lived process that owns all runs.
 func main() {
+	// CLI health probe for the Docker healthcheck (distroless has no
+	// curl/wget). Checked before the logger is configured because RunProbe
+	// calls os.Exit. Built-in mode arms a freshness deadline (probeOptions).
+	if len(os.Args) > 1 && os.Args[1] == "health" {
+		health.RunProbe(healthMarkerPath, probeOptions()...)
+	}
+	os.Exit(dispatch())
+}
+
+// dispatch selects the subcommand and returns the process exit code.
+// Returning the code (rather than calling os.Exit here) keeps the routing
+// testable and lets deferred cleanup in the daemon run before exit.
+func dispatch() int {
+	cmd := "daemon"
 	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "health":
-			// CLI health probe for Docker healthcheck (distroless has no
-			// curl/wget). Checks for a marker file instead of making an
-			// HTTP request — no port needed. RunProbe exits the process.
-			health.RunProbe(health.DefaultPath)
-			return
-		case "scan":
-			// One-shot scan+action, then exit. This is the trigger used by
-			// an external scheduler (e.g. Ofelia `docker exec fclones
-			// /app/wrapper scan`) when the built-in loop is disabled.
-			// runScan/runFclonesJob already logs the failure with full
-			// context, so exit non-zero here without a bare re-log.
-			if err := runScan(context.Background()); err != nil {
-				os.Exit(1)
-			}
-			return
-		default:
-			// An unrecognized subcommand is almost certainly a typo; fail
-			// loudly instead of silently falling through to the daemon.
-			// Mirrors the sibling schedulers (docker-renovate-scheduler /
-			// docker-rsync-scheduler), which exit non-zero on an unknown
-			// subcommand.
-			setupLogger()
-			slog.Error("unknown subcommand", "command", os.Args[1], logKeyOutcome, "bad_subcommand", "valid", "scan, health")
-			os.Exit(2)
-		}
+		cmd = os.Args[1]
 	}
 
-	// run/bootstrap already logs each failure once at the layer with the most
-	// context, so exit non-zero here without a bare re-log.
-	if err := run(context.Background()); err != nil {
-		os.Exit(1)
+	switch cmd {
+	case "daemon":
+		// run/bootstrap already logs each failure once at the layer with the
+		// most context, so exit non-zero here without a bare re-log.
+		if err := run(context.Background()); err != nil {
+			return 1
+		}
+		return 0
+	case "scan":
+		return runClient(socketPath)
+	default:
+		// An unrecognized subcommand is almost certainly a typo; fail
+		// loudly instead of silently falling through to the daemon.
+		setupLogger()
+		slog.Error("unknown subcommand", "command", cmd, logKeyOutcome, "bad_subcommand", "valid", "scan, health")
+		return 2
 	}
 }
 
-// run is the composition root for the long-running container. It wires
-// dependencies and dispatches to the built-in scheduler or the idle
-// external-trigger loop based on config. Returning an error exits non-zero.
+// run is the composition root for the long-running container (the default
+// no-arg command). It wires dependencies and dispatches on the configured
+// mode: run-once performs a single direct run and exits, while the two
+// long-running modes hand ownership of every run to the daemon (executor +
+// trigger socket, plus the interval ticker in built-in mode). Returning an
+// error exits non-zero.
 func run(ctx context.Context) error {
-	// Construct the marker before bootstrap (mirroring runScan) so a startup
-	// bootstrap failure -- e.g. verifyCacheDir when /cache is read-only or full --
-	// clears any stale healthy marker left by a SIGKILLed prior run and honors the
-	// documented "built-in mode begins unhealthy" / "unhealthy when /cache is full
-	// or read-only" contract. NewMarker probes /tmp (DefaultPath), not /cache, so
-	// it constructs fine before bootstrap.
-	marker := health.NewMarker(health.DefaultPath)
-	// The daemon owns the marker file for the container's lifetime, so it
-	// cleans up on exit (unlike runScan, which deliberately leaves it).
+	// Construct the marker before bootstrap so a startup bootstrap failure --
+	// e.g. verifyCacheDir when /cache is read-only or full -- clears any stale
+	// healthy marker left by a SIGKILLed prior run and honors the documented
+	// "built-in mode begins unhealthy" / "unhealthy when /cache is full or
+	// read-only" contract. NewMarker probes /tmp (healthMarkerPath), not
+	// /cache, so it constructs fine before bootstrap. The daemon owns the
+	// marker file for the container's lifetime and cleans up on exit.
+	marker := health.NewMarker(healthMarkerPath)
 	defer marker.Cleanup()
 
 	cfg, err := bootstrap(ctx)
@@ -75,33 +80,29 @@ func run(ctx context.Context) error {
 	}
 
 	// Reclaim report temp files orphaned in /cache by a previous hard-killed
-	// scan. Safe here: the daemon has no scan in flight at startup.
+	// scan. Safe here: this process has no scan in flight at startup, and the
+	// sweep takes the cross-container lock before touching anything.
 	cleanStaleReports()
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	switch cfg.Mode {
-	case modeBuiltin:
-		runBuiltin(ctx, marker, &cfg)
-		return nil
 	case modeOnce:
 		return runOnce(ctx, marker, &cfg)
-	case modeExternal:
-		runExternal(ctx, marker, &cfg)
-		return nil
+	case modeBuiltin, modeExternal:
+		return runDaemon(ctx, &cfg, newHealthController(marker), defaultCommandRunner)
 	default:
 		panic(fmt.Sprintf("unhandled runMode: %d", int(cfg.Mode)))
 	}
 }
 
-// bootstrap performs the shared startup prologue for both the long-running
-// daemon (run) and the one-shot scan subcommand (runScan): it installs the
-// logger, loads and validates config, and verifies the cache directory is
-// writable. Each failure is logged exactly once at the layer with the most
-// context — loadConfig logs the specific invalid setting at the leaf, and the
-// cache-dir failure is logged here — so callers exit non-zero without
-// re-logging.
+// bootstrap performs the shared startup prologue for every mode: it installs
+// the logger, loads and validates config, and verifies the cache directory
+// is writable. Each failure is logged exactly once at the layer with the
+// most context — loadConfig logs the specific invalid setting at the leaf,
+// and the cache-dir failure is logged here — so callers exit non-zero
+// without re-logging.
 func bootstrap(ctx context.Context) (config, error) {
 	setupLogger()
 
@@ -119,75 +120,29 @@ func bootstrap(ctx context.Context) (config, error) {
 	return cfg, nil
 }
 
-// runBuiltin runs the self-contained interval scheduler via scheduler.RunLoop:
-// FireOnStart runs a scan immediately, then a scan fires every cfg.Interval.
-// RunLoop is sequential, so two scans never overlap in-process; the flock in
-// runFclonesJob still guards cross-process overlap (an external `wrapper scan`
-// racing the loop). RunLoop runs in a goroutine so this function can flip the
-// marker unhealthy the instant SIGTERM arrives — before the in-flight scan
-// drains, which may take minutes on a large filesystem — then wait out the
-// drain (RunLoop returns once ctx is cancelled and the in-flight scan returns).
-func runBuiltin(ctx context.Context, marker *health.Marker, cfg *config) {
-	// Built-in mode starts unhealthy: clear any stale health file from a
-	// previous run that crashed before its defer ran. The first successful
-	// scan flips it to healthy.
-	marker.Set(false)
-
-	slog.Info("container started (built-in scheduling)",
-		"uid", os.Getuid(), "mode", cfg.Mode, "interval", cfg.Interval,
-		"target", cfg.ScanPath, "action", cfg.Action,
-		"phase_timeout", cfg.PhaseTimeout)
-
-	drained := make(chan struct{})
-	go func() {
-		defer close(drained)
-		// The first iteration is the startup scan, the rest are interval scans;
-		// label the trigger so the attribute matches the pre-RunLoop two-goroutine
-		// split. RunLoop calls the job sequentially, so startupDone needs no
-		// synchronization.
-		startupDone := false
-		scheduler.RunLoop(ctx, func(ctx context.Context) {
-			trigger := "interval"
-			if !startupDone {
-				trigger, startupDone = "startup", true
-			}
-			_, _ = runFclonesJob(ctx, marker, cfg, trigger, defaultCommandRunner)
-		}, scheduler.LoopOptions{Interval: cfg.Interval, FireOnStart: true})
-	}()
-
-	<-ctx.Done()
-	slog.Info("shutting down", "cause", context.Cause(ctx))
-	// Mark unhealthy immediately so Grafana/Uptime Kuma see the signal
-	// before the scan drain (which may take minutes on a large filesystem).
-	marker.Set(false)
-
-	// Wait for the in-flight scan (if any) to drain.
-	<-drained
-	slog.Info("shutdown complete")
-}
-
-// runOnce performs exactly one scan+action then returns, so the daemon (PID 1)
-// exits afterward -- the one-shot mode selected by FCLONES_INTERVAL=0. A failed
-// scan returns a non-nil error so the container exits non-zero (visible to an
-// orchestrator running it as a batch job). Like runBuiltin it starts unhealthy
-// (a scan is about to run); runFclonesJob's deferred marker update records the
-// outcome. run()'s deferred marker.Cleanup() removes the marker on exit.
+// runOnce performs exactly one scan+action then returns, so the process
+// exits afterward -- the one-shot mode selected by FCLONES_INTERVAL=0. It
+// runs the job directly (no daemon, no socket: there is nothing to trigger
+// out-of-band in a process that exits after one run) and is the marker's
+// single writer for its short life. A failed scan returns a non-nil error so
+// the container exits non-zero (visible to an orchestrator running it as a
+// batch job).
 //
-// run-once exits non-zero on every outcome that did NOT complete a clean scan,
-// because here the exit code IS the batch job result. Three non-success cases,
-// all distinct from the daemon/`scan` paths which exit 0 on them:
+// run-once exits non-zero on every outcome that did NOT complete a clean
+// scan, because here the exit code IS the batch job result. Three
+// non-success cases, all distinct from the daemon modes which treat them as
+// benign:
 //   - exec failure / timeout: runFclonesJob returns a non-nil error (handled below).
 //   - interrupt (SIGTERM/SIGINT mid-run): runFclonesJob treats a parent-context
-//     cancellation as a clean stop and returns (ran=true, nil) so a graceful daemon
-//     shutdown never flips a healthy daemon unhealthy; for the one-shot, a pod
-//     evicted / deadline-killed / OOM'd mid-scan must instead fail so the
-//     orchestrator retries, so a cancelled context is converted to an error.
+//     cancellation as a clean stop and returns (ran=true, nil); for the one-shot, a
+//     pod evicted / deadline-killed mid-scan must instead fail so the orchestrator
+//     retries, so a cancelled context is converted to an error.
 //   - lock-contention skip: another process held the /cache scan lock, so
-//     runFclonesJob returned (ran=false, nil) WITHOUT scanning. The daemon ticker
-//     and `scan` subcommand correctly no-op here, but a one-shot that performed no
-//     scan is not a successful run, so it is reported as a non-zero SKIPPED outcome
-//     (and the marker set unhealthy, since no successful scan recorded one) rather
-//     than a silent exit-0 no-op the orchestrator would mark Complete.
+//     runFclonesJob returned (ran=false, nil) WITHOUT scanning. The daemon modes
+//     correctly no-op here, but a one-shot that performed no scan is not a
+//     successful run, so it is reported as a non-zero SKIPPED outcome (and the
+//     marker set unhealthy, since no successful scan recorded one) rather than a
+//     silent exit-0 no-op the orchestrator would mark Complete.
 func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
 	// Begins unhealthy: clear any stale health file from a previous run that
 	// crashed before its defer ran. The single scan flips it on success.
@@ -197,18 +152,20 @@ func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
 		"uid", os.Getuid(), "mode", cfg.Mode, "target", cfg.ScanPath, "action", cfg.Action,
 		"phase_timeout", cfg.PhaseTimeout)
 
-	ran, err := runFclonesJob(ctx, marker, cfg, "once", defaultCommandRunner)
+	ran, err := runFclonesJob(ctx, cfg, "once", defaultCommandRunner)
+	if set, healthy := jobHealthSignal(ctx.Err(), ran, err); set {
+		marker.Set(healthy)
+	}
 	switch outcome := classifyRunOnceOutcome(ran, err, ctx.Err()); outcome {
 	case runOnceFailed:
 		// Exec failure or timeout: already logged with full context; exit non-zero.
 		return err
 	case runOnceSkipped:
 		// The scan lock was held by another process, so no scan or action ran.
-		// runFclonesJob returns before its deferred marker update on this path, so
-		// the marker is untouched; set it unhealthy here so the exit code and the
-		// healthcheck agree (this run accomplished nothing). Report SKIPPED as a
-		// non-zero outcome so a batch orchestrator retries instead of recording a
-		// no-op as success.
+		// jobHealthSignal writes no marker on a skip, so set it unhealthy here
+		// so the exit code and the healthcheck agree (this run accomplished
+		// nothing). Report SKIPPED as a non-zero outcome so a batch
+		// orchestrator retries instead of recording a no-op as success.
 		marker.Set(false)
 		slog.Warn("run-once skipped: another process holds the scan lock; no scan ran",
 			logKeyOutcome, "skipped", "lock", lockFile)
@@ -230,64 +187,4 @@ func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
 	default:
 		panic(fmt.Sprintf("unhandled runOnceOutcome: %d", int(outcome)))
 	}
-}
-
-// runExternal idles until shutdown. The built-in scheduler is disabled
-// (FCLONES_INTERVAL=off); scans are triggered out-of-band via `wrapper
-// scan`. The marker is set healthy on boot so an idle, not-yet-triggered
-// container reads healthy; each `scan` invocation updates it on disk.
-func runExternal(ctx context.Context, marker *health.Marker, cfg *config) {
-	// External (idle) mode starts healthy: an idle, not-yet-triggered
-	// container reads healthy; each `scan` invocation updates it on disk.
-	marker.Set(true)
-
-	slog.Info("container started (external scheduling)",
-		"uid", os.Getuid(), "mode", cfg.Mode, "target", cfg.ScanPath, "action", cfg.Action,
-		"phase_timeout", cfg.PhaseTimeout, "trigger", "wrapper scan")
-
-	<-ctx.Done()
-	slog.Info("shutting down", "cause", context.Cause(ctx))
-	slog.Info("shutdown complete")
-	// No marker.Set(false): unlike runBuiltin there is no in-flight scan to
-	// drain, and run()'s deferred marker.Cleanup() removes the marker on exit.
-}
-
-// runScan performs exactly one scan+action and returns. It is the entry
-// point for the `scan` subcommand invoked by an external scheduler. Unlike
-// the daemon, it does not clean up the marker on exit — the file must
-// persist so the running container's healthcheck reflects this run.
-func runScan(ctx context.Context) error {
-	// Construct the marker before bootstrap so a bootstrap failure -- most
-	// importantly verifyCacheDir when /cache has gone read-only or full --
-	// flips the running container's healthcheck unhealthy, honoring the
-	// documented "becomes unhealthy when /cache is full or read-only" contract.
-	// In external mode the daemon idles and only `wrapper scan` re-runs
-	// bootstrap, so without this a runtime /cache failure exits non-zero for
-	// the external scheduler yet leaves the healthcheck green. NewMarker probes
-	// /tmp (DefaultPath), not /cache, so it still constructs fine here.
-	marker := health.NewMarker(health.DefaultPath)
-
-	cfg, err := bootstrap(ctx)
-	if err != nil {
-		marker.Set(false)
-		return err
-	}
-
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	// Reclaim report temp files orphaned by a prior hard-killed `scan` that the idle
-	// external-mode daemon never sweeps. Holds the scan lock, so it skips when a scan
-	// is in flight and never unlinks a live report.
-	cleanStaleReports()
-
-	// Deliberately no `defer marker.Cleanup()` (unlike run): the marker file
-	// must persist so the running container's healthcheck reflects this run.
-	//
-	// The `scan` subcommand intentionally ignores ran: a lock-skip here is the
-	// documented overlap tolerance (a manual `wrapper scan` racing a scheduled
-	// one skips rather than failing, like the built-in ticker), so a contended
-	// invocation exits 0. Only run-once treats a skip as a non-zero outcome.
-	_, err = runFclonesJob(ctx, marker, &cfg, "external", defaultCommandRunner)
-	return err
 }

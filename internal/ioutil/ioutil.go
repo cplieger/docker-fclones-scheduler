@@ -1,14 +1,11 @@
 // Package ioutil provides bounded I/O helpers for capturing fclones
 // subprocess output without unbounded memory growth: a line-filtering
-// writer, a capped accumulation buffer, and a size-limited file reader.
+// writer and a capped accumulation buffer.
 package ioutil
 
 import (
 	"bytes"
-	"fmt"
 	"io"
-	"math"
-	"os"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -318,43 +315,3 @@ func (lb *LimitedBuffer) Total() int { return lb.totalIn }
 
 // Truncated reports whether Write ever discarded bytes.
 func (lb *LimitedBuffer) Truncated() bool { return lb.totalIn > lb.Max }
-
-// ReadFileWithLimit reads a file up to maxBytes. Returns an error if the file
-// exceeds the limit or cannot be read.
-func ReadFileWithLimit(path string, maxBytes int64) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if info.Size() > maxBytes {
-		return nil, fmt.Errorf("file %s is %d bytes, exceeds %d byte limit", path, info.Size(), maxBytes)
-	}
-
-	// Read one byte past the limit (maxBytes+1) so an oversized file is detected
-	// rather than silently truncated to maxBytes. The length re-check below turns
-	// that extra byte into an error and also closes the TOCTOU gap where the file
-	// grew between the Stat check above and this read. Guard the +1 against int64
-	// overflow: at maxBytes == math.MaxInt64 the +1 would wrap to a negative value,
-	// which io.LimitReader treats as immediate EOF (silently returning empty data).
-	// No file can exceed that cap anyway (Stat already rejected info.Size() >
-	// maxBytes, and a file cannot exceed MaxInt64 bytes), so read up to MaxInt64
-	// without the extra byte.
-	limit := maxBytes
-	if limit < math.MaxInt64 {
-		limit++ // read one past the cap to detect oversize / TOCTOU growth
-	}
-	data, err := io.ReadAll(io.LimitReader(f, limit))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > maxBytes {
-		return nil, fmt.Errorf("file %s grew past %d byte limit during read", path, maxBytes)
-	}
-	return data, nil
-}

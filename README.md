@@ -13,7 +13,7 @@ Find and deduplicate files on a schedule — reclaim wasted disk space automatic
 
 ## What it does
 
-Wraps the fclones duplicate file finder in a Go scheduler with
+Wraps the fclones duplicate file finder in a Go scheduler daemon with
 interval-based scheduling and a CLI health probe. Supports the group,
 link, remove, and dedupe actions with configurable arguments. Reports scan
 statistics including duplicates found, space reclaimable, and files
@@ -30,6 +30,8 @@ aggregators (Alloy, Promtail, etc.) and alerting via Grafana or similar.
 ### Why this design
 
 - **Scheduler your way** — ships with a self-contained Go interval scheduler so you don't need external cron, systemd timers, or orchestrator-level scheduling. If you already run a central scheduler (Ofelia, cron), set `FCLONES_INTERVAL=off` and trigger scans with `docker exec fclones /app/wrapper scan` instead
+- **One owner for every run** — the daemon (PID 1) executes every scan; the `scan` subcommand is a thin client on the daemon's local unix socket that relays the run's result as its exit code. Runs are serialized in one queue, and every run's logs land on the container's own log stream in both scheduling modes, so the same alert rules work everywhere
+- **Machine-readable report contract** — the scan consumes fclones' JSON report (`-f json`) with a strict decoder, so an upstream output-format change fails the run loudly instead of silently zeroing the duplicate stats your alerting reads
 - **Distroless and rootless** — runs as `nonroot` (UID 65532) on `gcr.io/distroless/static-debian13` with no shell or package manager, minimizing attack surface
 - **Dangerous flags blocked by default** — `--command`, `--transform`, `--in-place`, and `--no-copy` are rejected unless you explicitly opt in with `FCLONES_ALLOW_UNSAFE=true`, preventing command injection via environment variables
 - **Structured logs for observability** — all output goes to stdout/stderr in a format ready for log aggregators, enabling alerting on scan failures or duplicate detection without custom exporters. Timestamps are UTC, so log lines are zone-stable regardless of the container's `TZ`
@@ -74,7 +76,14 @@ Set `FCLONES_INTERVAL=off` (alias: `disabled`). The container stays running but 
 docker exec fclones /app/wrapper scan
 ```
 
-The scan runs once and exits; its exit code is non-zero on failure, and it updates the same health marker the long-running container reports. This lets a central scheduler own the cadence. Example with [Ofelia](https://github.com/mcuadros/ofelia) labels:
+The `scan` subcommand is a thin client on the daemon's local unix socket: it
+submits one run request, blocks until the daemon has executed the scan, and
+exits non-zero on failure — the run itself executes inside the daemon (PID 1),
+so its full output lands on the container's log stream while the client
+relays only lifecycle lines and the result to the trigger. The daemon updates
+the same health marker the healthcheck reports. This lets a central scheduler
+own the cadence. Example with [Ofelia](https://github.com/mcuadros/ofelia)
+labels:
 
 ```yaml
 services:
@@ -97,7 +106,16 @@ services:
       - "/opt/appdata/fclones:/cache"
 ```
 
-Overlapping scans are prevented in both modes by an advisory file lock (`flock`) on `/cache/.fclones.lock`, so a manual `docker exec` scan that races a scheduled one will skip rather than corrupt the shared fclones cache. Ofelia's `no-overlap` is still recommended to avoid queuing redundant triggers.
+Runs never overlap: the daemon executes all requests — scheduled ticks and
+triggered scans alike — strictly in order from one queue (a trigger that
+arrives mid-run queues behind it and reports its own run's result). An
+advisory file lock (`flock`) on `/cache/.fclones.lock` additionally guards
+the cache against a scan from a _different_ container or a manual
+`docker run` sharing the same `/cache` volume, which skips rather than
+corrupting the shared fclones cache. Ofelia's `no-overlap` is still
+recommended to avoid queuing redundant triggers. Note the exec must run as
+the container's own user (the trigger socket is owner-only); a mismatched
+exec user fails loudly at connect.
 
 ### Run once
 
@@ -111,7 +129,7 @@ Set `FCLONES_INTERVAL=0` (or `0s`). The container runs exactly one scan and dedu
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | -------- |
 | `FCLONES_INTERVAL`     | Built-in scan interval as a Go duration (e.g. `1h`, `30m`, `12h`). The first scan runs at startup; subsequent scans fire every interval thereafter. Set to `off` (or `disabled`) to idle and trigger scans externally, or to `0` (or `0s`) to run a single scan and exit — see [Scheduling modes](#scheduling-modes). Falls back to `3h` on an unset, unparseable, or negative value. | `3h`           | No       |
 | `FCLONES_SCAN_PATHS`   | Paths inside the container to scan for duplicates. Must match the volume mounts. Multiple paths can be space-separated (e.g. `/media /photos`), each requiring a corresponding volume mount.                                                                                                                                                                                          | `/scandir`     | No       |
-| `FCLONES_ARGS`         | Extra arguments passed to `fclones group` scan phase                                                                                                                                                                                                                                                                                                                                  | `(none)`       | No       |
+| `FCLONES_ARGS`         | Extra arguments passed to the `fclones group` scan phase. The wrapper owns `--cache` and the report format (`-f json`); passing `--cache`, `-f`, or `--format` here is rejected at startup.                                                                                                                                                                                           | `(none)`       | No       |
 | `FCLONES_ACTION`       | Dedup action after scan — group (report only), link (hardlink), remove (delete), or dedupe (reflink/copy-on-write)                                                                                                                                                                                                                                                                    | `group`        | No       |
 | `FCLONES_ACTION_ARGS`  | Extra arguments for the dedup action phase                                                                                                                                                                                                                                                                                                                                            | `(none)`       | No       |
 | `FCLONES_ALLOW_UNSAFE` | Set to `true` to allow dangerous flags (`--command`, `--transform`, `--in-place`, `--no-copy`)                                                                                                                                                                                                                                                                                        | `false`        | No       |
@@ -165,15 +183,16 @@ groups:
         annotations:
           summary: "fclones output-format drift detected (duplicate stats may be unreliable)"
           description: >
-            The wrapper logged a group-count mismatch or unreadable group total
-            ("possible fclones format drift"): its report parser no longer
-            recognizes fclones' output format, so the duplicate-group counts in the
-            scan-complete log line may be reported as zero even when duplicates
-            exist. Any configured dedup action still runs (the wrapper falls back to
+            The wrapper logged "possible fclones format drift": a group-count
+            mismatch, an unreadable group total, or an unrecognized action
+            summary. Its report parsers no longer recognize fclones' output
+            format, so the duplicate and reclaim stats in its log lines may be
+            reported as zero even when duplicates exist or work happened. Any
+            configured dedup action still runs (the wrapper falls back to
             piping fclones' own report to it) and the run still exits 0, so a
             job-failure or container-restart alert would not catch it; duplicate
             reporting is silently degraded. Check the fclones version and the
-            wrapper's report parser.
+            wrapper's report parsers.
 ```
 
 Thresholds and the `severity` labels are starting points. Adjust the
@@ -182,15 +201,17 @@ your deployment; if you run `remove` or `dedupe` instead of `link`, change
 `action="link"` in the first rule to match your `FCLONES_ACTION`. Route by
 whatever labels your Alertmanager uses.
 
-These rules assume the built-in scheduler (`FCLONES_INTERVAL` set to a
-duration), where the scan runs as PID 1 and its logs reach your collector.
-Under `FCLONES_INTERVAL=off` each `wrapper scan` is a `docker exec` child whose
-output goes to the trigger, not the container's log stream, so neither rule
-fires; alert on your external scheduler's own job result instead.
+These rules work in **both scheduling modes**: every run executes in the
+daemon (PID 1), so its logs always land under the app's own container name.
+Under `FCLONES_INTERVAL=off` the exec'd `scan` client emits only its own
+lifecycle lines (queued / started / result) to the trigger's log — an Ofelia
+job log, for example — and exits with the run's result, so you can
+additionally alert on your scheduler's own job outcome for
+belt-and-braces failure coverage.
 
 ## Healthcheck
 
-The built-in healthcheck (`/app/wrapper health`) checks for a marker file created after each successful scan and action phase. The container becomes unhealthy when fclones exits non-zero (e.g. scan path missing, permission denied, corrupted cache) or the action phase fails (e.g. hardlink across filesystems), or a scan lock cannot be acquired (e.g. `/cache` is full or read-only). It recovers automatically on the next successful scan — no restart required. In built-in mode the container begins unhealthy and transitions to healthy after the first successful scan completes, so size `healthcheck.start_period` accordingly for large filesystems where the initial scan may take minutes. In external mode the container starts healthy (idle, nothing has failed) and each triggered `scan` updates the marker.
+The built-in healthcheck (`/app/wrapper health`) checks for a marker file the daemon maintains after each run — the daemon is the marker's single writer, so a triggered `scan` client never races it. The container becomes unhealthy when fclones exits non-zero (e.g. scan path missing, permission denied, corrupted cache), the action phase fails (e.g. hardlink across filesystems), the report cannot be decoded, or startup verification fails (e.g. `/cache` is full or read-only). It recovers automatically on the next successful scan — no restart required. In built-in mode the container begins unhealthy, transitions to healthy after the first successful scan completes, and additionally arms a freshness deadline of `2 x FCLONES_INTERVAL + 2 x FCLONES_SCAN_TIMEOUT`: a marker that old means the interval loop is wedged, and the probe reports unhealthy so Docker restarts the container (disabled automatically when `FCLONES_SCAN_TIMEOUT=0`, since the worst-case run duration is then unbounded). In external mode the container starts healthy (idle, nothing has failed), each triggered run updates the marker, and no deadline applies — an idle container between sparse triggers is healthy.
 
 The image bakes a 15s `start_period`, which suits small libraries and external mode. If your first built-in scan takes minutes, raise `start_period` in your own compose file so the container isn't reported unhealthy — and doesn't fire spurious alerts — during that initial scan:
 
@@ -215,7 +236,9 @@ services:
 | [semgrep](https://semgrep.dev/)                                     | 2 info (false positives)            |
 | [hadolint](https://github.com/hadolint/hadolint)                    | DL3008 in builder stage (discarded) |
 
-No network listener, no HTTP server, no exposed ports. The
+No network listener, no HTTP server, no exposed ports — the trigger
+socket is a local unix socket (`/tmp/fclones-wrapper.sock`),
+owner-only (0600), reachable only from inside the container. The
 `FCLONES_ACTION` env var is validated against an allowlist and
 dangerous flags (`--command`, `--transform`, `--in-place`,
 `--no-copy`) are blocked by default to prevent command injection
@@ -226,11 +249,16 @@ with no shell.
 
 **Details for advanced users:** Arguments are passed to
 `exec.Command` as explicit arg lists (no shell expansion). Temp
-files use `os.CreateTemp` with unpredictable names. Output reads
-are capped at 50 MB. Concurrent scans are guarded by an advisory
-file lock (`flock` on `/cache/.fclones.lock`), which serialises
-both the built-in ticker and externally triggered `scan`
-invocations.
+files use `os.CreateTemp` with unpredictable names. Captured
+subprocess streams are size-capped, and the scan report is decoded
+with a strict streaming JSON decoder (bounded memory regardless of
+report size; a malformed report fails the run). Runs are serialized
+by the daemon's single executor queue; an advisory file lock
+(`flock` on `/cache/.fclones.lock`) additionally guards the shared
+cache against scans from other containers or manual `docker run`
+invocations. Wrapper-owned fclones flags (`--cache`, `-f`/`--format`)
+are rejected in `FCLONES_ARGS` at startup so user args cannot break
+the report contract.
 
 ## Dependencies
 
