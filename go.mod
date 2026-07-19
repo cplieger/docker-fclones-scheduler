@@ -1,4 +1,4 @@
-module github.com/cplieger/fclones-wrapper
+module github.com/cplieger/docker-fclones-scheduler
 
 go 1.26.5
 

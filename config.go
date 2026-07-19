@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cplieger/docker-fclones-scheduler/internal/args"
 	"github.com/cplieger/envx"
-	"github.com/cplieger/fclones-wrapper/internal/args"
 	"github.com/cplieger/scheduler/v2"
 	"github.com/cplieger/slogx"
 )

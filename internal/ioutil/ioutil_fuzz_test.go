@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/fclones-wrapper/internal/ioutil"
+	"github.com/cplieger/docker-fclones-scheduler/internal/ioutil"
 )
 
 func FuzzLimitedBuffer(f *testing.F) {
