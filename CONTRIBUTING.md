@@ -9,8 +9,8 @@ how to run the checks locally.
 
 ## Layout
 
-The Go module is `github.com/cplieger/fclones-wrapper`; the built binary is
-`wrapper`. The root `main` package is small and split by concern:
+The Go module is `github.com/cplieger/docker-fclones-scheduler`; the built
+binary is `wrapper`. The root `main` package is small and split by concern:
 
 - `main.go` — dispatch (`health` probe, the `scan` trigger client, the
   default long-running process) and the composition root `run`: it wires the

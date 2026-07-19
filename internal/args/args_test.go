@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/fclones-wrapper/internal/args"
+	"github.com/cplieger/docker-fclones-scheduler/internal/args"
 	"pgregory.net/rapid"
 )
 

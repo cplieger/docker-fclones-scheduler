@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/fclones-wrapper/internal/parsing"
+	"github.com/cplieger/docker-fclones-scheduler/internal/parsing"
 )
 
 func FuzzDecodeReport(f *testing.F) {

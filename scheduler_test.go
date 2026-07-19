@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/fclones-wrapper/internal/ioutil"
-	"github.com/cplieger/fclones-wrapper/internal/parsing"
+	"github.com/cplieger/docker-fclones-scheduler/internal/ioutil"
+	"github.com/cplieger/docker-fclones-scheduler/internal/parsing"
 	"pgregory.net/rapid"
 )
 
