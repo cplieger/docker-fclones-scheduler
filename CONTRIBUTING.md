@@ -12,15 +12,31 @@ how to run the checks locally.
 The Go module is `github.com/cplieger/fclones-wrapper`; the built binary is
 `wrapper`. The root `main` package is small and split by concern:
 
-- `main.go` — composition root. Dispatches the `health` and `scan`
-  subcommands and the default long-running daemon, and wires config plus the
-  health marker (`health.NewMarker` from `github.com/cplieger/health`). The
-  daemon dispatches on `config.Mode` (derived from `FCLONES_INTERVAL`):
-  `runBuiltin` (a startup scan plus a `scheduler.RunLoop` interval loop), `runExternal` (idle
-  until signalled, scans triggered out-of-band), and `runOnce` (a single
-  scan+action, then exit — `FCLONES_INTERVAL=0`); `runScan` is the separate
-  one-shot `scan`-subcommand path. Shutdown is driven by `signal.NotifyContext`
-  (SIGTERM/SIGINT) and a `sync.WaitGroup` that drains in-flight scans.
+- `main.go` — dispatch (`health` probe, the `scan` trigger client, the
+  default long-running process) and the composition root `run`: it wires the
+  health marker (`health.NewMarker` from `github.com/cplieger/health`) and
+  dispatches on `config.Mode` (derived from `FCLONES_INTERVAL`) — `runOnce`
+  performs a single direct scan+action and exits (`FCLONES_INTERVAL=0`),
+  while the built-in and external modes hand every run to the daemon.
+- `daemon.go` — the single owner of scan execution in the long-running
+  modes (the fleet's shared single-owner scheduler shape, emulating
+  `docker-renovate-scheduler` / `docker-rsync-scheduler`): one executor
+  goroutine (`runScans`) serves a bounded FIFO of trigger requests; the
+  built-in ticker (`startTicker`, `scheduler.RunLoop`) and every socket
+  client submit to the same queue. Shutdown is driven by
+  `signal.NotifyContext` (SIGTERM/SIGINT): admission stops, the in-flight
+  run is SIGTERM'd via its context, and queued requests get explicit
+  cancellation results.
+- `queue.go` / `server.go` / `client.go` / `protocol.go` — the trigger
+  plumbing: the bounded FIFO run queue (exactly one result per accepted
+  request, no coalescing), the owner-only unix-socket server
+  (`/tmp/fclones-wrapper.sock`), the thin synchronous `scan` client (exit
+  code = run result; never touches the marker), and the newline-JSON wire
+  frames (`queued`/`started`/`done`).
+- `health.go` — the marker path, the probe's freshness policy
+  (`probeOptions`: built-in mode arms `health.WithMaxAge`), the
+  `healthController` (the marker's single writer in the daemon modes, with
+  a shutdown drain latch), and `jobHealthSignal` (skip/interrupt carve-outs).
 - `config.go` — environment loading (`loadConfig`), logger setup
   (`setupLogger`), the `FCLONES_ACTION` allowlist (`parseAction`), the
   dangerous-flag rejection (`rejectDangerousArgs`), and the `FCLONES_INTERVAL`
@@ -29,18 +45,17 @@ The Go module is `github.com/cplieger/fclones-wrapper`; the built binary is
   built-in, `off`/`disabled` idles, `0`/`0s` runs once, and an empty,
   unparseable, or negative value warns and falls back to the `3h` default
   cadence rather than disabling scans).
-- `scheduler.go` — the two-phase run (`runFclonesJob`): `fclones group` scan
-  (`buildScanArgs`) then the dedup action (`buildActionArgs` /
-  `runFclonesAction`), each subprocess built via the `scheduler` library's
-  `NewCommandRunner`. The action-decision logic (`shouldRunAction` /
-  `suspectDrift`) tolerates fclones report-format drift; see Conventions and
-  gotchas.
-- The overlap `flock` comes from the `scheduler` library (`scheduler.TryLock`
-  on `/cache/.fclones.lock`, called from `scheduler.go`) — one mechanism
-  covering both the in-process built-in loop and cross-process external `scan`
-  invocations; a racing scan skips rather than blocking, so it never overlaps
-  the next run or corrupts the shared cache. There is no in-repo `lock.go`
-  (removed when the app adopted `scheduler`).
+- `scheduler.go` — the two-phase run (`runFclonesJob`): `fclones group
+  … -f json` scan (`buildScanArgs`) then the dedup action (`buildActionArgs`
+  / `runFclonesAction`), each subprocess built via the `scheduler` library's
+  `NewCommandRunner`. The scan report is decoded strictly
+  (`parsing.DecodeReport`); a report the wrapper cannot read fails the run
+  loudly (`outcome=decode_error`) instead of degrading stats silently.
+- In-process runs are serialized by the daemon's single executor; the
+  `flock` from the `scheduler` library (`scheduler.TryLock` on
+  `/cache/.fclones.lock`) remains solely as the cross-container guard (a
+  manual `docker run` sharing the same `/cache` volume skips rather than
+  corrupting the shared cache). There is no in-repo `lock.go`.
 - `outcome.go` — `classifyExecOutcome` is the single source of truth for the
   success / timeout / shutdown / exec_error classification used by both
   phases.
@@ -49,10 +64,11 @@ Three leaf packages under `internal/` hold the pure, well-tested logic:
 
 - `internal/args` — quote-aware argument splitter (`args.Parse`). Env-var
   argument strings are split here, never handed to a shell.
-- `internal/ioutil` — `FilteringWriter` (drops known fclones noise lines),
-  `LimitedBuffer` (bounded stderr capture), and `ReadFileWithLimit`.
-- `internal/parsing` — parsers for fclones report stats, duplicate groups,
-  and the action summary line, plus human-byte formatting.
+- `internal/ioutil` — `FilteringWriter` (drops known fclones noise lines)
+  and `LimitedBuffer` (bounded stderr capture).
+- `internal/parsing` — the strict streaming JSON scan-report decoder
+  (`DecodeReport`), the text action-summary parser (`ParseActionSummary`),
+  and human-byte formatting.
 
 ## Security guardrails (don't weaken these)
 
@@ -80,13 +96,16 @@ intact when touching `config.go` or `scheduler.go`:
      that executes an external command or mutates files in-place, extend
      `dangerousFlags` accordingly, and bump the audit comment to the new
      version (the go-builder grep gate refuses to build until it matches).
-  4. The `internal/parsing` report parsers — re-check them against the new
-     fclones report format (see the report-format drift note in Conventions and
-     gotchas).
-- Memory is bounded on purpose: per-stream capture (`streamCapBytes`, bounding
-  fclones' stderr and the action phase's stdout), the report
-  read (`outputCapBytes`, 50 MB), and the duplicate-log detail
-  (`logDetailCapBytes`). Don't read subprocess output unbounded.
+  4. The `internal/parsing` decoders — re-verify the JSON report schema at
+     the new tag (`fclones/src/report.rs`: the `header`/`groups` shape,
+     `ReportHeader.stats` remaining `Option<FileStats>`, `FileGroup`'s
+     `file_len`/`files` fields) and the text action-summary wording
+     (`Processed … reclaimed …`; see Conventions and gotchas).
+- Memory is bounded on purpose: per-stream capture (`streamCapBytes`,
+  bounding fclones' stderr and the action phase's stdout) and the
+  duplicate-log detail (`logDetailCapBytes`). The scan report needs no cap:
+  `DecodeReport` streams it group by group, retaining at most
+  `maxLoggedGroups`. Don't read subprocess output unbounded.
 
 ## Conventions and gotchas
 
@@ -103,18 +122,19 @@ intact when touching `config.go` or `scheduler.go`:
   config loading always yields a valid action.
 - Fixed container paths (`/scandir`, `/cache`) are constants, not env vars —
   they are wired through volume mounts.
-- fclones **report-format drift** is handled defensively. If a scan parses but
-  `internal/parsing` finds no duplicate groups while fclones' own report
-  disagrees (it reported a positive group count, or its `# Total:` line is
-  missing or no longer matches), the pure `suspectDrift` predicate
-  (`scheduler.go`, table-tested) makes `shouldRunAction` run the action against
-  the full report via stdin instead of skipping dedup, so an upstream
-  output-format change can't silently stop reclaiming space while the run still
-  reports healthy. `ParseStats` exposes `TotalParsed` so a missing or changed
-  `# Total:` line is distinguishable from a genuine zero. When you bump
-  `FCLONES_VERSION`, re-check the `internal/parsing` parsers against the new
-  report format; `suspectDrift` is the runtime backstop, not a substitute for
-  that re-audit.
+- fclones **report-format drift** fails loudly by design. The scan consumes
+  fclones' machine-readable JSON report (`-f json`, wrapper-owned flag);
+  `parsing.DecodeReport` is strict (missing header/stats, a malformed or
+  truncated document, a group without a keeper+duplicate, or a group count
+  disagreeing with the header are all errors), so an upstream format change
+  is a failed run with `outcome=decode_error` — never silently zeroed stats.
+  The one surviving text surface is the ACTION summary line
+  (`ParseActionSummary`): an unrecognized summary logs the
+  "possible fclones format drift" warning (`resolveActionSummary`) that the
+  documented alert rule catches. When you bump `FCLONES_VERSION`, re-verify
+  both surfaces per the version-bump checklist above; the loud decode and
+  the drift warning are runtime backstops, not substitutes for that
+  re-audit.
 
 ## Running checks locally
 

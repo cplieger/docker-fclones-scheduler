@@ -2,9 +2,6 @@ package ioutil_test
 
 import (
 	"bytes"
-	"math"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -138,48 +135,6 @@ func FuzzFilteringWriter(f *testing.F) {
 			if filtered(line) {
 				t.Fatalf("emitted complete line %q would be filtered for input %q", line, input)
 			}
-		}
-	})
-}
-
-func FuzzReadFileWithLimit(f *testing.F) {
-	f.Add([]byte("hello"), int64(100))
-	f.Add([]byte(""), int64(0))
-	f.Add([]byte("exact"), int64(5))
-	f.Add([]byte("over the limit"), int64(1))
-	f.Add([]byte(strings.Repeat("x", 70000)), int64(65536))
-	f.Add([]byte("near-max"), int64(math.MaxInt64))
-	f.Add([]byte("near-max-1"), int64(math.MaxInt64-1))
-	f.Add([]byte("neg"), int64(-1))
-	f.Fuzz(func(t *testing.T, content []byte, limit int64) {
-		// Bound the on-disk fixture (not the limit): cap the file at 1 MiB so
-		// the temp write stays cheap, while leaving `limit` fully fuzzable across
-		// the int64 range so the coverage-guided run can reach the MaxInt64
-		// overflow guard and the negative-limit rejection path.
-		if len(content) > 1<<20 {
-			content = content[:1<<20]
-		}
-
-		path := filepath.Join(t.TempDir(), "data.bin")
-		if err := os.WriteFile(path, content, 0o644); err != nil {
-			t.Fatalf("WriteFile: %v", err)
-		}
-
-		data, err := ioutil.ReadFileWithLimit(path, limit)
-		if err != nil {
-			if int64(len(content)) <= limit {
-				t.Fatalf("ReadFileWithLimit(%d-byte file, limit=%d) errored %v, want success", len(content), limit, err)
-			}
-			if data != nil {
-				t.Fatalf("error path returned %d bytes, want nil data", len(data))
-			}
-			return
-		}
-		if int64(len(data)) > limit {
-			t.Fatalf("returned %d bytes exceeds cap %d", len(data), limit)
-		}
-		if string(data) != string(content) {
-			t.Fatalf("returned %d bytes, want the %d-byte file content verbatim", len(data), len(content))
 		}
 	})
 }

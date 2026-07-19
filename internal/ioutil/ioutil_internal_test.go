@@ -9,7 +9,7 @@ import (
 // shouldFilterLine is unexported (no production caller outside this package),
 // so its tests live here in the internal (package ioutil) test file rather
 // than the external ioutil_test package. The external tests cover the public
-// surface (FilteringWriter / LimitedBuffer / ReadFileWithLimit); these pin the
+// surface (FilteringWriter / LimitedBuffer); these pin the
 // noise-filter predicate directly. FuzzShouldFilterLine deliberately
 // re-declares the noise pattern lists as an independent level-keyed oracle (not
 // the production infoProgressPatterns/warnNoisePatterns vars), so a wrong edit to

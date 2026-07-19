@@ -33,8 +33,8 @@ func TestBuildScanArgs(t *testing.T) {
 		{
 			name:    "basic config",
 			cfg:     config{ScanPath: "/data", Args: "--min-size 1024"},
-			want:    []string{"group", "/data", "--min-size", "1024", "--cache"},
-			wantLen: 5,
+			want:    []string{"group", "/data", "--min-size", "1024", "--cache", "-f", "json"},
+			wantLen: 7,
 		},
 		{
 			name:    "invalid scan path quotes",
@@ -49,12 +49,12 @@ func TestBuildScanArgs(t *testing.T) {
 		{
 			name:    "empty args",
 			cfg:     config{ScanPath: "/data", Args: ""},
-			wantLen: 3,
+			wantLen: 5,
 		},
 		{
 			name:    "extra args",
 			cfg:     config{ScanPath: "/data", Args: "--min-size 1M --threads 4"},
-			wantLen: 7,
+			wantLen: 9,
 		},
 		{
 			name:    "invalid scan path unterminated",
@@ -69,10 +69,14 @@ func TestBuildScanArgs(t *testing.T) {
 		{
 			name:    "multiple paths",
 			cfg:     config{ScanPath: "/data /media /backup", Args: ""},
-			want:    []string{"group", "/data", "/media", "/backup", "--cache"},
-			wantLen: 5,
+			want:    []string{"group", "/data", "/media", "/backup", "--cache", "-f", "json"},
+			wantLen: 7,
 		},
 	}
+
+	// wrapperOwnedSuffix is the wrapper-appended tail every scan invocation
+	// must end with: the shared cache flag plus the JSON report contract.
+	wrapperOwnedSuffix := []string{"--cache", "-f", "json"}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -90,8 +94,8 @@ func TestBuildScanArgs(t *testing.T) {
 			if got[0] != "group" {
 				t.Errorf("first arg = %q, want \"group\"", got[0])
 			}
-			if got[len(got)-1] != "--cache" {
-				t.Errorf("last arg = %q, want \"--cache\"", got[len(got)-1])
+			if len(got) < 4 || !slices.Equal(got[len(got)-3:], wrapperOwnedSuffix) {
+				t.Errorf("args = %v, want them to end with %v", got, wrapperOwnedSuffix)
 			}
 			if tt.wantLen > 0 && len(got) != tt.wantLen {
 				t.Errorf("len = %d, want %d: %v", len(got), tt.wantLen, got)
@@ -190,19 +194,6 @@ func TestBuildActionArgsAllActions(t *testing.T) {
 	}
 }
 
-// --- Tests: countDuplicateFiles ---
-
-func TestCountDuplicateFiles(t *testing.T) {
-	t.Parallel()
-	groups := []parsing.DuplicateGroup{
-		{Keeper: "/a", Duplicates: []string{"/b", "/c"}},
-		{Keeper: "/d", Duplicates: []string{"/e"}},
-	}
-	if got := countDuplicateFiles(groups); got != 3 {
-		t.Errorf("countDuplicateFiles = %d, want 3", got)
-	}
-}
-
 // --- Property-based tests ---
 
 func TestProperty_BuildActionArgsNilForGroup(t *testing.T) {
@@ -265,8 +256,8 @@ func TestProperty_BuildScanArgsStructure(t *testing.T) {
 		if got[0] != "group" {
 			rt.Fatalf("buildScanArgs: first arg = %q, want \"group\"", got[0])
 		}
-		if got[len(got)-1] != "--cache" {
-			rt.Fatalf("buildScanArgs: last arg = %q, want \"--cache\"", got[len(got)-1])
+		if len(got) < 4 || !slices.Equal(got[len(got)-3:], []string{"--cache", "-f", "json"}) {
+			rt.Fatalf("buildScanArgs: args = %v, want the wrapper-owned suffix [--cache -f json]", got)
 		}
 	})
 }
@@ -357,7 +348,10 @@ func TestMarkerAction(t *testing.T) {
 
 // --- Tests: logDuplicateGroups ---
 
-func makeDupGroups(n, dupsPerGroup, pathLen int) []parsing.DuplicateGroup {
+// makeDupReport builds a parsing.Report with n RETAINED groups of
+// dupsPerGroup duplicates each, whose document totals equal the retained
+// content (pass overrides to model a retention-capped decode).
+func makeDupReport(n, dupsPerGroup, pathLen int) *parsing.Report {
 	groups := make([]parsing.DuplicateGroup, n)
 	for i := range groups {
 		dups := make([]string, dupsPerGroup)
@@ -370,7 +364,11 @@ func makeDupGroups(n, dupsPerGroup, pathLen int) []parsing.DuplicateGroup {
 			Duplicates: dups,
 		}
 	}
-	return groups
+	return &parsing.Report{
+		Groups:          groups,
+		TotalGroups:     n,
+		TotalDuplicates: n * dupsPerGroup,
+	}
 }
 
 func TestLogDuplicateGroups(t *testing.T) {
@@ -383,8 +381,7 @@ func TestLogDuplicateGroups(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		groups := makeDupGroups(3, 2, 8)
-		logDuplicateGroups(log, groups)
+		logDuplicateGroups(log, makeDupReport(3, 2, 8))
 
 		out := buf.String()
 		if got := strings.Count(out, dupFileMsg); got != 6 {
@@ -400,8 +397,7 @@ func TestLogDuplicateGroups(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		groups := makeDupGroups(1, 100, 1024)
-		logDuplicateGroups(log, groups)
+		logDuplicateGroups(log, makeDupReport(1, 100, 1024))
 
 		out := buf.String()
 		if emitted := strings.Count(out, dupFileMsg); emitted == 0 || emitted >= 100 {
@@ -420,8 +416,7 @@ func TestLogDuplicateGroups(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		groups := makeDupGroups(1, 600, 2)
-		logDuplicateGroups(log, groups)
+		logDuplicateGroups(log, makeDupReport(1, 600, 2))
 
 		out := buf.String()
 		if got := strings.Count(out, dupFileMsg); got != 500 {
@@ -435,20 +430,28 @@ func TestLogDuplicateGroups(t *testing.T) {
 		}
 	})
 
-	t.Run("stops at the 100-group cap", func(t *testing.T) {
+	t.Run("reports document totals when the decoder capped retention", func(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		groups := makeDupGroups(150, 1, 2)
-		logDuplicateGroups(log, groups)
+		// Model a retention-capped decode: maxLoggedGroups retained groups,
+		// but a 150-group document. Every retained pair is emitted and the
+		// truncation summary reports the full-document totals.
+		report := makeDupReport(maxLoggedGroups, 1, 2)
+		report.TotalGroups = 150
+		report.TotalDuplicates = 150
+		logDuplicateGroups(log, report)
 
 		out := buf.String()
-		if got := strings.Count(out, dupFileMsg); got != 100 {
-			t.Errorf("emitted %d duplicate-file lines, want 100 (group cap)", got)
+		if got := strings.Count(out, dupFileMsg); got != maxLoggedGroups {
+			t.Errorf("emitted %d duplicate-file lines, want %d (retained groups)", got, maxLoggedGroups)
 		}
 		if !strings.Contains(out, "duplicate pairs truncated") {
 			t.Error("missing final pairs-truncated summary")
+		}
+		if !strings.Contains(out, "total_pairs=150") || !strings.Contains(out, "total_groups=150") {
+			t.Errorf("truncation summary must carry the document totals, got %q", out)
 		}
 	})
 
@@ -463,10 +466,12 @@ func TestLogDuplicateGroups(t *testing.T) {
 		// drop this pair and log "byte cap reached" instead.
 		keeper := strings.Repeat("k", 10)
 		dup := strings.Repeat("d", logDetailCapBytes-10)
-		groups := []parsing.DuplicateGroup{
-			{Keeper: keeper, SizePerDup: "1 KB", Duplicates: []string{dup}},
+		report := parsing.Report{
+			Groups:          []parsing.DuplicateGroup{{Keeper: keeper, SizePerDup: "1 KB", Duplicates: []string{dup}}},
+			TotalGroups:     1,
+			TotalDuplicates: 1,
 		}
-		logDuplicateGroups(log, groups)
+		logDuplicateGroups(log, &report)
 
 		out := buf.String()
 		if got := strings.Count(out, dupFileMsg); got != 1 {
@@ -482,11 +487,15 @@ func TestLogDuplicateGroups(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		groups := []parsing.DuplicateGroup{
-			{Keeper: "/a/keeper", SizePerDup: "1 KB", Duplicates: []string{"/a/dup"}},
-			{Keeper: "/b/keeper", SizePerDup: "1 KB", Duplicates: []string{"/b/dup"}},
+		report := parsing.Report{
+			Groups: []parsing.DuplicateGroup{
+				{Keeper: "/a/keeper", SizePerDup: "1 KB", Duplicates: []string{"/a/dup"}},
+				{Keeper: "/b/keeper", SizePerDup: "1 KB", Duplicates: []string{"/b/dup"}},
+			},
+			TotalGroups:     2,
+			TotalDuplicates: 2,
 		}
-		logDuplicateGroups(log, groups)
+		logDuplicateGroups(log, &report)
 
 		// Groups are displayed one-based: group index i is rendered as group
 		// i+1, so the first group is group=1 and the second group=2. A shifted
@@ -501,151 +510,38 @@ func TestLogDuplicateGroups(t *testing.T) {
 	})
 }
 
-func TestMaybeWarnGroupCountDrift(t *testing.T) {
-	t.Parallel()
-
-	const driftMsg = "group count mismatch, possible fclones format drift"
-
-	t.Run("warns when reported and parsed counts differ", func(t *testing.T) {
-		t.Parallel()
-		var buf bytes.Buffer
-		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-
-		maybeWarnGroupCountDrift(log, true, 5, true, true, 3)
-
-		out := buf.String()
-		if !strings.Contains(out, driftMsg) {
-			t.Errorf("maybeWarnGroupCountDrift(reported=5, parsed=3): no drift warning, got %q", out)
-		}
-		if !strings.Contains(out, "reported_groups=5") || !strings.Contains(out, "parsed_groups=3") {
-			t.Errorf("maybeWarnGroupCountDrift(reported=5, parsed=3): warning missing counts, got %q", out)
-		}
-	})
-
-	t.Run("silent when counts match", func(t *testing.T) {
-		t.Parallel()
-		var buf bytes.Buffer
-		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-
-		maybeWarnGroupCountDrift(log, true, 7, true, true, 7)
-
-		if out := buf.String(); out != "" {
-			t.Errorf("maybeWarnGroupCountDrift(reported=7, parsed=7) = %q, want no log", out)
-		}
-	})
-
-	t.Run("silent when report was not parsed even on mismatch", func(t *testing.T) {
-		t.Parallel()
-		var buf bytes.Buffer
-		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-
-		maybeWarnGroupCountDrift(log, false, 5, true, true, 3)
-
-		if out := buf.String(); out != "" {
-			t.Errorf("maybeWarnGroupCountDrift(reportParsed=false) = %q, want no log", out)
-		}
-	})
-
-	t.Run("warns when reported count is non-numeric", func(t *testing.T) {
-		t.Parallel()
-		var buf bytes.Buffer
-		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-
-		// The '# Total:' line parsed but its group-count token is non-numeric
-		// (reportedOK=false), e.g. a thousands-separated count. That unreadable
-		// count is a drift mode suspectDrift acts on, so report-only group mode
-		// must surface it here rather than skip silently.
-		maybeWarnGroupCountDrift(log, true, 0, false, true, 3)
-
-		out := buf.String()
-		if !strings.Contains(out, "fclones '# Total:' group count is non-numeric") {
-			t.Errorf("maybeWarnGroupCountDrift(reportedOK=false): no format-drift warning, got %q", out)
-		}
-		if !strings.Contains(out, "parsed_groups=3") {
-			t.Errorf("maybeWarnGroupCountDrift(reportedOK=false): warning missing parsed_groups, got %q", out)
-		}
-	})
-
-	t.Run("warns when the # Total line could not be parsed", func(t *testing.T) {
-		t.Parallel()
-		var buf bytes.Buffer
-		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-
-		// The '# Total:' line is absent/reformatted (totalParsed=false): even with
-		// a numeric fallback count that happens to match parsed (0), the most severe
-		// drift mode must surface a warning, including in report-only group mode.
-		maybeWarnGroupCountDrift(log, true, 0, true, false, 0)
-
-		out := buf.String()
-		if !strings.Contains(out, "fclones '# Total:' line missing or reformatted") {
-			t.Errorf("maybeWarnGroupCountDrift(totalParsed=false): no format-drift warning, got %q", out)
-		}
-		if !strings.Contains(out, "parsed_groups=0") {
-			t.Errorf("maybeWarnGroupCountDrift(totalParsed=false): warning missing parsed_groups, got %q", out)
-		}
-	})
-}
-
 func TestShouldRunAction(t *testing.T) {
 	t.Parallel()
 
-	t.Run("skips and logs when parsed report has no duplicates and action is not group", func(t *testing.T) {
+	t.Run("skips and logs when no duplicates and action is not group", func(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		got := shouldRunAction(log, &config{Action: actionLink}, true, false, false)
+		got := shouldRunAction(log, &config{Action: actionLink}, false)
 
 		if got {
-			t.Error("shouldRunAction(parsed=true, dups=false, action=link) = true, want false")
+			t.Error("shouldRunAction(dups=false, action=link) = true, want false")
 		}
-		if !strings.Contains(buf.String(), `msg="action skipped"`) {
-			t.Errorf("expected 'action skipped' log, got %q", buf.String())
+		if !strings.Contains(buf.String(), `msg="action skipped"`) || !strings.Contains(buf.String(), "reason=no_duplicates") {
+			t.Errorf("expected 'action skipped' log with reason=no_duplicates, got %q", buf.String())
 		}
 	})
 
-	t.Run("runs and warns when parsed report has zero groups but drift is suspected", func(t *testing.T) {
+	t.Run("skips silently for the group action regardless of duplicates", func(t *testing.T) {
 		t.Parallel()
-		var buf bytes.Buffer
-		log := slog.New(slog.NewTextHandler(&buf, nil))
+		for _, dups := range []bool{false, true} {
+			var buf bytes.Buffer
+			log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		got := shouldRunAction(log, &config{Action: actionLink}, true, false, true)
+			got := shouldRunAction(log, &config{Action: actionGroup}, dups)
 
-		if !got {
-			t.Error("shouldRunAction(parsed=true, dups=false, drift=true, action=link) = false, want true")
-		}
-		if !strings.Contains(buf.String(), "group_count_drift") {
-			t.Errorf("expected group_count_drift warning, got %q", buf.String())
-		}
-	})
-
-	t.Run("skips silently when no duplicates and action is group", func(t *testing.T) {
-		t.Parallel()
-		var buf bytes.Buffer
-		log := slog.New(slog.NewTextHandler(&buf, nil))
-
-		got := shouldRunAction(log, &config{Action: actionGroup}, true, false, false)
-
-		if got {
-			t.Error("shouldRunAction(parsed=true, dups=false, action=group) = true, want false")
-		}
-		if strings.Contains(buf.String(), "action skipped") {
-			t.Errorf("group action with no dups should not log 'action skipped', got %q", buf.String())
-		}
-	})
-
-	t.Run("ignores drift for group action (nothing to dedup)", func(t *testing.T) {
-		t.Parallel()
-		var buf bytes.Buffer
-		log := slog.New(slog.NewTextHandler(&buf, nil))
-
-		got := shouldRunAction(log, &config{Action: actionGroup}, true, false, true)
-
-		if got {
-			t.Error("shouldRunAction(parsed=true, dups=false, drift=true, action=group) = true, want false")
-		}
-		if strings.Contains(buf.String(), "group_count_drift") {
-			t.Errorf("group action should not emit a drift warning, got %q", buf.String())
+			if got {
+				t.Errorf("shouldRunAction(dups=%v, action=group) = true, want false (report-only has no action)", dups)
+			}
+			if buf.Len() != 0 {
+				t.Errorf("group action must skip silently, got %q", buf.String())
+			}
 		}
 	})
 
@@ -654,43 +550,13 @@ func TestShouldRunAction(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		got := shouldRunAction(log, &config{Action: actionLink}, true, true, false)
+		got := shouldRunAction(log, &config{Action: actionLink}, true)
 
 		if !got {
-			t.Error("shouldRunAction(parsed=true, dups=true, action=link) = false, want true")
+			t.Error("shouldRunAction(dups=true, action=link) = false, want true")
 		}
 		if buf.Len() != 0 {
 			t.Errorf("expected no log when duplicates found, got %q", buf.String())
-		}
-	})
-
-	t.Run("runs and warns when report unparseable and action is not group", func(t *testing.T) {
-		t.Parallel()
-		var buf bytes.Buffer
-		log := slog.New(slog.NewTextHandler(&buf, nil))
-
-		got := shouldRunAction(log, &config{Action: actionRemove}, false, false, false)
-
-		if !got {
-			t.Error("shouldRunAction(parsed=false, action=remove) = false, want true")
-		}
-		if !strings.Contains(buf.String(), "running action without parsed report") {
-			t.Errorf("expected degraded-run warning, got %q", buf.String())
-		}
-	})
-
-	t.Run("runs silently when report unparseable and action is group", func(t *testing.T) {
-		t.Parallel()
-		var buf bytes.Buffer
-		log := slog.New(slog.NewTextHandler(&buf, nil))
-
-		got := shouldRunAction(log, &config{Action: actionGroup}, false, false, false)
-
-		if !got {
-			t.Error("shouldRunAction(parsed=false, action=group) = false, want true")
-		}
-		if strings.Contains(buf.String(), "running action without parsed report") {
-			t.Errorf("group action should not warn about unparseable report, got %q", buf.String())
 		}
 	})
 }
@@ -756,104 +622,6 @@ func TestPhaseContext(t *testing.T) {
 			t.Errorf("ctx.Err() = %v, want context.Canceled", ctx.Err())
 		}
 	})
-}
-
-func TestReportedGroupCount(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		in        string
-		wantCount int
-		wantOK    bool
-	}{
-		{"5", 5, true},
-		{"0", 0, true},
-		{"", 0, false},
-		{"abc", 0, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.in, func(t *testing.T) {
-			t.Parallel()
-			gotCount, gotOK := reportedGroupCount(tt.in)
-			if gotCount != tt.wantCount || gotOK != tt.wantOK {
-				t.Errorf("reportedGroupCount(%q) = (%d, %v), want (%d, %v)",
-					tt.in, gotCount, gotOK, tt.wantCount, tt.wantOK)
-			}
-		})
-	}
-}
-
-func TestSuspectDrift(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name           string
-		reportParsed   bool
-		hasDuplicates  bool
-		totalParsed    bool
-		reportedOK     bool
-		reportedGroups int
-		want           bool
-	}{
-		{
-			name:           "duplicates found is never drift",
-			reportParsed:   true,
-			hasDuplicates:  true,
-			totalParsed:    true,
-			reportedOK:     true,
-			reportedGroups: 0,
-			want:           false,
-		},
-		{
-			name:         "unparsed report is not drift (handled separately)",
-			reportParsed: false,
-			totalParsed:  false,
-			reportedOK:   true,
-			want:         false,
-		},
-		{
-			name:           "genuine empty scan: total parsed, zero groups",
-			reportParsed:   true,
-			hasDuplicates:  false,
-			totalParsed:    true,
-			reportedOK:     true,
-			reportedGroups: 0,
-			want:           false,
-		},
-		{
-			name:           "partial drift: fclones reported groups, parser found none",
-			reportParsed:   true,
-			hasDuplicates:  false,
-			totalParsed:    true,
-			reportedOK:     true,
-			reportedGroups: 5,
-			want:           true,
-		},
-		{
-			name:          "full drift: Total line absent or reformatted",
-			reportParsed:  true,
-			hasDuplicates: false,
-			totalParsed:   false,
-			reportedOK:    true,
-			want:          true,
-		},
-		{
-			name:          "count drift: Total line present but count non-numeric",
-			reportParsed:  true,
-			hasDuplicates: false,
-			totalParsed:   true,
-			reportedOK:    false,
-			want:          true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := suspectDrift(tt.reportParsed, tt.hasDuplicates, tt.totalParsed, tt.reportedOK, tt.reportedGroups)
-			if got != tt.want {
-				t.Errorf("suspectDrift(parsed=%v, dups=%v, totalParsed=%v, reportedOK=%v, groups=%d) = %v, want %v",
-					tt.reportParsed, tt.hasDuplicates, tt.totalParsed, tt.reportedOK, tt.reportedGroups, got, tt.want)
-			}
-		})
-	}
 }
 
 // --- Tests: sweepStaleReports ---
