@@ -15,6 +15,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/cplieger/jsonx/bounded"
 )
 
 // Report is a decoded fclones JSON scan report: the header's exact numeric
@@ -79,13 +81,19 @@ type DuplicateGroup struct {
 // per-pair logging (non-positive retains none); totals are counted across
 // the whole document regardless.
 //
-// Strictness contract: a malformed or truncated document, a missing header,
-// an absent or null header.stats, a missing groups array, a group with fewer
-// than two files or a negative file_len, or a header group_count that
-// disagrees with the streamed group count is an error -- the caller fails
-// the run loudly. Unknown fields at any level are tolerated so additive
-// upstream changes do not break the wrapper. The keeper is files[0]
-// (fclones' own keep-first semantics).
+// Strictness contract: a malformed or truncated document, trailing data
+// after the top-level object, a missing header, an absent or null
+// header.stats, a missing groups array, a group with fewer than two files
+// or a negative file_len, or a header group_count that disagrees with the
+// streamed group count is an error -- the caller fails the run loudly.
+// Unknown fields at any level are tolerated so additive upstream changes do
+// not break the wrapper. The keeper is files[0] (fclones' own keep-first
+// semantics).
+//
+// The token walk is built on jsonx/bounded with no element budget or array
+// cap (both 0): the report is fclones' own local output, not an untrusted
+// upstream, so the decoder is used for its streaming walk, not its
+// cardinality caps.
 //
 // Wire shape verified against pinned upstream fclones v0.35.0
 // (fclones/src/report.rs: SerializableReport{header, groups},
@@ -93,39 +101,43 @@ type DuplicateGroup struct {
 // files}); the format is stable since fclones 0.18. Re-verify on every
 // FCLONES_VERSION bump (see CONTRIBUTING).
 func DecodeReport(r io.Reader, keepGroups int) (Report, error) {
-	dec := json.NewDecoder(r)
+	d := bounded.NewDecoder(r, 0)
+	rd := reportDecoder{keepGroups: keepGroups}
 
-	if err := expectDelim(dec, json.Delim('{')); err != nil {
+	if err := d.Object(func(key string) error { return rd.field(d, key) }); err != nil {
+		if rd.fieldErr != nil {
+			return Report{}, rd.fieldErr // already carries its field context
+		}
 		return Report{}, fmt.Errorf("report: %w", err)
 	}
-	header, report, groupsSeen, err := decodeReportBody(dec, keepGroups)
-	if err != nil {
-		return Report{}, err
-	}
-	if err := expectDelim(dec, json.Delim('}')); err != nil {
+	if err := d.End(); err != nil {
 		return Report{}, fmt.Errorf("report: %w", err)
 	}
 
 	switch {
-	case header == nil:
+	case rd.header == nil:
 		return Report{}, errors.New("report: missing header")
-	case header.Stats == nil:
+	case rd.header.Stats == nil:
 		return Report{}, errors.New("report: header carries no stats (null or absent)")
-	case !groupsSeen:
+	case !rd.groupsSeen:
 		return Report{}, errors.New("report: missing groups array")
-	case header.Stats.GroupCount != report.TotalGroups:
+	case rd.header.Stats.GroupCount != rd.report.TotalGroups:
 		return Report{}, fmt.Errorf("report: header stats claim %d groups but the document carries %d",
-			header.Stats.GroupCount, report.TotalGroups)
+			rd.header.Stats.GroupCount, rd.report.TotalGroups)
 	}
 
-	report.Stats = *header.Stats
-	return report, nil
+	rd.report.Stats = *rd.header.Stats
+	return rd.report, nil
 }
 
-// reportDecoder carries the mutable accounting for decodeReportBody as it
-// walks the top-level object's key/value pairs.
+// reportDecoder carries the mutable accounting for the top-level object
+// walk. fieldErr records a failure raised inside the field callback, so
+// DecodeReport can tell it apart from a structural error bounded.Object
+// itself produced (only the latter needs the generic "report:" prefix; a
+// field error already carries its own context).
 type reportDecoder struct {
 	header     *reportHeaderJSON
+	fieldErr   error
 	report     Report
 	keepGroups int
 	groupsSeen bool
@@ -133,57 +145,48 @@ type reportDecoder struct {
 
 // field dispatches one top-level key: the header is decoded eagerly (it is
 // small), the groups array is streamed via decodeGroups, and unknown fields
-// are skipped so additive upstream changes do not break the wrapper.
-func (d *reportDecoder) field(dec *json.Decoder, key string) error {
+// are token-skipped without materializing so additive upstream changes do
+// not break the wrapper.
+func (rd *reportDecoder) field(d *bounded.Decoder, key string) error {
 	switch key {
 	case "header":
-		d.header = new(reportHeaderJSON)
-		if err := dec.Decode(d.header); err != nil {
-			return fmt.Errorf("report header: %w", err)
+		rd.header = new(reportHeaderJSON)
+		if err := d.Decode(rd.header); err != nil {
+			return rd.fail(fmt.Errorf("report header: %w", err))
 		}
 	case "groups":
-		d.groupsSeen = true
-		return decodeGroups(dec, d.keepGroups, &d.report)
+		rd.groupsSeen = true
+		if err := decodeGroups(d, rd.keepGroups, &rd.report); err != nil {
+			return rd.fail(err)
+		}
 	default:
 		// Unknown top-level fields are tolerated: skip the value.
-		var skip json.RawMessage
-		if err := dec.Decode(&skip); err != nil {
-			return fmt.Errorf("report field %q: %w", key, err)
+		if err := d.Skip(); err != nil {
+			return rd.fail(fmt.Errorf("report field %q: %w", key, err))
 		}
 	}
 	return nil
 }
 
-// decodeReportBody consumes the top-level object's key/value pairs into a
-// reportDecoder and returns its accounting.
-func decodeReportBody(dec *json.Decoder, keepGroups int) (header *reportHeaderJSON, report Report, groupsSeen bool, err error) {
-	d := reportDecoder{keepGroups: keepGroups}
-	for dec.More() {
-		keyTok, tokErr := dec.Token()
-		if tokErr != nil {
-			return nil, Report{}, false, fmt.Errorf("report key: %w", tokErr)
-		}
-		key, ok := keyTok.(string)
-		if !ok {
-			return nil, Report{}, false, fmt.Errorf("report: unexpected token %v where an object key was expected", keyTok)
-		}
-		if fieldErr := d.field(dec, key); fieldErr != nil {
-			return nil, Report{}, false, fieldErr
-		}
-	}
-	return d.header, d.report, d.groupsSeen, nil
+// fail records err as the walk's field-level failure and returns it.
+func (rd *reportDecoder) fail(err error) error {
+	rd.fieldErr = err
+	return err
 }
 
 // decodeGroups streams the groups array, retaining at most keepGroups mapped
 // groups in report.Groups while counting full-document totals, and validates
-// each group's structure as it passes.
-func decodeGroups(dec *json.Decoder, keepGroups int, report *Report) error {
-	if err := expectDelim(dec, json.Delim('[')); err != nil {
+// each group's structure as it passes. Elements are decoded one at a time --
+// deliberately not bounded.Array, which materializes every element into one
+// slice and would defeat the bounded-memory retention this decoder exists
+// for.
+func decodeGroups(d *bounded.Decoder, keepGroups int, report *Report) error {
+	if err := openStrict(d, json.Delim('[')); err != nil {
 		return fmt.Errorf("report groups: %w", err)
 	}
-	for dec.More() {
+	for d.More() {
 		var g reportGroupJSON
-		if err := dec.Decode(&g); err != nil {
+		if err := d.Decode(&g); err != nil {
 			return fmt.Errorf("report group %d: %w", report.TotalGroups, err)
 		}
 		if len(g.Files) < 2 {
@@ -203,21 +206,24 @@ func decodeGroups(dec *json.Decoder, keepGroups int, report *Report) error {
 		report.TotalGroups++
 		report.TotalDuplicates += len(g.Files) - 1
 	}
-	if err := expectDelim(dec, json.Delim(']')); err != nil {
+	if err := d.Close(); err != nil {
 		return fmt.Errorf("report groups: %w", err)
 	}
 	return nil
 }
 
-// expectDelim consumes one token from dec and verifies it is the wanted
-// structural delimiter.
-func expectDelim(dec *json.Decoder, want json.Delim) error {
-	tok, err := dec.Token()
+// openStrict consumes a container's opening delimiter via bounded.Open,
+// treating a JSON null (Open's ok=false, no error) as malformed: this
+// decoder has no use for json.Unmarshal's null-into-container tolerance --
+// a null where the report's structure belongs is upstream drift and must
+// fail loudly.
+func openStrict(d *bounded.Decoder, delim json.Delim) error {
+	ok, err := d.Open(delim)
 	if err != nil {
 		return err
 	}
-	if d, ok := tok.(json.Delim); !ok || d != want {
-		return fmt.Errorf("unexpected token %v, want %q", tok, want)
+	if !ok {
+		return errors.New("unexpected null")
 	}
 	return nil
 }
