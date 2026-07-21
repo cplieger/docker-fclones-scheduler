@@ -13,3 +13,7 @@ require (
 	github.com/cplieger/envx v1.2.1
 	github.com/cplieger/scheduler/v2 v2.0.0
 )
+
+// release-gated: the bounded subpackage is unreleased; resolved via a local
+// go.work until jsonx v1.2.0 tags.
+require github.com/cplieger/jsonx v1.2.0

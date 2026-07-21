@@ -19,6 +19,8 @@ func FuzzDecodeReport(f *testing.F) {
 	f.Add(`{"groups":[]}`, 0)                                      // missing header
 	f.Add(`{"header":{"stats":{"group_count":9}},"groups":[]}`, 5) // count mismatch
 	f.Add("# Redundant: 5 files (1.2 GB)\n", 100)                  // old text format
+	f.Add(valid+`{"second":true}`, 100)                            // trailing data rejected
+	f.Add(`{"header":{"stats":null},"groups":null}`, 1)            // null groups rejected
 	f.Add("", -1)
 	f.Fuzz(func(t *testing.T, doc string, keep int) {
 		got, err := parsing.DecodeReport(strings.NewReader(doc), keep)

@@ -213,6 +213,28 @@ func TestDecodeReport_errors(t *testing.T) {
 			doc:     reportDoc(statsJSON(0, 0, 0), `{}`),
 			wantSub: "groups",
 		},
+		{
+			// A null where the groups array belongs is upstream drift, not
+			// json.Unmarshal's nil-slice tolerance: the walk fails loudly.
+			name:    "null groups array",
+			doc:     reportDoc(statsJSON(0, 0, 0), `null`),
+			wantSub: "unexpected null",
+		},
+		{
+			// A null document walks as an empty object (no keys), so the
+			// missing-header cross-check rejects it.
+			name:    "null document",
+			doc:     `null`,
+			wantSub: "missing header",
+		},
+		{
+			// Anything after the top-level object's closing brace is
+			// rejected (the decoder's whole-input strictness): a
+			// concatenated second document must not be silently ignored.
+			name:    "trailing data after the document",
+			doc:     reportDoc(statsJSON(1, 1, 10), oneGroup) + `{"second":true}`,
+			wantSub: "trailing data",
+		},
 	}
 
 	for _, tt := range tests {
