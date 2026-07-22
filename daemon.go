@@ -80,7 +80,7 @@ func runDaemon(ctx context.Context, cfg *config, hc *healthController, newCmd sc
 	executorDone := make(chan struct{})
 	go func() {
 		defer close(executorDone)
-		d.runScans(ctx)
+		trigger.Execute(ctx, d.queue, d.run)
 	}()
 
 	// The broker owns the wire (decode, event relay, handler draining); the
@@ -164,23 +164,13 @@ func (d *daemon) tick(trig string) {
 	<-j.Result()
 }
 
-// runScans is the executor: the only code in the daemon modes that runs a
-// scan. It serves the queue strictly in order until the queue is closed and
-// drained. Once shutdown is signalled, remaining requests are cancelled —
-// delivered as explicit not-ok results with a reason — instead of run, so a
-// stop request is never followed by a fresh run.
-func (d *daemon) runScans(ctx context.Context) {
-	for j := range d.queue.Jobs() {
-		if ctx.Err() != nil {
-			j.Finish(trigger.Outcome{OK: false, Reason: "cancelled: scheduler shutting down"})
-			continue
-		}
-		d.execute(ctx, j)
-	}
-}
-
-// execute performs one request: signal the waiter, run the scan+action job,
-// route the outcome through the health controller, and deliver the result.
+// run performs one request: run the scan+action job, route the outcome
+// through the health controller, and return the result. The job lifecycle
+// around it belongs to trigger.Execute — the daemon's single executor loop —
+// which checks the shutdown ctx before each start (queued requests behind a
+// stop are cancelled with an explicit result, never run) and guarantees
+// exactly one delivered result per accepted request, even if this callback
+// panics.
 //
 // The run executes under the shutdown-cancellable ctx on purpose: SIGTERM
 // interrupts an in-flight fclones phase (SIGTERM-then-grace via the command
@@ -188,11 +178,10 @@ func (d *daemon) runScans(ctx context.Context) {
 // from registering as a failure. A cross-container lock skip (ran=false, no
 // error) performed no scan: it writes no marker and reports ok with a
 // reason, preserving the documented overlap tolerance for external triggers.
-func (d *daemon) execute(ctx context.Context, j *trigger.Job[struct{}]) {
-	j.Start()
+func (d *daemon) run(ctx context.Context, trig string, _ struct{}) trigger.Outcome {
 	start := time.Now()
 
-	ran, err := runFclonesJob(ctx, d.cfg, j.Trigger, d.newCmd)
+	ran, err := runFclonesJob(ctx, d.cfg, trig, d.newCmd)
 	if set, healthy := jobHealthSignal(ctx.Err(), ran, err); set {
 		d.hc.apply(healthy)
 	}
@@ -201,5 +190,5 @@ func (d *daemon) execute(ctx context.Context, j *trigger.Job[struct{}]) {
 	if !ran && err == nil {
 		out.Reason = "skipped: scan lock held by another process sharing /cache"
 	}
-	j.Finish(out)
+	return out
 }
