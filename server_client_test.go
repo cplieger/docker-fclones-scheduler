@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/scheduler/v2/trigger"
+	"github.com/cplieger/scheduler/v3/trigger"
 )
 
 // startTestDaemon binds a trigger server on a per-test socket with a fake

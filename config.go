@@ -14,7 +14,7 @@ import (
 
 	"github.com/cplieger/docker-fclones-scheduler/internal/args"
 	"github.com/cplieger/envx"
-	"github.com/cplieger/scheduler/v2"
+	"github.com/cplieger/scheduler/v3"
 	"github.com/cplieger/slogx"
 )
 
