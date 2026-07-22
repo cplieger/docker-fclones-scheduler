@@ -15,3 +15,5 @@ require (
 )
 
 require github.com/cplieger/jsonx v1.2.0
+
+replace github.com/cplieger/scheduler/v2 => ../scheduler

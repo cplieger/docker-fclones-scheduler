@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cplieger/scheduler/v2"
+	"github.com/cplieger/scheduler/v2/trigger"
 )
 
 // --- Daemon: the single owner of scan execution ---
@@ -22,11 +23,25 @@ import (
 // exec-child design could not offer. The /cache flock inside runFclonesJob
 // remains as the cross-container guard (a manual `docker run` sharing the
 // same /cache volume), demoted from correctness mechanism to belt and
-// braces.
+// braces. The queue, socket server, and wire protocol are the scheduler
+// library's trigger broker (`scheduler/v2/trigger`); this file wires it and
+// owns the policy — executor semantics and log wording.
+
+// socketPath is the daemon's trigger socket. /tmp is per-container tmpfs, so
+// the path never collides across containers and a stale file can only be our
+// own previous life's.
+const socketPath = "/tmp/fclones-wrapper.sock"
+
+// queueCapacity bounds pending requests in the trigger broker's FIFO. The
+// realistic trigger set is one periodic trigger (Ofelia) plus a manual exec,
+// so 16 is generous headroom; a client hitting a full queue is rejected
+// immediately with a clear reason (honest backpressure) rather than queued
+// unboundedly.
+const queueCapacity = 16
 
 // daemon carries the executor's dependencies.
 type daemon struct {
-	queue *runQueue
+	queue *trigger.Queue[struct{}]
 	// hc is the single writer of the health marker; every run outcome
 	// funnels through it (drain latch, interrupted-clean carve-out,
 	// lock-skip no-signal).
@@ -42,7 +57,7 @@ type daemon struct {
 // sibling schedulers' file configs there is nothing to reload per run.
 // Returning an error exits non-zero.
 func runDaemon(ctx context.Context, cfg *config, hc *healthController, newCmd scheduler.CommandRunner) error {
-	ln, err := listenTrigger(socketPath)
+	ln, err := trigger.Listen(socketPath)
 	if err != nil {
 		slog.Error("cannot bind trigger socket", "path", socketPath, "error", err)
 		hc.markUnhealthy()
@@ -56,7 +71,7 @@ func runDaemon(ctx context.Context, cfg *config, hc *healthController, newCmd sc
 	hc.markInitial(cfg.Mode == modeExternal)
 
 	d := &daemon{
-		queue:  newRunQueue(queueCapacity),
+		queue:  trigger.NewQueue[struct{}](queueCapacity),
 		hc:     hc,
 		cfg:    cfg,
 		newCmd: newCmd,
@@ -68,8 +83,17 @@ func runDaemon(ctx context.Context, cfg *config, hc *healthController, newCmd sc
 		d.runScans(ctx)
 	}()
 
-	srv := &triggerServer{queue: d.queue}
-	go srv.serve(ln)
+	// The broker owns the wire (decode, event relay, handler draining); the
+	// hook only supplies this app's log vocabulary. A scan takes no
+	// arguments, so there is nothing app-specific to say on rejection — the
+	// library's payload-free warning matches the previous wording.
+	srv := &trigger.Server[struct{}]{
+		Queue: d.queue,
+		OnAccepted: func(struct{}) {
+			slog.Info("triggered scan queued")
+		},
+	}
+	srv.Serve(ln)
 
 	tickerDone := startTicker(ctx, d, cfg.Interval, cfg.Mode == modeBuiltin)
 
@@ -91,10 +115,10 @@ func runDaemon(ctx context.Context, cfg *config, hc *healthController, newCmd sc
 	// request resolves; the handlers return once every accepted request has
 	// its final event on the wire.
 	_ = ln.Close()
-	d.queue.close()
+	d.queue.Close()
 	<-executorDone
 	<-tickerDone
-	srv.handlers.Wait()
+	srv.Wait()
 	slog.Info("shutdown complete")
 	return nil
 }
@@ -115,11 +139,11 @@ func startTicker(ctx context.Context, d *daemon, interval time.Duration, enabled
 		defer close(done)
 		startupDone := false
 		scheduler.RunLoop(ctx, func(context.Context) {
-			trigger := "interval"
+			trig := "interval"
 			if !startupDone {
-				trigger, startupDone = "startup", true
+				trig, startupDone = "startup", true
 			}
-			d.tick(trigger)
+			d.tick(trig)
 		}, scheduler.LoopOptions{Interval: interval, FireOnStart: true})
 	}()
 	return done
@@ -131,13 +155,13 @@ func startTicker(ctx context.Context, d *daemon, interval time.Duration, enabled
 // wait always resolves). A rejected submission — the queue full of external
 // requests, or shutdown racing the tick — is logged and skipped: the next
 // interval provides freshness.
-func (d *daemon) tick(trigger string) {
-	r := newRequest(trigger)
-	if err := d.queue.submit(r); err != nil {
-		slog.Warn("scheduled scan skipped", "trigger", trigger, "reason", err)
+func (d *daemon) tick(trig string) {
+	j := trigger.NewJob(trig, struct{}{})
+	if err := d.queue.Submit(j); err != nil {
+		slog.Warn("scheduled scan skipped", "trigger", trig, "reason", err)
 		return
 	}
-	<-r.result
+	<-j.Result()
 }
 
 // runScans is the executor: the only code in the daemon modes that runs a
@@ -146,12 +170,12 @@ func (d *daemon) tick(trigger string) {
 // delivered as explicit not-ok results with a reason — instead of run, so a
 // stop request is never followed by a fresh run.
 func (d *daemon) runScans(ctx context.Context) {
-	for r := range d.queue.requests {
+	for j := range d.queue.Jobs() {
 		if ctx.Err() != nil {
-			r.finish(runOutcome{ok: false, reason: "cancelled: scheduler shutting down"})
+			j.Finish(trigger.Outcome{OK: false, Reason: "cancelled: scheduler shutting down"})
 			continue
 		}
-		d.execute(ctx, r)
+		d.execute(ctx, j)
 	}
 }
 
@@ -164,18 +188,18 @@ func (d *daemon) runScans(ctx context.Context) {
 // from registering as a failure. A cross-container lock skip (ran=false, no
 // error) performed no scan: it writes no marker and reports ok with a
 // reason, preserving the documented overlap tolerance for external triggers.
-func (d *daemon) execute(ctx context.Context, r *request) {
-	close(r.started)
+func (d *daemon) execute(ctx context.Context, j *trigger.Job[struct{}]) {
+	j.Start()
 	start := time.Now()
 
-	ran, err := runFclonesJob(ctx, d.cfg, r.trigger, d.newCmd)
+	ran, err := runFclonesJob(ctx, d.cfg, j.Trigger, d.newCmd)
 	if set, healthy := jobHealthSignal(ctx.Err(), ran, err); set {
 		d.hc.apply(healthy)
 	}
 
-	out := runOutcome{ok: err == nil, duration: time.Since(start)}
+	out := trigger.Outcome{OK: err == nil, Duration: time.Since(start)}
 	if !ran && err == nil {
-		out.reason = "skipped: scan lock held by another process sharing /cache"
+		out.Reason = "skipped: scan lock held by another process sharing /cache"
 	}
-	r.finish(out)
+	j.Finish(out)
 }
