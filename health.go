@@ -7,7 +7,7 @@ import (
 
 	"github.com/cplieger/envx"
 	"github.com/cplieger/health"
-	"github.com/cplieger/scheduler/v2"
+	"github.com/cplieger/scheduler/v3"
 )
 
 // healthMarkerPath is where the health marker file lives. Docker's

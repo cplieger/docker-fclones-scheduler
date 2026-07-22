@@ -6,8 +6,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/cplieger/scheduler/v2"
-	"github.com/cplieger/scheduler/v2/trigger"
+	"github.com/cplieger/scheduler/v3"
+	"github.com/cplieger/scheduler/v3/trigger"
 )
 
 // --- Daemon: the single owner of scan execution ---

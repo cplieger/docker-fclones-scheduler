@@ -15,7 +15,7 @@ import (
 	"github.com/cplieger/docker-fclones-scheduler/internal/args"
 	"github.com/cplieger/docker-fclones-scheduler/internal/ioutil"
 	"github.com/cplieger/docker-fclones-scheduler/internal/parsing"
-	"github.com/cplieger/scheduler/v2"
+	"github.com/cplieger/scheduler/v3"
 )
 
 // defaultCommandRunner builds the fclones subprocess commands with graceful
