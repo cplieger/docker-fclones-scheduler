@@ -26,13 +26,16 @@ binary is `wrapper`. The root `main` package is small and split by concern:
   client submit to the same queue. Shutdown is driven by
   `signal.NotifyContext` (SIGTERM/SIGINT): admission stops, the in-flight
   run is SIGTERM'd via its context, and queued requests get explicit
-  cancellation results.
-- `queue.go` / `server.go` / `client.go` / `protocol.go` — the trigger
-  plumbing: the bounded FIFO run queue (exactly one result per accepted
-  request, no coalescing), the owner-only unix-socket server
-  (`/tmp/fclones-wrapper.sock`), the thin synchronous `scan` client (exit
-  code = run result; never touches the marker), and the newline-JSON wire
-  frames (`queued`/`started`/`done`).
+  cancellation results. The trigger plumbing itself — the bounded FIFO
+  queue (exactly one result per accepted request, no coalescing), the
+  owner-only unix-socket server (`/tmp/fclones-wrapper.sock`), and the
+  newline-JSON wire frames (`queued`/`started`/`done`) — is the
+  `scheduler` library's broker (`scheduler/v2/trigger`, payload
+  `struct{}`: a scan takes no arguments); `daemon.go` wires it and owns
+  the policy (executor semantics, log wording).
+- `client.go` — the thin synchronous `scan` client (exit code = run
+  result; never touches the marker): an adapter over `trigger.Submit`
+  owning this app's lifecycle log lines and exit-code mapping.
 - `health.go` — the marker path, the probe's freshness policy
   (`probeOptions`: built-in mode arms `health.WithMaxAge`), the
   `healthController` (the marker's single writer in the daemon modes, with
