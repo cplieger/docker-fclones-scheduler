@@ -55,6 +55,46 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
       exit 1; \
     fi
 
+# ---------------------------------------------------------------------------
+# Embedded SBOM fragment. The final image is distroless static (no OS package
+# DB) and fclones is a plain Rust release build (not cargo-auditable), so
+# Syft sees the Go wrapper via its embedded buildinfo but /usr/bin/fclones is
+# invisible to the signed release SBOM and to vulnerability scanners.
+# Generate a CycloneDX fragment from the same Renovate-tracked
+# FCLONES_VERSION ARG the build pins — a Renovate bump keeps the SBOM correct
+# with zero extra maintenance — and ship it in the final image (see the COPY
+# there) where Syft's sbom-cataloger picks it up. The cataloger is enabled
+# centrally by the release pipeline (cplieger/ci); no per-repo .syft.yaml is
+# needed.
+# purl: pkg:cargo/fclones — fclones IS the crates.io-published crate of the
+# same name (bin name `fclones`, published by upstream pkolaczk), and the
+# cargo purl type keys scanners into the RustSec/GHSA crates ecosystem, the
+# strongest advisory matching available for a Rust payload; a pkg:github
+# purl would carry forge provenance but match almost no advisory data. The
+# version is identical on both provenance paths — amd64 ships the upstream
+# prebuilt musl release tarball, arm64 builds the same release from source
+# at the pinned FCLONES_COMMIT — so this one component covers both.
+# cpe: omitted — the NVD CPE dictionary carries no fclones entry as of
+# 2026-07-22 (keyword search: 0 products); do not invent one. Add the field
+# if NVD ever assigns fclones a CPE.
+# ---------------------------------------------------------------------------
+RUN cat > /usr/src/fclones-scheduler.cdx.json <<EOF
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "components": [
+    {
+      "bom-ref": "pkg:cargo/fclones@${FCLONES_VERSION#v}",
+      "type": "application",
+      "name": "fclones",
+      "version": "${FCLONES_VERSION#v}",
+      "purl": "pkg:cargo/fclones@${FCLONES_VERSION#v}"
+    }
+  ]
+}
+EOF
+
 FROM golang:1.26-trixie@sha256:4ee9ffa999b4583ce281939cdff828763083610292f252279a0cee77473bd9a7 AS go-builder
 ENV GOTOOLCHAIN=auto
 
@@ -78,11 +118,37 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /wrapper .
 
+# ---------------------------------------------------------------------------
+# SBOM test stage — asserts the embedded CycloneDX fragment ships correct
+# (exists, JSON-object-shaped, names fclones at the ARG-derived version) and
+# pins the final-stage COPY directive, because the distroless final stage has
+# no shell to assert in (docker-static-web's scratch pattern). The final
+# stage COPYs the fragment from THIS stage, so a failing assertion fails the
+# centralized `ci / validate` docker build gate.
+# ---------------------------------------------------------------------------
+FROM fclones-builder AS sbom-test
+ARG FCLONES_VERSION
+COPY Dockerfile /tmp/Dockerfile
+COPY tests/sbom-smoke.sh /tmp/tests/sbom-smoke.sh
+# ${FCLONES_VERSION:?} fails the build if the ARG wiring ever breaks, so the
+# smoke test's exact-version assertion can never be skipped in-image.
+RUN FCLONES_EXPECTED_VERSION="${FCLONES_VERSION:?}" \
+    DOCKERFILE=/tmp/Dockerfile \
+    SBOM_FRAGMENT=/usr/src/fclones-scheduler.cdx.json \
+    sh /tmp/tests/sbom-smoke.sh
+
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6
 
 WORKDIR /app
 COPY --chmod=755 --from=fclones-builder /usr/src/fclones/fclones /usr/bin/fclones
 COPY --chmod=755 --from=go-builder /wrapper /app/wrapper
+# CycloneDX SBOM fragment for the Rust-built fclones payload (generated in
+# the fclones-builder stage from the Renovate-tracked version ARG). Placed
+# where the release pipeline's Syft sbom-cataloger inventories it, so SBOMs
+# and scanners see fclones alongside the Go wrapper's buildinfo. Copied
+# --from=sbom-test (not the builder) so that stage's assertions gate the
+# shipped file.
+COPY --from=sbom-test /usr/src/fclones-scheduler.cdx.json /usr/share/sbom/fclones-scheduler.cdx.json
 # XDG_CACHE_HOME puts fclones' cache on the persistent /cache volume instead of
 # ephemeral container storage.
 # HOME=/tmp gives any operator-chosen UID a writable home for tools that consult $HOME;
