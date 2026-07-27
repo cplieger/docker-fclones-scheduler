@@ -4,7 +4,8 @@ services:
     image: ghcr.io/cplieger/docker-fclones-scheduler:latest
     container_name: fclones
     restart: unless-stopped
-    user: "1000:1000"  # match your host user
+    # Override with PUID/PGID in .env; defaults to 1000:1000.
+    user: "${PUID:-1000}:${PGID:-1000}"  # match your host user
 
     environment:
       FCLONES_INTERVAL: "1h"  # Go duration; "off" = external trigger, "0" = run once; see README "Scheduling modes"

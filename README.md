@@ -43,7 +43,8 @@ services:
     image: ghcr.io/cplieger/docker-fclones-scheduler:latest
     container_name: fclones
     restart: unless-stopped
-    user: "1000:1000"  # match your host user
+    # Override with PUID/PGID in .env; defaults to 1000:1000.
+    user: "${PUID:-1000}:${PGID:-1000}"  # match your host user
 
     environment:
       FCLONES_INTERVAL: "1h"  # Go duration (e.g. 1h, 30m, 12h)
@@ -86,7 +87,7 @@ services:
     image: ghcr.io/cplieger/docker-fclones-scheduler:latest
     container_name: fclones
     restart: unless-stopped
-    user: "1000:1000"
+    user: "${PUID:-1000}:${PGID:-1000}"
     environment:
       FCLONES_INTERVAL: "off"   # disable built-in loop; Ofelia drives it
       FCLONES_SCAN_PATHS: "/scandir"
