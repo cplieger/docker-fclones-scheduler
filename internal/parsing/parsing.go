@@ -37,18 +37,20 @@ type Report struct {
 	TotalDuplicates int
 }
 
-// ReportStats carries the fclones report-header statistics. Upstream
-// (fclones FileStats, serialized by serde as snake_case bare integers)
-// declares the container Option<FileStats>; DecodeReport rejects the
-// null/absent case, so consumers always see concrete values.
+// ReportStats carries the fclones report-header statistics the wrapper
+// consumes: GroupCount for the header/document cross-check and
+// RedundantFileSize for the reclaimable total on the `scan complete` log
+// line. Upstream's FileStats carries further keys (total_file_count,
+// total_file_size, redundant_file_count, missing_file_count,
+// missing_file_size); they are deliberately not mapped and pass through the
+// decoder's unknown-field tolerance -- add a field here only alongside the
+// consumer that reads it. Upstream (fclones FileStats, serialized by serde
+// as snake_case bare integers) declares the container Option<FileStats>;
+// DecodeReport rejects the null/absent case, so consumers always see
+// concrete values.
 type ReportStats struct {
-	GroupCount         int   `json:"group_count"`
-	TotalFileCount     int   `json:"total_file_count"`
-	TotalFileSize      int64 `json:"total_file_size"`
-	RedundantFileCount int   `json:"redundant_file_count"`
-	RedundantFileSize  int64 `json:"redundant_file_size"`
-	MissingFileCount   int   `json:"missing_file_count"`
-	MissingFileSize    int64 `json:"missing_file_size"`
+	GroupCount        int   `json:"group_count"`
+	RedundantFileSize int64 `json:"redundant_file_size"`
 }
 
 // reportHeaderJSON mirrors the fclones ReportHeader fields the decoder
