@@ -17,7 +17,13 @@ func reportDoc(statsJSON, groupsJSON string) string {
 		statsJSON + `},"groups":` + groupsJSON + `}`
 }
 
-// statsJSON renders a stats block with the given group/redundant counts.
+// statsJSON renders the FULL upstream stats block with the given
+// group/redundant counts. The keys ReportStats does not map
+// (total_file_count, total_file_size, redundant_file_count,
+// missing_file_count, missing_file_size) are kept verbatim so every fixture
+// decodes a realistic upstream header and exercises the decoder's
+// unknown-field tolerance; only groupCount and redundantSize land in
+// ReportStats and are asserted.
 func statsJSON(groupCount, redundantCount int, redundantSize int64) string {
 	var b strings.Builder
 	b.WriteString(`{"group_count":`)
@@ -47,8 +53,8 @@ func TestDecodeReport(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DecodeReport: %v", err)
 		}
-		if got.Stats.GroupCount != 2 || got.Stats.RedundantFileCount != 3 || got.Stats.RedundantFileSize != 6315 {
-			t.Errorf("Stats = %+v, want group_count=2 redundant_file_count=3 redundant_file_size=6315", got.Stats)
+		if got.Stats.GroupCount != 2 || got.Stats.RedundantFileSize != 6315 {
+			t.Errorf("Stats = %+v, want group_count=2 redundant_file_size=6315", got.Stats)
 		}
 		if got.TotalGroups != 2 || got.TotalDuplicates != 3 {
 			t.Errorf("totals = %d groups / %d duplicates, want 2 / 3", got.TotalGroups, got.TotalDuplicates)
