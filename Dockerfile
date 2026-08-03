@@ -26,10 +26,15 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
 # Consume the global FCLONES_VERSION (declared before the first FROM with its
 # renovate datasource comment) in this stage.
 ARG FCLONES_VERSION
-# Integrity pins -- re-verify on every version bump (stale pin fail-closes the build).
-# amd64: sha256 of fclones-<version>-linux-musl-x86_64.tar.gz
+# Integrity pins -- a stale pin fail-closes the build. The amd64 sha256 is
+# recomputed in the version-bump PR itself by the repin postUpgradeTask, which
+# reads the marker below for the release-asset URL.
+# repin: dep=pkolaczk/fclones url=https://github.com/pkolaczk/fclones/releases/download/{version}/fclones-{version_nov}-linux-musl-x86_64.tar.gz
 ARG FCLONES_SHA256_AMD64=9eae0466e5b78871cf25822e503ee9efbfa28dc36cc167060c4a4920306389ac
-# arm64: commit that the FCLONES_VERSION tag dereferences to (git tags are mutable; pin the commit)
+# arm64: commit that the FCLONES_VERSION tag dereferences to (git tags are
+# mutable; pin the commit). No script moves this one -- recompute it by hand on
+# every version bump:
+#   git ls-remote https://github.com/pkolaczk/fclones.git "refs/tags/<version>^{}"
 ARG FCLONES_COMMIT=a74f90d293e05856d19a4c0ac2b29b46ef16cf23
 RUN VERSION="${FCLONES_VERSION#v}" && \
     ARCH=$(dpkg --print-architecture) && \

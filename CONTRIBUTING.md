@@ -90,9 +90,12 @@ intact when touching `config.go` or `scheduler.go`:
   must preserve this opt-in gate.
 - When the `FCLONES_VERSION` Renovate PR bumps the version, four coupled
   artifacts must move in lockstep (each fail-closes the build if stale, so a
-  broken build after a bump usually means one was missed):
-  1. `ARG FCLONES_SHA256_AMD64` (Dockerfile): recompute as the sha256 of the
-     new `fclones-<version>-linux-musl-x86_64.tar.gz` release asset.
+  broken build after a bump usually means one was missed). The first is
+  automated; the other three still need a human on every bump:
+  1. `ARG FCLONES_SHA256_AMD64` (Dockerfile): recomputed in the bump PR itself
+     by the repin `postUpgradeTasks` script, which reads the `# repin:` marker
+     above the ARG for the release-asset URL. Only touch it by hand if the PR
+     body reports an artifact problem for that task.
   2. `ARG FCLONES_COMMIT` (Dockerfile): set to the commit the new
      `FCLONES_VERSION` tag dereferences to (`git rev-parse <tag>`); tags are
      mutable, so the arm64 source build pins the commit.
