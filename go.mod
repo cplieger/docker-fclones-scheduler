@@ -3,7 +3,7 @@ module github.com/cplieger/docker-fclones-scheduler
 go 1.26.5
 
 require (
-	github.com/cplieger/health v1.4.0
+	github.com/cplieger/health v1.5.0
 	pgregory.net/rapid v1.3.0
 )
 
