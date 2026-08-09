@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -161,7 +162,15 @@ func setupLogger() {
 func loadScanTimeout() (time.Duration, error) {
 	scanTimeout, ok, err := envx.DurationStrict("FCLONES_SCAN_TIMEOUT")
 	if err != nil {
-		raw := os.Getenv("FCLONES_SCAN_TIMEOUT")
+		// The rejected value comes back on the error (envx v1.6.0), so this does
+		// not re-read the environment. That matters beyond tidiness: os.Getenv
+		// returns the value UNTRIMMED, so it could name " 5x " beside a parse
+		// error about "5x". perr.Value is the string the parse actually failed on.
+		var perr *envx.ParseError
+		raw := ""
+		if errors.As(err, &perr) {
+			raw = perr.Value
+		}
 		slog.Error("invalid FCLONES_SCAN_TIMEOUT", "value", raw, logKeyOutcome, "config_error", "error", err)
 		return 0, fmt.Errorf("invalid FCLONES_SCAN_TIMEOUT %q: %w", raw, err)
 	}
@@ -169,10 +178,12 @@ func loadScanTimeout() (time.Duration, error) {
 		return defaultScanTimeout, nil
 	}
 	if scanTimeout < 0 {
-		raw := os.Getenv("FCLONES_SCAN_TIMEOUT")
+		// No ParseError here: the value PARSED and is merely negative, so the
+		// duration itself is the honest thing to name, and it needs no second
+		// environment read either.
 		slog.Error("invalid FCLONES_SCAN_TIMEOUT",
-			"value", raw, logKeyOutcome, "config_error", "error", "must be zero (no timeout) or a positive duration")
-		return 0, fmt.Errorf("invalid FCLONES_SCAN_TIMEOUT %q: must be zero (no timeout) or positive", raw)
+			"value", scanTimeout.String(), logKeyOutcome, "config_error", "error", "must be zero (no timeout) or a positive duration")
+		return 0, fmt.Errorf("invalid FCLONES_SCAN_TIMEOUT %q: must be zero (no timeout) or positive", scanTimeout.String())
 	}
 	return scanTimeout, nil
 }
