@@ -439,7 +439,35 @@ func TestLoadConfigScanTimeoutNonPositive(t *testing.T) {
 		if !strings.Contains(err.Error(), "invalid FCLONES_SCAN_TIMEOUT") {
 			t.Errorf("error = %q, want to contain 'invalid FCLONES_SCAN_TIMEOUT'", err)
 		}
+		// The value parsed, so there is no envx.ParseError to read it from; the
+		// duration itself is what the message names. Pins that it is the
+		// duration rather than a rune literal (%q on a time.Duration renders
+		// one, which is what a bare `scanTimeout` here would have produced).
+		if !strings.Contains(err.Error(), `"-1h0m0s"`) {
+			t.Errorf("error = %q, want it to quote the rejected duration -1h0m0s", err)
+		}
 	})
+}
+
+// TestLoadConfigInvalidScanTimeoutQuotesTheTrimmedValue pins what envx v1.6.0's
+// *ParseError bought here: the diagnostic names the value the PARSER saw, not a
+// second read of the environment. os.Getenv returns the value untrimmed, so the
+// old shape quoted " 5x " where the parse error beside it said "5x" — the two
+// halves of one message disagreeing about what was rejected.
+func TestLoadConfigInvalidScanTimeoutQuotesTheTrimmedValue(t *testing.T) {
+	setCleanFclonesEnv(t)
+	t.Setenv("FCLONES_SCAN_TIMEOUT", "  5x\t")
+
+	_, err := loadConfig()
+	if err == nil {
+		t.Fatal("expected error for invalid scan timeout")
+	}
+	if !strings.Contains(err.Error(), `"5x"`) {
+		t.Errorf("error = %q, want it to quote the trimmed value \"5x\"", err)
+	}
+	if strings.Contains(err.Error(), `"  5x`) {
+		t.Errorf("error = %q, still quotes the untrimmed environment value", err)
+	}
 }
 
 // --- Tests: parseAction ---
