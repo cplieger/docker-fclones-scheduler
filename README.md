@@ -259,7 +259,7 @@ Updated automatically via [Renovate](https://github.com/renovatebot/renovate); b
 
 ## Credits
 
-This project packages [fclones](https://github.com/pkolaczk/fclones) into a container image. All credit for the core functionality goes to the upstream maintainers.
+This project packages [fclones](https://github.com/pkolaczk/fclones) (MIT) into a container image. All credit for the core functionality goes to the upstream maintainers.
 
 ## Contributing
 
@@ -274,4 +274,4 @@ This project was built with AI-assisted tooling using [Claude](https://claude.co
 
 ## License
 
-GPL-3.0. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE).
