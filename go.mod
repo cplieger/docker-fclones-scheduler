@@ -10,7 +10,7 @@ require (
 require github.com/cplieger/slogx v1.6.1
 
 require (
-	github.com/cplieger/envx v1.6.1
+	github.com/cplieger/envx v1.6.2
 	github.com/cplieger/scheduler/v3 v3.0.1
 )
 
