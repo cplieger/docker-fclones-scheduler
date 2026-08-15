@@ -252,9 +252,9 @@ func parseInterval(raw string) (interval time.Duration, mode runMode) {
 	}
 }
 
-// Dangerous fclones flags that execute arbitrary commands.
+// Dangerous fclones flags that execute arbitrary commands or modify files in
+// place.
 const (
-	flagCommand   = "--command"
 	flagTransform = "--transform"
 	flagInPlace   = "--in-place"
 	flagNoCopy    = "--no-copy"
@@ -266,7 +266,15 @@ const (
 // to --transform and bypass this list) and (2) gives no short alias to a
 // command-executing / in-place flag. Re-verify both in fclones config.rs/main.rs
 // on a version bump, in addition to diffing `--help` for new exec/in-place flags.
-var dangerousFlags = []string{flagCommand, flagTransform, flagInPlace, flagNoCopy}
+//
+// A fourth entry, --command, was carried here until 2026-08 and blocked
+// nothing: fclones has no such flag in any release from v0.15.0 to v0.35.0
+// (the exec flag has always been --transform, whose clap value_name happens to
+// be "command"). Removed rather than kept as insurance, because a denylist
+// naming a flag that does not exist reads to a user of this image as a real
+// blocked capability. Every entry above was checked against `--help` output
+// from the pinned binary.
+var dangerousFlags = []string{flagTransform, flagInPlace, flagNoCopy}
 
 // wrapperOwnedFlags are fclones long flags the wrapper itself appends to the
 // scan invocation (buildScanArgs): --cache shares the hash cache across runs,

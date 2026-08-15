@@ -85,9 +85,12 @@ intact when touching `config.go` or `scheduler.go`:
   `args.Parse`. Never route argument strings through `sh -c` or any shell.
 - `FCLONES_ACTION` is validated against the `group` / `remove` / `link` /
   `dedupe` allowlist in `parseAction`.
-- `--command`, `--transform`, `--in-place`, and `--no-copy` are rejected in
+- `--transform`, `--in-place`, and `--no-copy` are rejected in
   `rejectDangerousArgs` unless `FCLONES_ALLOW_UNSAFE=true`. New flag handling
-  must preserve this opt-in gate.
+  must preserve this opt-in gate. Every entry must exist in the pinned fclones:
+  a fourth entry, `--command`, sat here until 2026-08 and blocked nothing,
+  because fclones has no such flag (its exec flag has always been
+  `--transform`, whose clap `value_name` is `command`).
 - `rejectPositionalArgs` rejects a bare (non-flag) token in `FCLONES_ARGS` and
   `FCLONES_ACTION_ARGS` in both safety modes, because fclones would read it as
   an extra input path: with a pattern that names nothing the run fails on
