@@ -124,12 +124,38 @@ Set `FCLONES_INTERVAL=0` (or `0s`). The container runs exactly one scan and dedu
 | --- | --- | --- | --- |
 | `FCLONES_INTERVAL` | Built-in scan interval as a Go duration (e.g. `1h`, `30m`, `12h`); the first scan runs at startup. Set to `off` (or `disabled`) to idle and trigger scans externally, or to `0` (or `0s`) to run a single scan and exit (see [Scheduling modes](#scheduling-modes)). Falls back to `3h` on an unset, unparseable, or negative value. | `3h` | No |
 | `FCLONES_SCAN_PATHS` | Paths inside the container to scan for duplicates. Must match the volume mounts. Multiple paths can be space-separated (e.g. `/media /photos`), each requiring a corresponding volume mount. | `/scandir` | No |
-| `FCLONES_ARGS` | Extra arguments passed to the `fclones group` scan phase. The wrapper owns `--cache` and the report format (`-f json`); passing `--cache`, `-f`, or `--format` here is rejected at startup. | `(none)` | No |
+| `FCLONES_ARGS` | Extra arguments passed to the `fclones group` scan phase. Flags and their values only; a bare token is rejected at startup (see [Passing extra fclones arguments](#passing-extra-fclones-arguments)). The wrapper owns `--cache` and the report format (`-f json`); passing `--cache`, `-f`, or `--format` here is rejected at startup. | `(none)` | No |
 | `FCLONES_ACTION` | Dedup action after scan: `group` (report only), `link` (hardlink), `remove` (delete), or `dedupe` (reflink/copy-on-write) | `group` | No |
-| `FCLONES_ACTION_ARGS` | Extra arguments for the dedup action phase | `(none)` | No |
+| `FCLONES_ACTION_ARGS` | Extra arguments for the dedup action phase. Flags and their values only, same rule as `FCLONES_ARGS`. | `(none)` | No |
 | `FCLONES_ALLOW_UNSAFE` | Set to `true` to allow dangerous flags (`--command`, `--transform`, `--in-place`, `--no-copy`) | `false` | No |
 | `FCLONES_SCAN_TIMEOUT` | Per-phase timeout (Go duration) applied to each fclones scan and action phase. A phase exceeding it is terminated and the run is marked unhealthy. Set to `0` for no timeout (the phase runs until it finishes or the container stops). Raise for large filesystems whose initial scan can exceed 12h. | `12h` | No |
 | `FCLONES_LOG_LEVEL` | slog level: `debug`, `info`, `warn`/`warning`, or `error`. Unrecognized values fall back to `info`. | `info` | No |
+
+### Passing extra fclones arguments
+
+`FCLONES_ARGS` and `FCLONES_ACTION_ARGS` carry flags and their values only.
+Scan paths belong in `FCLONES_SCAN_PATHS`, so the wrapper rejects a bare
+(non-flag) token at startup and names it in the error.
+
+Every repeatable fclones filter (`--name`, `--path`, `--exclude`,
+`--keep-name`, `--keep-path`) takes **one value per flag**. fclones reads a
+second bare pattern as another input path, resolves it against the container
+working directory, and fails the scan with `Can't access '/app/<pattern>'`:
+
+```
+# Works, one flag per pattern
+FCLONES_ARGS: "--name '*.mp4' --name '*.mkv'"
+
+# Works, one glob for both extensions
+FCLONES_ARGS: "--name '*.{mp4,mkv}'"
+
+# Rejected at startup, '*.mkv' is a bare token that fclones reads as a path
+FCLONES_ARGS: "--name '*.mp4' '*.mkv'"
+```
+
+The multi-value example in the [fclones
+README](https://github.com/pkolaczk/fclones#finding-files) has the same
+defect, so a config copied from there needs the repeated flag too.
 
 ### Volumes
 

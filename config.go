@@ -199,40 +199,7 @@ func loadConfig() (config, error) {
 	scanPaths := envx.String("FCLONES_SCAN_PATHS", scanDir)
 	argsStr := envx.String("FCLONES_ARGS", "")
 	actionArgs := envx.String("FCLONES_ACTION_ARGS", "")
-	// FCLONES_ALLOW_UNSAFE deliberately accepts ONLY the exact spelling
-	// "true" (case-insensitive), not envx.Bool's tolerant 1/yes/on set: the
-	// flag disables command-injection guardrails, so the accepted vocabulary
-	// stays as narrow as possible. Do not "clean up" to envx.Bool.
-	if strings.EqualFold(envx.String("FCLONES_ALLOW_UNSAFE", "false"), "true") {
-		slog.Warn("unsafe flags allowed, command injection guardrails disabled",
-			"env", "FCLONES_ALLOW_UNSAFE")
-		// Unsafe mode skips the dangerous-flag check but must still validate
-		// argument syntax so a quoting typo fails fast at startup.
-		for _, p := range []struct{ raw, env string }{
-			{argsStr, "FCLONES_ARGS"},
-			{actionArgs, "FCLONES_ACTION_ARGS"},
-			{scanPaths, "FCLONES_SCAN_PATHS"},
-		} {
-			if _, perr := parseArgString(p.raw, p.env); perr != nil {
-				return config{}, perr
-			}
-		}
-	} else {
-		if err := rejectDangerousArgs(argsStr, "FCLONES_ARGS"); err != nil {
-			return config{}, err
-		}
-		if err := rejectDangerousArgs(actionArgs, "FCLONES_ACTION_ARGS"); err != nil {
-			return config{}, err
-		}
-		if err := rejectDangerousArgs(scanPaths, "FCLONES_SCAN_PATHS"); err != nil {
-			return config{}, err
-		}
-	}
-
-	// Wrapper-owned flags are rejected unconditionally -- even under
-	// FCLONES_ALLOW_UNSAFE, which relaxes the safety guardrails, not the
-	// wrapper's own report/cache contract.
-	if err := rejectWrapperOwnedArgs(argsStr); err != nil {
+	if err := validateArgEnvs(argsStr, actionArgs, scanPaths); err != nil {
 		return config{}, err
 	}
 
@@ -334,6 +301,99 @@ func rejectWrapperOwnedArgs(raw string) error {
 				"flag", arg, "env", "FCLONES_ARGS", logKeyOutcome, "config_error")
 			return fmt.Errorf("wrapper-owned flag %q not allowed in FCLONES_ARGS (the wrapper sets --cache and -f json itself)", arg)
 		}
+	}
+	return nil
+}
+
+// validateArgEnvs runs every startup gate over the three env vars that carry
+// fclones arguments: quoting syntax, the dangerous-flag denylist, the
+// wrapper-owned flags, and positional tokens. Only the denylist is relaxed by
+// FCLONES_ALLOW_UNSAFE; the other two are contracts rather than safety
+// guardrails, so they hold in both modes.
+func validateArgEnvs(argsStr, actionArgs, scanPaths string) error {
+	// FCLONES_ALLOW_UNSAFE deliberately accepts ONLY the exact spelling
+	// "true" (case-insensitive), not envx.Bool's tolerant 1/yes/on set: the
+	// flag disables command-injection guardrails, so the accepted vocabulary
+	// stays as narrow as possible. Do not "clean up" to envx.Bool.
+	unsafeAllowed := strings.EqualFold(envx.String("FCLONES_ALLOW_UNSAFE", "false"), "true")
+	if unsafeAllowed {
+		slog.Warn("unsafe flags allowed, command injection guardrails disabled",
+			"env", "FCLONES_ALLOW_UNSAFE")
+	}
+	for _, p := range []struct{ raw, env string }{
+		{argsStr, "FCLONES_ARGS"},
+		{actionArgs, "FCLONES_ACTION_ARGS"},
+		{scanPaths, "FCLONES_SCAN_PATHS"},
+	} {
+		if unsafeAllowed {
+			// Unsafe mode skips the dangerous-flag check but must still validate
+			// argument syntax so a quoting typo fails fast at startup.
+			if _, err := parseArgString(p.raw, p.env); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := rejectDangerousArgs(p.raw, p.env); err != nil {
+			return err
+		}
+	}
+
+	// Wrapper-owned flags are rejected unconditionally -- even under
+	// FCLONES_ALLOW_UNSAFE, which relaxes the safety guardrails, not the
+	// wrapper's own report/cache contract.
+	if err := rejectWrapperOwnedArgs(argsStr); err != nil {
+		return err
+	}
+
+	// Positional tokens are rejected unconditionally for the same reason:
+	// naming a scan path is FCLONES_SCAN_PATHS' job, so the two arg vars carry
+	// flags and their values only.
+	for _, p := range []struct{ raw, env string }{
+		{argsStr, "FCLONES_ARGS"},
+		{actionArgs, "FCLONES_ACTION_ARGS"},
+	} {
+		if err := rejectPositionalArgs(p.raw, p.env); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rejectPositionalArgs blocks bare (non-flag) tokens in a flags-only env var.
+// fclones' repeatable options -- the pattern filters --name, --path,
+// --exclude, --keep-name, --keep-path, and every other clap Vec field in its
+// config -- take exactly ONE value per occurrence, so a second bare value is
+// not a second pattern: clap reads it as another positional input path.
+// FCLONES_ARGS="--name '*.mp4' '*.mkv'" therefore makes fclones resolve
+// "*.mkv" against its working directory and fail the run with
+// "Can't access '/app/*.mkv'"; upstream's own README example
+// (fclones group . --name '*.jpg' '*.png') has the same defect. A stray token
+// that DOES name a real directory is worse: it silently widens the scan, and
+// link/remove/dedupe then mutate files outside the configured scope. Scan
+// paths are FCLONES_SCAN_PATHS' job, so a positional here is always a
+// misconfiguration. Repeat the flag per value ("--name '*.mp4' --name
+// '*.mkv'") or write one glob ("--name '*.{mp4,mkv}'").
+//
+// A bare token is accepted only directly after a flag, where clap reads it as
+// that flag's value ("--depth 3"). No fclones flag takes two space-separated
+// values -- its clap config sets no num_args and no value_delimiter anywhere
+// -- so this needs no per-flag arity table and no re-audit on a
+// FCLONES_VERSION bump. "--" is rejected too: it ends clap's option parsing,
+// so every token after it becomes a scan path.
+func rejectPositionalArgs(raw, envVar string) error {
+	parsed, err := parseArgString(raw, envVar)
+	if err != nil {
+		return err
+	}
+	prevIsFlag := false
+	for _, arg := range parsed {
+		isFlag := strings.HasPrefix(arg, "-") && arg != "--"
+		if !isFlag && !prevIsFlag {
+			slog.Error("positional argument not allowed",
+				"arg", arg, "env", envVar, logKeyOutcome, "config_error")
+			return fmt.Errorf("positional argument %q not allowed in %s (fclones reads it as an extra scan path; repeat the flag per value, e.g. --name '*.mp4' --name '*.mkv', or set FCLONES_SCAN_PATHS)", arg, envVar)
+		}
+		prevIsFlag = isFlag
 	}
 	return nil
 }

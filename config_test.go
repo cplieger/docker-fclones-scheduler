@@ -180,7 +180,10 @@ func TestLoadConfigAllowUnsafe(t *testing.T) {
 
 func TestLoadConfigAllowUnsafeCaseInsensitive(t *testing.T) {
 	setCleanFclonesEnv(t)
-	t.Setenv("FCLONES_ACTION_ARGS", "--command echo hello")
+	// The command is quoted so it stays ONE token: an unquoted
+	// "--command echo hello" now fails the positional gate, because clap would
+	// read "hello" as an input path rather than as part of the command.
+	t.Setenv("FCLONES_ACTION_ARGS", "--command 'echo hello'")
 	t.Setenv("FCLONES_ALLOW_UNSAFE", "TRUE")
 
 	cfg, err := loadConfig()
@@ -188,7 +191,7 @@ func TestLoadConfigAllowUnsafeCaseInsensitive(t *testing.T) {
 		t.Fatalf("loadConfig: %v", err)
 	}
 
-	if cfg.ActionArgs != "--command echo hello" {
+	if cfg.ActionArgs != "--command 'echo hello'" {
 		t.Errorf("ActionArgs = %q, want --command flag accepted with ALLOW_UNSAFE=TRUE", cfg.ActionArgs)
 	}
 }
