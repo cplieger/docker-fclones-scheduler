@@ -180,10 +180,11 @@ func TestLoadConfigAllowUnsafe(t *testing.T) {
 
 func TestLoadConfigAllowUnsafeCaseInsensitive(t *testing.T) {
 	setCleanFclonesEnv(t)
-	// The command is quoted so it stays ONE token: an unquoted
-	// "--command echo hello" now fails the positional gate, because clap would
-	// read "hello" as an input path rather than as part of the command.
-	t.Setenv("FCLONES_ACTION_ARGS", "--command 'echo hello'")
+	// --transform is the real exec flag (fclones' README uses it for
+	// content-aware dedup), and its command is quoted so it stays ONE token: an
+	// unquoted command fails the positional gate, because clap would read the
+	// trailing words as input paths rather than as part of the command.
+	t.Setenv("FCLONES_ACTION_ARGS", "--transform 'exiv2 -d a $IN'")
 	t.Setenv("FCLONES_ALLOW_UNSAFE", "TRUE")
 
 	cfg, err := loadConfig()
@@ -191,11 +192,14 @@ func TestLoadConfigAllowUnsafeCaseInsensitive(t *testing.T) {
 		t.Fatalf("loadConfig: %v", err)
 	}
 
-	if cfg.ActionArgs != "--command 'echo hello'" {
-		t.Errorf("ActionArgs = %q, want --command flag accepted with ALLOW_UNSAFE=TRUE", cfg.ActionArgs)
+	if cfg.ActionArgs != "--transform 'exiv2 -d a $IN'" {
+		t.Errorf("ActionArgs = %q, want the --transform flag accepted with ALLOW_UNSAFE=TRUE", cfg.ActionArgs)
 	}
 }
 
+// TestRejectDangerousArgs pins the denylist and its matching rule. Every flag
+// named here exists in the pinned fclones (`--help`-checked), so a case cannot
+// pass by asserting on a flag upstream never had.
 func TestRejectDangerousArgs(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -205,21 +209,18 @@ func TestRejectDangerousArgs(t *testing.T) {
 	}{
 		{"safe flags", "--min-size 1024 --threads 4", false},
 		{"empty string", "", false},
-		{"--command bare", "--command rm -rf /", true},
-		{"--command=value", "--command=evil", true},
-		{"case insensitive", "--COMMAND=evil", true},
-		{"mixed case", "--Command something", true},
-		{"buried in middle", "--min-size 1024 --command evil --threads 4", true},
-		{"similar prefix is safe", "--commander 5", false},
-		{"no dashes is safe", "command evil", false},
 		{"--transform bare", "--transform /usr/bin/evil", true},
 		{"--transform=value", "--transform=/usr/bin/evil", true},
-		{"--transform case insensitive", "--TRANSFORM=evil", true},
+		{"--transform upper case", "--TRANSFORM=evil", true},
+		{"--in-place mixed case", "--In-Place", true},
+		{"buried in middle", "--min-size 1024 --transform evil --threads 4", true},
+		{"longer flag sharing a prefix is safe", "--transformer 5", false},
+		{"longer hyphenated flag sharing a prefix is safe", "--in-place-mode 5", false},
+		{"no dashes is safe", "transform evil", false},
 		{"--in-place bare", "--in-place", true},
 		{"--in-place=value", "--IN-PLACE=true", true},
 		{"--no-copy bare", "--no-copy", true},
 		{"--no-copy=value", "--NO-COPY=true", true},
-		{"--transformer is safe", "--transformer 5", false},
 	}
 
 	for _, tt := range tests {
@@ -321,13 +322,12 @@ func TestLoadConfigErrorOnDangerousArgs(t *testing.T) {
 		envVar string
 		value  string
 	}{
-		{"--command in FCLONES_ARGS", "FCLONES_ARGS", "--command evil"},
 		{"--transform in FCLONES_ARGS", "FCLONES_ARGS", "--transform=/bin/sh"},
 		{"--in-place in FCLONES_ARGS", "FCLONES_ARGS", "--in-place"},
 		{"--no-copy in FCLONES_ARGS", "FCLONES_ARGS", "--no-copy=true"},
-		{"--command in FCLONES_ACTION_ARGS", "FCLONES_ACTION_ARGS", "--command rm"},
-		{"case-insensitive --COMMAND", "FCLONES_ARGS", "--COMMAND=evil"},
-		{"flag buried mid-args", "FCLONES_ARGS", "--min-size 1024 --command x --threads 4"},
+		{"--transform in FCLONES_ACTION_ARGS", "FCLONES_ACTION_ARGS", "--transform /bin/rm"},
+		{"case-insensitive --TRANSFORM", "FCLONES_ARGS", "--TRANSFORM=evil"},
+		{"flag buried mid-args", "FCLONES_ARGS", "--min-size 1024 --transform x --threads 4"},
 		{"--transform in FCLONES_SCAN_PATHS", "FCLONES_SCAN_PATHS", "/scandir --transform /evil"},
 	}
 
@@ -734,7 +734,7 @@ func TestLoadConfigTagsConfigErrorOutcome(t *testing.T) {
 		{"invalid action", "FCLONES_ACTION", "shell", false},
 		{"unparseable scan timeout", "FCLONES_SCAN_TIMEOUT", "not-a-duration", false},
 		{"negative scan timeout", "FCLONES_SCAN_TIMEOUT", "-1h", false},
-		{"dangerous flag", "FCLONES_ARGS", "--command rm", false},
+		{"dangerous flag", "FCLONES_ARGS", "--transform /bin/rm", false},
 		{"invalid arg syntax", "FCLONES_ARGS", "--path \"/unterminated", true},
 	}
 

@@ -30,7 +30,7 @@ aggregators (Alloy, Promtail, etc.) and alerting via Grafana or similar.
 - **One owner for every run:** the daemon executes every scan, serialized in one queue, so every run's logs land on the container's own log stream in both scheduling modes and the same alert rules work everywhere
 - **Machine-readable report contract:** the scan consumes fclones' JSON report with a strict decoder, so an upstream output-format change fails the run loudly instead of silently zeroing the duplicate stats your alerting reads
 - **Distroless and rootless:** runs as `nonroot` (UID 65532) on `gcr.io/distroless/static-debian13` with no shell or package manager
-- **Dangerous flags blocked by default:** `--command`, `--transform`, `--in-place`, and `--no-copy` are rejected unless you explicitly opt in with `FCLONES_ALLOW_UNSAFE=true`, preventing command injection via environment variables
+- **Dangerous flags blocked by default:** `--transform`, `--in-place`, and `--no-copy` are rejected unless you explicitly opt in with `FCLONES_ALLOW_UNSAFE=true`, preventing command injection via environment variables
 - **Structured logs:** logfmt with UTC timestamps, so log lines are zone-stable regardless of the container's `TZ` and alerting needs no custom exporter
 
 ## Quick start
@@ -127,7 +127,7 @@ Set `FCLONES_INTERVAL=0` (or `0s`). The container runs exactly one scan and dedu
 | `FCLONES_ARGS` | Extra arguments passed to the `fclones group` scan phase. Flags and their values only; a bare token is rejected at startup (see [Passing extra fclones arguments](#passing-extra-fclones-arguments)). The wrapper owns `--cache` and the report format (`-f json`); passing `--cache`, `-f`, or `--format` here is rejected at startup. | `(none)` | No |
 | `FCLONES_ACTION` | Dedup action after scan: `group` (report only), `link` (hardlink), `remove` (delete), or `dedupe` (reflink/copy-on-write) | `group` | No |
 | `FCLONES_ACTION_ARGS` | Extra arguments for the dedup action phase. Flags and their values only, same rule as `FCLONES_ARGS`. | `(none)` | No |
-| `FCLONES_ALLOW_UNSAFE` | Set to `true` to allow dangerous flags (`--command`, `--transform`, `--in-place`, `--no-copy`) | `false` | No |
+| `FCLONES_ALLOW_UNSAFE` | Set to `true` to allow dangerous flags (`--transform`, `--in-place`, `--no-copy`) | `false` | No |
 | `FCLONES_SCAN_TIMEOUT` | Per-phase timeout (Go duration) applied to each fclones scan and action phase. A phase exceeding it is terminated and the run is marked unhealthy. Set to `0` for no timeout (the phase runs until it finishes or the container stops). Raise for large filesystems whose initial scan can exceed 12h. | `12h` | No |
 | `FCLONES_LOG_LEVEL` | slog level: `debug`, `info`, `warn`/`warning`, or `error`. Unrecognized values fall back to `info`. | `info` | No |
 
@@ -251,7 +251,7 @@ only from inside the container. The container runs as `nonroot` on a
 distroless base image with no shell.
 
 The `FCLONES_ACTION` env var is validated against an allowlist, and the
-dangerous flags (`--command`, `--transform`, `--in-place`, `--no-copy`) are
+dangerous flags (`--transform`, `--in-place`, `--no-copy`) are
 blocked by default to prevent command injection via env vars; set
 `FCLONES_ALLOW_UNSAFE=true` only if you need `--transform` for content-aware
 deduplication. Wrapper-owned fclones flags (`--cache`, `-f`/`--format`) are

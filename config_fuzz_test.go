@@ -9,9 +9,9 @@ import (
 
 func FuzzRejectDangerousArgs(f *testing.F) {
 	f.Add("--min-size 1M")
-	f.Add("--command rm")
 	f.Add("--transform 's/foo/bar/'")
-	f.Add("--COMMAND upper")
+	f.Add("--TRANSFORM upper")
+	f.Add("--transformer x")
 	f.Add("--in-place")
 	f.Add("--no-copy")
 	f.Add("")
@@ -24,10 +24,15 @@ func FuzzRejectDangerousArgs(f *testing.F) {
 			}
 			return
 		}
+		// The oracle re-derives the MATCHING rule (exact match or a "flag="
+		// prefix, case-folded) over the production list rather than a second
+		// copy of it: a hardcoded copy is what let a phantom --command entry
+		// live in both places. The list's CONTENTS are pinned by
+		// TestRejectDangerousArgs instead.
 		wantReject := false
 		for _, arg := range parsed {
 			lower := strings.ToLower(arg)
-			for _, flag := range []string{"--command", "--transform", "--in-place", "--no-copy"} {
+			for _, flag := range dangerousFlags {
 				if lower == flag || strings.HasPrefix(lower, flag+"=") {
 					wantReject = true
 				}
