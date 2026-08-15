@@ -88,6 +88,16 @@ intact when touching `config.go` or `scheduler.go`:
 - `--command`, `--transform`, `--in-place`, and `--no-copy` are rejected in
   `rejectDangerousArgs` unless `FCLONES_ALLOW_UNSAFE=true`. New flag handling
   must preserve this opt-in gate.
+- `rejectPositionalArgs` rejects a bare (non-flag) token in `FCLONES_ARGS` and
+  `FCLONES_ACTION_ARGS` in both safety modes, because fclones would read it as
+  an extra input path: with a pattern that names nothing the run fails on
+  `Can't access '/app/<token>'` (issue #509), and with a token that names a
+  real directory the scan silently widens and `link`/`remove`/`dedupe` mutate
+  files outside `FCLONES_SCAN_PATHS`. It carries no per-flag arity table, so it
+  needs no re-audit for new flags. It does assume upstream keeps every
+  repeatable option at one value per occurrence (clap's default for a `Vec`
+  field, and fclones' config sets no `num_args` or `value_delimiter`); a bump
+  that makes a filter greedy would turn the gate into a false rejection.
 - When the `FCLONES_VERSION` Renovate PR bumps the version, four coupled
   artifacts must move in lockstep (each fail-closes the build if stale, so a
   broken build after a bump usually means one was missed). The first is
