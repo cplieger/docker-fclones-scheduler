@@ -237,7 +237,7 @@ func TestRejectDangerousArgs(t *testing.T) {
 
 func TestVerifyDirHappyPath(t *testing.T) {
 	t.Parallel()
-	if err := verifyDir(context.Background(), t.TempDir(), 5*time.Second); err != nil {
+	if err := verifyDir(t.Context(), t.TempDir(), 5*time.Second); err != nil {
 		t.Errorf("verifyDir on writable temp dir: unexpected error: %v", err)
 	}
 }
@@ -245,7 +245,7 @@ func TestVerifyDirHappyPath(t *testing.T) {
 func TestVerifyDirCreatesMissingSubpath(t *testing.T) {
 	t.Parallel()
 	subdir := filepath.Join(t.TempDir(), "a", "b", "c")
-	if err := verifyDir(context.Background(), subdir, 5*time.Second); err != nil {
+	if err := verifyDir(t.Context(), subdir, 5*time.Second); err != nil {
 		t.Errorf("verifyDir creating nested dir: unexpected error: %v", err)
 	}
 	if _, err := os.Stat(subdir); err != nil {
@@ -265,7 +265,7 @@ func TestVerifyDirReadOnly(t *testing.T) {
 	}
 	defer func() { _ = os.Chmod(dir, 0o700) }()
 
-	err := verifyDir(context.Background(), dir, 5*time.Second)
+	err := verifyDir(t.Context(), dir, 5*time.Second)
 	if err == nil {
 		t.Error("expected verifyDir on read-only dir to return an error")
 	}
@@ -285,7 +285,7 @@ func TestVerifyDirCreateProbeFileFails(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	err := verifyDir(context.Background(), dir, 5*time.Second)
+	err := verifyDir(t.Context(), dir, 5*time.Second)
 
 	if err == nil {
 		t.Fatal("verifyDir with a directory occupying the .write_test probe path: error = nil, want an os.Create (EISDIR) failure")
@@ -539,6 +539,7 @@ func TestVerifyDirTimeoutOnCancelledContext(t *testing.T) {
 		return nil
 	}
 
+	// Deliberately pre-cancelled (not t.Context()) to drive the cancel arm.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	err := verifyDirWithProbe(ctx, t.TempDir(), 5*time.Second, blockingProbe)
@@ -564,7 +565,7 @@ func TestVerifyDirWithProbeBoundsHungProbeByTimeout(t *testing.T) {
 	}
 
 	start := time.Now()
-	err := verifyDirWithProbe(context.Background(), t.TempDir(), 50*time.Millisecond, hungProbe)
+	err := verifyDirWithProbe(t.Context(), t.TempDir(), 50*time.Millisecond, hungProbe)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -583,7 +584,7 @@ func TestVerifyDirWithProbeBoundsHungProbeByTimeout(t *testing.T) {
 func TestSetupLoggerLevels(t *testing.T) {
 	origDefault := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(origDefault) })
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tests := []struct {
 		name  string
@@ -627,7 +628,7 @@ func TestVerifyDirParentNotADirectory(t *testing.T) {
 	}
 	target := filepath.Join(parent, "child")
 
-	err := verifyDir(context.Background(), target, 5*time.Second)
+	err := verifyDir(t.Context(), target, 5*time.Second)
 
 	if err == nil {
 		t.Fatalf("verifyDir(%q) error = nil, want a mkdir error when a parent path component is a regular file", target)

@@ -277,7 +277,7 @@ func TestNewScanIDFormat(t *testing.T) {
 
 func TestDefaultCommandRunnerGracefulShutdown(t *testing.T) {
 	t.Parallel()
-	cmd := defaultCommandRunner(context.Background(), "fclones", "group", "/scandir")
+	cmd := defaultCommandRunner(t.Context(), "fclones", "group", "/scandir")
 	if cmd.WaitDelay != 5*time.Second {
 		t.Errorf("WaitDelay = %s, want 5s", cmd.WaitDelay)
 	}
@@ -297,7 +297,7 @@ func TestDefaultCommandRunnerCancelSendsSIGTERM(t *testing.T) {
 	if _, err := exec.LookPath("sleep"); err != nil {
 		t.Skipf("sleep not available: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cmd := defaultCommandRunner(ctx, "sleep", "30")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -567,7 +567,7 @@ func TestPhaseContext(t *testing.T) {
 	t.Run("positive timeout sets a deadline near now+timeout", func(t *testing.T) {
 		t.Parallel()
 		start := time.Now()
-		ctx, cancel := phaseContext(context.Background(), 30*time.Second)
+		ctx, cancel := phaseContext(t.Context(), 30*time.Second)
 		defer cancel()
 
 		deadline, ok := ctx.Deadline()
@@ -581,7 +581,7 @@ func TestPhaseContext(t *testing.T) {
 
 	t.Run("zero timeout sets no deadline", func(t *testing.T) {
 		t.Parallel()
-		ctx, cancel := phaseContext(context.Background(), 0)
+		ctx, cancel := phaseContext(t.Context(), 0)
 		defer cancel()
 
 		if deadline, ok := ctx.Deadline(); ok {
@@ -591,7 +591,7 @@ func TestPhaseContext(t *testing.T) {
 
 	t.Run("negative timeout sets no deadline", func(t *testing.T) {
 		t.Parallel()
-		ctx, cancel := phaseContext(context.Background(), -1*time.Hour)
+		ctx, cancel := phaseContext(t.Context(), -1*time.Hour)
 		defer cancel()
 
 		if deadline, ok := ctx.Deadline(); ok {
@@ -601,7 +601,7 @@ func TestPhaseContext(t *testing.T) {
 
 	t.Run("zero timeout still cancels when the parent is cancelled", func(t *testing.T) {
 		t.Parallel()
-		parent, cancelParent := context.WithCancel(context.Background())
+		parent, cancelParent := context.WithCancel(t.Context())
 		ctx, cancel := phaseContext(parent, 0)
 		defer cancel()
 
@@ -691,6 +691,8 @@ func TestSweepStaleReportsContinuesPastUnremovable(t *testing.T) {
 func TestClassifyAndLogOutcome(t *testing.T) {
 	t.Parallel()
 
+	// Both helpers stay on context.Background(): they are deliberately
+	// pre-cancelled/pre-expired to drive the shutdown and timeout arms.
 	cancelledCtx := func() context.Context {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -707,7 +709,7 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		done, err := classifyAndLogOutcome(context.Background(), context.Background(), log,
+		done, err := classifyAndLogOutcome(t.Context(), t.Context(), log,
 			"scan", nil, time.Minute, time.Second,
 			&ioutil.LimitedBuffer{Max: 1024}, nil)
 
@@ -727,7 +729,7 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		done, err := classifyAndLogOutcome(cancelledCtx(), context.Background(), log,
+		done, err := classifyAndLogOutcome(cancelledCtx(), t.Context(), log,
 			"scan", context.Canceled, time.Minute, time.Second,
 			&ioutil.LimitedBuffer{Max: 1024}, nil)
 
@@ -752,7 +754,7 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		stderr := &ioutil.LimitedBuffer{Max: 1024}
 		_, _ = stderr.Write([]byte("boom"))
 
-		done, err := classifyAndLogOutcome(context.Background(), deadlineCtx(), log,
+		done, err := classifyAndLogOutcome(t.Context(), deadlineCtx(), log,
 			"scan", context.DeadlineExceeded, 30*time.Second, 31*time.Second,
 			stderr, nil)
 
@@ -778,7 +780,7 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		stderr := &ioutil.LimitedBuffer{Max: 1024}
 		_, _ = stderr.Write([]byte("permission denied"))
 
-		done, err := classifyAndLogOutcome(context.Background(), context.Background(), log,
+		done, err := classifyAndLogOutcome(t.Context(), t.Context(), log,
 			"scan", errors.New("exit status 1"), time.Minute, 2*time.Second,
 			stderr, nil)
 
@@ -808,7 +810,7 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		stdout := &ioutil.LimitedBuffer{Max: 1024}
 		_, _ = stdout.Write([]byte("actionout"))
 
-		done, err := classifyAndLogOutcome(context.Background(), context.Background(), log,
+		done, err := classifyAndLogOutcome(t.Context(), t.Context(), log,
 			"action", errors.New("exit status 1"), time.Minute, time.Second,
 			stderr, stdout, "action", "link")
 
