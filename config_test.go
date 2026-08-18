@@ -17,18 +17,18 @@ import (
 // runner can crash an in-process loadConfig test.
 func setCleanFclonesEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("FCLONES_INTERVAL", "3h")
+	t.Setenv("SCAN_INTERVAL", "3h")
 	t.Setenv("FCLONES_SCAN_PATHS", scanDir)
 	t.Setenv("FCLONES_ARGS", "")
 	t.Setenv("FCLONES_ACTION", string(actionGroup))
 	t.Setenv("FCLONES_ACTION_ARGS", "")
-	t.Setenv("FCLONES_ALLOW_UNSAFE", "")
-	t.Setenv("FCLONES_SCAN_TIMEOUT", "12h")
+	t.Setenv("ALLOW_UNSAFE_ARGS", "")
+	t.Setenv("SCAN_TIMEOUT", "12h")
 }
 
 func TestLoadConfig(t *testing.T) {
 	setCleanFclonesEnv(t)
-	t.Setenv("FCLONES_INTERVAL", "1h")
+	t.Setenv("SCAN_INTERVAL", "1h")
 	t.Setenv("FCLONES_SCAN_PATHS", "/data")
 	t.Setenv("FCLONES_ARGS", "--min-size 1024")
 	t.Setenv("FCLONES_ACTION", "dedupe")
@@ -62,7 +62,7 @@ func TestLoadConfig(t *testing.T) {
 func TestLoadConfigDefaults(t *testing.T) {
 	setCleanFclonesEnv(t)
 	// Override interval to empty to exercise the default path.
-	t.Setenv("FCLONES_INTERVAL", "")
+	t.Setenv("SCAN_INTERVAL", "")
 
 	cfg, err := loadConfig()
 	if err != nil {
@@ -90,14 +90,14 @@ func TestLoadConfigScheduleDisabled(t *testing.T) {
 	for _, value := range []string{"off", "OFF", "disabled", "Disabled"} {
 		t.Run(value, func(t *testing.T) {
 			setCleanFclonesEnv(t)
-			t.Setenv("FCLONES_INTERVAL", value)
+			t.Setenv("SCAN_INTERVAL", value)
 
 			cfg, err := loadConfig()
 			if err != nil {
 				t.Fatalf("loadConfig: %v", err)
 			}
 			if cfg.Mode != modeExternal {
-				t.Errorf("FCLONES_INTERVAL=%q: Mode = %s, want external", value, cfg.Mode)
+				t.Errorf("SCAN_INTERVAL=%q: Mode = %s, want external", value, cfg.Mode)
 			}
 		})
 	}
@@ -109,14 +109,14 @@ func TestLoadConfigRunOnce(t *testing.T) {
 	for _, value := range []string{"0", "0s", "0h"} {
 		t.Run(value, func(t *testing.T) {
 			setCleanFclonesEnv(t)
-			t.Setenv("FCLONES_INTERVAL", value)
+			t.Setenv("SCAN_INTERVAL", value)
 
 			cfg, err := loadConfig()
 			if err != nil {
 				t.Fatalf("loadConfig: %v", err)
 			}
 			if cfg.Mode != modeOnce {
-				t.Errorf("FCLONES_INTERVAL=%q: Mode = %s, want once", value, cfg.Mode)
+				t.Errorf("SCAN_INTERVAL=%q: Mode = %s, want once", value, cfg.Mode)
 			}
 		})
 	}
@@ -129,17 +129,17 @@ func TestLoadConfigNegativeIntervalFallsBackToDefault(t *testing.T) {
 	for _, value := range []string{"-1h", "-30m", "-1s"} {
 		t.Run(value, func(t *testing.T) {
 			setCleanFclonesEnv(t)
-			t.Setenv("FCLONES_INTERVAL", value)
+			t.Setenv("SCAN_INTERVAL", value)
 
 			cfg, err := loadConfig()
 			if err != nil {
-				t.Fatalf("loadConfig with FCLONES_INTERVAL=%q: unexpected error: %v", value, err)
+				t.Fatalf("loadConfig with SCAN_INTERVAL=%q: unexpected error: %v", value, err)
 			}
 			if cfg.Mode != modeBuiltin {
-				t.Errorf("FCLONES_INTERVAL=%q: Mode = %s, want built-in", value, cfg.Mode)
+				t.Errorf("SCAN_INTERVAL=%q: Mode = %s, want built-in", value, cfg.Mode)
 			}
 			if cfg.Interval != defaultInterval {
-				t.Errorf("FCLONES_INTERVAL=%q: Interval = %s, want default %s", value, cfg.Interval, defaultInterval)
+				t.Errorf("SCAN_INTERVAL=%q: Interval = %s, want default %s", value, cfg.Interval, defaultInterval)
 			}
 		})
 	}
@@ -149,7 +149,7 @@ func TestLoadConfigGarbageIntervalFallsBackToDefault(t *testing.T) {
 	// A non-sentinel unparseable value must NOT disable scheduling; it
 	// falls back to the default cadence so the container keeps scanning.
 	setCleanFclonesEnv(t)
-	t.Setenv("FCLONES_INTERVAL", "not-a-duration")
+	t.Setenv("SCAN_INTERVAL", "not-a-duration")
 
 	cfg, err := loadConfig()
 	if err != nil {
@@ -166,7 +166,7 @@ func TestLoadConfigGarbageIntervalFallsBackToDefault(t *testing.T) {
 func TestLoadConfigAllowUnsafe(t *testing.T) {
 	setCleanFclonesEnv(t)
 	t.Setenv("FCLONES_ARGS", "--transform /usr/bin/strip")
-	t.Setenv("FCLONES_ALLOW_UNSAFE", "true")
+	t.Setenv("ALLOW_UNSAFE_ARGS", "true")
 
 	cfg, err := loadConfig()
 	if err != nil {
@@ -185,7 +185,7 @@ func TestLoadConfigAllowUnsafeCaseInsensitive(t *testing.T) {
 	// unquoted command fails the positional gate, because clap would read the
 	// trailing words as input paths rather than as part of the command.
 	t.Setenv("FCLONES_ACTION_ARGS", "--transform 'exiv2 -d a $IN'")
-	t.Setenv("FCLONES_ALLOW_UNSAFE", "TRUE")
+	t.Setenv("ALLOW_UNSAFE_ARGS", "TRUE")
 
 	cfg, err := loadConfig()
 	if err != nil {
@@ -363,7 +363,7 @@ func TestLoadConfigErrorOnUnterminatedQuote(t *testing.T) {
 func TestLoadConfigAllowUnsafeBypassesGuardrails(t *testing.T) {
 	setCleanFclonesEnv(t)
 	t.Setenv("FCLONES_ARGS", "--transform /usr/bin/strip")
-	t.Setenv("FCLONES_ALLOW_UNSAFE", "true")
+	t.Setenv("ALLOW_UNSAFE_ARGS", "true")
 
 	_, err := loadConfig()
 	if err != nil {
@@ -385,7 +385,7 @@ func TestLoadConfigAllowUnsafeRejectsInvalidArgSyntax(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			setCleanFclonesEnv(t)
-			t.Setenv("FCLONES_ALLOW_UNSAFE", "true")
+			t.Setenv("ALLOW_UNSAFE_ARGS", "true")
 			t.Setenv(tt.envVar, tt.value)
 
 			_, err := loadConfig()
@@ -404,14 +404,14 @@ func TestLoadConfigAllowUnsafeRejectsInvalidArgSyntax(t *testing.T) {
 
 func TestLoadConfigErrorOnInvalidScanTimeout(t *testing.T) {
 	setCleanFclonesEnv(t)
-	t.Setenv("FCLONES_SCAN_TIMEOUT", "not-a-duration")
+	t.Setenv("SCAN_TIMEOUT", "not-a-duration")
 
 	_, err := loadConfig()
 	if err == nil {
 		t.Fatal("expected error for invalid scan timeout")
 	}
-	if !strings.Contains(err.Error(), "invalid FCLONES_SCAN_TIMEOUT") {
-		t.Errorf("error = %q, want to contain 'invalid FCLONES_SCAN_TIMEOUT'", err)
+	if !strings.Contains(err.Error(), "invalid SCAN_TIMEOUT") {
+		t.Errorf("error = %q, want to contain 'invalid SCAN_TIMEOUT'", err)
 	}
 }
 
@@ -419,11 +419,11 @@ func TestLoadConfigScanTimeoutNonPositive(t *testing.T) {
 	t.Run("zero disables the per-phase timeout", func(t *testing.T) {
 		for _, v := range []string{"0", "0s"} {
 			setCleanFclonesEnv(t)
-			t.Setenv("FCLONES_SCAN_TIMEOUT", v)
+			t.Setenv("SCAN_TIMEOUT", v)
 
 			cfg, err := loadConfig()
 			if err != nil {
-				t.Fatalf("loadConfig with FCLONES_SCAN_TIMEOUT=%q returned %v, want nil (0 = no timeout)", v, err)
+				t.Fatalf("loadConfig with SCAN_TIMEOUT=%q returned %v, want nil (0 = no timeout)", v, err)
 			}
 			if cfg.PhaseTimeout != 0 {
 				t.Errorf("PhaseTimeout = %v for %q, want 0 (no timeout)", cfg.PhaseTimeout, v)
@@ -433,14 +433,14 @@ func TestLoadConfigScanTimeoutNonPositive(t *testing.T) {
 
 	t.Run("negative is rejected", func(t *testing.T) {
 		setCleanFclonesEnv(t)
-		t.Setenv("FCLONES_SCAN_TIMEOUT", "-1h")
+		t.Setenv("SCAN_TIMEOUT", "-1h")
 
 		_, err := loadConfig()
 		if err == nil {
 			t.Fatal("expected error for negative scan timeout")
 		}
-		if !strings.Contains(err.Error(), "invalid FCLONES_SCAN_TIMEOUT") {
-			t.Errorf("error = %q, want to contain 'invalid FCLONES_SCAN_TIMEOUT'", err)
+		if !strings.Contains(err.Error(), "invalid SCAN_TIMEOUT") {
+			t.Errorf("error = %q, want to contain 'invalid SCAN_TIMEOUT'", err)
 		}
 		// The value parsed, so there is no envx.ParseError to read it from; the
 		// duration itself is what the message names. Pins that it is the
@@ -459,7 +459,7 @@ func TestLoadConfigScanTimeoutNonPositive(t *testing.T) {
 // halves of one message disagreeing about what was rejected.
 func TestLoadConfigInvalidScanTimeoutQuotesTheTrimmedValue(t *testing.T) {
 	setCleanFclonesEnv(t)
-	t.Setenv("FCLONES_SCAN_TIMEOUT", "  5x\t")
+	t.Setenv("SCAN_TIMEOUT", "  5x\t")
 
 	_, err := loadConfig()
 	if err == nil {
@@ -607,14 +607,14 @@ func TestSetupLoggerLevels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("FCLONES_LOG_LEVEL", tt.level)
+			t.Setenv("LOG_LEVEL", tt.level)
 			setupLogger()
 			d := slog.Default()
 			if !d.Enabled(ctx, tt.want) {
-				t.Errorf("FCLONES_LOG_LEVEL=%q: Enabled(%v) = false, want the handler to log at its configured level", tt.level, tt.want)
+				t.Errorf("LOG_LEVEL=%q: Enabled(%v) = false, want the handler to log at its configured level", tt.level, tt.want)
 			}
 			if d.Enabled(ctx, tt.want-1) {
-				t.Errorf("FCLONES_LOG_LEVEL=%q: Enabled(%v) = true, want levels below %v suppressed", tt.level, tt.want-1, tt.want)
+				t.Errorf("LOG_LEVEL=%q: Enabled(%v) = true, want levels below %v suppressed", tt.level, tt.want-1, tt.want)
 			}
 		})
 	}
@@ -732,8 +732,8 @@ func TestLoadConfigTagsConfigErrorOutcome(t *testing.T) {
 		unsafe bool
 	}{
 		{"invalid action", "FCLONES_ACTION", "shell", false},
-		{"unparseable scan timeout", "FCLONES_SCAN_TIMEOUT", "not-a-duration", false},
-		{"negative scan timeout", "FCLONES_SCAN_TIMEOUT", "-1h", false},
+		{"unparseable scan timeout", "SCAN_TIMEOUT", "not-a-duration", false},
+		{"negative scan timeout", "SCAN_TIMEOUT", "-1h", false},
 		{"dangerous flag", "FCLONES_ARGS", "--transform /bin/rm", false},
 		{"invalid arg syntax", "FCLONES_ARGS", "--path \"/unterminated", true},
 	}
@@ -742,7 +742,7 @@ func TestLoadConfigTagsConfigErrorOutcome(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			setCleanFclonesEnv(t)
 			if tt.unsafe {
-				t.Setenv("FCLONES_ALLOW_UNSAFE", "true")
+				t.Setenv("ALLOW_UNSAFE_ARGS", "true")
 			}
 			t.Setenv(tt.envVar, tt.value)
 

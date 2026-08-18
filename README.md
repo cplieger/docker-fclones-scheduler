@@ -26,11 +26,11 @@ aggregators (Alloy, Promtail, etc.) and alerting via Grafana or similar.
 
 ### Why this design
 
-- **Scheduler your way:** ships with a self-contained interval scheduler, so no external cron, systemd timer, or orchestrator-level scheduling is needed. If you already run a central scheduler (Ofelia, cron), set `FCLONES_INTERVAL=off` and trigger scans with `docker exec fclones /app/wrapper scan` instead
+- **Scheduler your way:** ships with a self-contained interval scheduler, so no external cron, systemd timer, or orchestrator-level scheduling is needed. If you already run a central scheduler (Ofelia, cron), set `SCAN_INTERVAL=off` and trigger scans with `docker exec fclones /app/wrapper scan` instead
 - **One owner for every run:** the daemon executes every scan, serialized in one queue, so every run's logs land on the container's own log stream in both scheduling modes and the same alert rules work everywhere
 - **Machine-readable report contract:** the scan consumes fclones' JSON report with a strict decoder, so an upstream output-format change fails the run loudly instead of silently zeroing the duplicate stats your alerting reads
 - **Distroless and rootless:** runs as `nonroot` (UID 65532) on `gcr.io/distroless/static-debian13` with no shell or package manager
-- **Dangerous flags blocked by default:** `--transform`, `--in-place`, and `--no-copy` are rejected unless you explicitly opt in with `FCLONES_ALLOW_UNSAFE=true`, preventing command injection via environment variables
+- **Dangerous flags blocked by default:** `--transform`, `--in-place`, and `--no-copy` are rejected unless you explicitly opt in with `ALLOW_UNSAFE_ARGS=true`, preventing command injection via environment variables
 - **Structured logs:** logfmt with UTC timestamps, so log lines are zone-stable regardless of the container's `TZ` and alerting needs no custom exporter
 
 ## Quick start
@@ -47,7 +47,7 @@ services:
     user: "${PUID:-1000}:${PGID:-1000}"  # match your host user
 
     environment:
-      FCLONES_INTERVAL: "1h"  # Go duration (e.g. 1h, 30m, 12h)
+      SCAN_INTERVAL: "1h"  # Go duration (e.g. 1h, 30m, 12h)
       FCLONES_SCAN_PATHS: "/scandir"
       FCLONES_ARGS: "--rf-over 1"
       FCLONES_ACTION: "link"  # group (report), link (hardlink), remove (delete), or dedupe (reflink/copy-on-write)
@@ -60,15 +60,15 @@ services:
 
 ## Scheduling modes
 
-The container runs in one of three modes, selected by `FCLONES_INTERVAL`.
+The container runs in one of three modes, selected by `SCAN_INTERVAL`.
 
 ### Built-in scheduler (default)
 
-Set `FCLONES_INTERVAL` to a positive Go duration (`1h`, `30m`, `12h`, …). The container runs a scan at startup and then every interval. This is the zero-dependency default; nothing else is required. An unset, unparseable, or negative value falls back to the `3h` default cadence in this mode (a negative value is treated as a typo and logged as a warning).
+Set `SCAN_INTERVAL` to a positive Go duration (`1h`, `30m`, `12h`, …). The container runs a scan at startup and then every interval. This is the zero-dependency default; nothing else is required. An unset, unparseable, or negative value falls back to the `3h` default cadence in this mode (a negative value is treated as a typo and logged as a warning).
 
 ### External scheduler
 
-Set `FCLONES_INTERVAL=off` (alias: `disabled`). The container stays running but idle, and you trigger each scan out-of-band by exec'ing the `scan` subcommand:
+Set `SCAN_INTERVAL=off` (alias: `disabled`). The container stays running but idle, and you trigger each scan out-of-band by exec'ing the `scan` subcommand:
 
 ```bash
 docker exec fclones /app/wrapper scan
@@ -89,7 +89,7 @@ services:
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
     environment:
-      FCLONES_INTERVAL: "off"   # disable built-in loop; Ofelia drives it
+      SCAN_INTERVAL: "off"   # disable built-in loop; Ofelia drives it
       FCLONES_SCAN_PATHS: "/scandir"
       FCLONES_ACTION: "link"
     labels:
@@ -114,7 +114,7 @@ connect.
 
 ### Run once
 
-Set `FCLONES_INTERVAL=0` (or `0s`). The container runs exactly one scan and dedup action, then exits, and the exit code is the job result: non-zero if the scan failed, timed out, was interrupted (SIGTERM/SIGINT) before it finished, or was skipped because another process held the `/cache` scan lock (logged with `outcome=skipped`). This suits a batch or one-shot context (a Kubernetes `Job`, a CI step, or a manual `docker run --rm`) where an external system decides when to run again: a run that never completed a scan surfaces as a failure, so the orchestrator retries rather than recording success. In the long-running modes a SIGTERM is a clean shutdown and a lock conflict a benign no-op, both exiting 0.
+Set `SCAN_INTERVAL=0` (or `0s`). The container runs exactly one scan and dedup action, then exits, and the exit code is the job result: non-zero if the scan failed, timed out, was interrupted (SIGTERM/SIGINT) before it finished, or was skipped because another process held the `/cache` scan lock (logged with `outcome=skipped`). This suits a batch or one-shot context (a Kubernetes `Job`, a CI step, or a manual `docker run --rm`) where an external system decides when to run again: a run that never completed a scan surfaces as a failure, so the orchestrator retries rather than recording success. In the long-running modes a SIGTERM is a clean shutdown and a lock conflict a benign no-op, both exiting 0.
 
 ## Configuration reference
 
@@ -122,14 +122,14 @@ Set `FCLONES_INTERVAL=0` (or `0s`). The container runs exactly one scan and dedu
 
 | Variable | Description | Default | Required |
 | --- | --- | --- | --- |
-| `FCLONES_INTERVAL` | Built-in scan interval as a Go duration (e.g. `1h`, `30m`, `12h`); the first scan runs at startup. Set to `off` (or `disabled`) to idle and trigger scans externally, or to `0` (or `0s`) to run a single scan and exit (see [Scheduling modes](#scheduling-modes)). Falls back to `3h` on an unset, unparseable, or negative value. | `3h` | No |
+| `SCAN_INTERVAL` | Built-in scan interval as a Go duration (e.g. `1h`, `30m`, `12h`); the first scan runs at startup. Set to `off` (or `disabled`) to idle and trigger scans externally, or to `0` (or `0s`) to run a single scan and exit (see [Scheduling modes](#scheduling-modes)). Falls back to `3h` on an unset, unparseable, or negative value. | `3h` | No |
 | `FCLONES_SCAN_PATHS` | Paths inside the container to scan for duplicates. Must match the volume mounts. Multiple paths can be space-separated (e.g. `/media /photos`), each requiring a corresponding volume mount. | `/scandir` | No |
 | `FCLONES_ARGS` | Extra arguments passed to the `fclones group` scan phase. Flags and their values only; a bare token is rejected at startup (see [Passing extra fclones arguments](#passing-extra-fclones-arguments)). The wrapper owns `--cache` and the report format (`-f json`); passing `--cache`, `-f`, or `--format` here is rejected at startup. | `(none)` | No |
 | `FCLONES_ACTION` | Dedup action after scan: `group` (report only), `link` (hardlink), `remove` (delete), or `dedupe` (reflink/copy-on-write) | `group` | No |
 | `FCLONES_ACTION_ARGS` | Extra arguments for the dedup action phase. Flags and their values only, same rule as `FCLONES_ARGS`. | `(none)` | No |
-| `FCLONES_ALLOW_UNSAFE` | Set to `true` to allow dangerous flags (`--transform`, `--in-place`, `--no-copy`) | `false` | No |
-| `FCLONES_SCAN_TIMEOUT` | Per-phase timeout (Go duration) applied to each fclones scan and action phase. A phase exceeding it is terminated and the run is marked unhealthy. Set to `0` for no timeout (the phase runs until it finishes or the container stops). Raise for large filesystems whose initial scan can exceed 12h. | `12h` | No |
-| `FCLONES_LOG_LEVEL` | slog level: `debug`, `info`, `warn`/`warning`, or `error`. Unrecognized values fall back to `info`. | `info` | No |
+| `ALLOW_UNSAFE_ARGS` | Set to `true` to allow dangerous flags (`--transform`, `--in-place`, `--no-copy`) | `false` | No |
+| `SCAN_TIMEOUT` | Per-phase timeout (Go duration) applied to each fclones scan and action phase. A phase exceeding it is terminated and the run is marked unhealthy. Set to `0` for no timeout (the phase runs until it finishes or the container stops). Raise for large filesystems whose initial scan can exceed 12h. | `12h` | No |
+| `LOG_LEVEL` | slog level: `debug`, `info`, `warn`/`warning`, or `error`. Unrecognized values fall back to `info`. | `info` | No |
 
 ### Passing extra fclones arguments
 
@@ -223,7 +223,7 @@ whatever labels your Alertmanager uses.
 
 These rules work in **both scheduling modes**: every run executes in the
 daemon, so its logs always land under the app's own container name. Under
-`FCLONES_INTERVAL=off` the exec'd `scan` client emits only its own lifecycle
+`SCAN_INTERVAL=off` the exec'd `scan` client emits only its own lifecycle
 lines (queued / started / result) to the trigger's log (an Ofelia job log,
 for example) and exits with the run's result, so you can additionally alert
 on your scheduler's own job outcome for extra failure coverage.
@@ -232,7 +232,7 @@ on your scheduler's own job outcome for extra failure coverage.
 
 The built-in healthcheck (`/app/wrapper health`) checks a marker file the daemon maintains after each run. The container becomes unhealthy when fclones exits non-zero (e.g. scan path missing, permission denied, corrupted cache), the action phase fails (e.g. hardlink across filesystems), the report cannot be decoded, or startup verification fails (e.g. `/cache` is full or read-only). It recovers automatically on the next successful scan; no restart is required.
 
-In built-in mode the container begins unhealthy, transitions to healthy after the first successful scan completes, and arms a freshness deadline of `2 x FCLONES_INTERVAL + 2 x FCLONES_SCAN_TIMEOUT`: a marker that old means the interval loop is wedged, so the probe reports unhealthy and Docker restarts the container. The deadline is disabled automatically when `FCLONES_SCAN_TIMEOUT=0`, since the worst-case run duration is then unbounded. In external mode the container starts healthy (idle, nothing has failed), each triggered run updates the marker, and no deadline applies.
+In built-in mode the container begins unhealthy, transitions to healthy after the first successful scan completes, and arms a freshness deadline of `2 x SCAN_INTERVAL + 2 x SCAN_TIMEOUT`: a marker that old means the interval loop is wedged, so the probe reports unhealthy and Docker restarts the container. The deadline is disabled automatically when `SCAN_TIMEOUT=0`, since the worst-case run duration is then unbounded. In external mode the container starts healthy (idle, nothing has failed), each triggered run updates the marker, and no deadline applies.
 
 The image bakes a 15s `start_period`, which suits small libraries and external mode. If your first built-in scan takes minutes, raise `start_period` in your own compose file so the container isn't reported unhealthy, and doesn't fire spurious alerts, during that initial scan:
 
@@ -253,7 +253,7 @@ distroless base image with no shell.
 The `FCLONES_ACTION` env var is validated against an allowlist, and the
 dangerous flags (`--transform`, `--in-place`, `--no-copy`) are
 blocked by default to prevent command injection via env vars; set
-`FCLONES_ALLOW_UNSAFE=true` only if you need `--transform` for content-aware
+`ALLOW_UNSAFE_ARGS=true` only if you need `--transform` for content-aware
 deduplication. Wrapper-owned fclones flags (`--cache`, `-f`/`--format`) are
 rejected in `FCLONES_ARGS` at startup so user args cannot break the report
 contract.

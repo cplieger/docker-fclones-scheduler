@@ -56,7 +56,7 @@ func classifyExecOutcome(ctx, phaseCtx context.Context, runErr error) phaseOutco
 
 // --- Run-Once Terminal Outcome ---
 
-// runOnceOutcome classifies how a single run-once scan (FCLONES_INTERVAL=0)
+// runOnceOutcome classifies how a single run-once scan (SCAN_INTERVAL=0)
 // terminated. Extracting it makes the process exit code -- the batch-job result
 // an orchestrator keys on -- a pure function of (ran, runErr, ctxErr) instead of
 // logic welded into the untested runOnce orchestration, mirroring

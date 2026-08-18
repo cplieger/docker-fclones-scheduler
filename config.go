@@ -32,26 +32,26 @@ type config struct {
 	PhaseTimeout time.Duration
 
 	// Mode selects how the daemon schedules scans, derived from
-	// FCLONES_INTERVAL (see parseInterval). Interval is consulted only in
+	// SCAN_INTERVAL (see parseInterval). Interval is consulted only in
 	// modeBuiltin.
 	Mode runMode
 }
 
 // runMode is how the long-running container schedules fclones scans, derived
-// from FCLONES_INTERVAL.
+// from SCAN_INTERVAL.
 type runMode int
 
 const (
 	// modeBuiltin runs a scan at startup, then every config.Interval. Selected
-	// by a positive FCLONES_INTERVAL, or by the default cadence when the value
+	// by a positive SCAN_INTERVAL, or by the default cadence when the value
 	// is empty, unparseable, or negative.
 	modeBuiltin runMode = iota
 	// modeExternal idles until SIGTERM; scans are triggered out-of-band via the
 	// `scan` subcommand (e.g. Ofelia `docker exec`). Selected by
-	// FCLONES_INTERVAL=off/disabled.
+	// SCAN_INTERVAL=off/disabled.
 	modeExternal
 	// modeOnce runs exactly one scan+action then exits. Selected by a zero
-	// FCLONES_INTERVAL (0/0s); the process exits non-zero if that scan fails.
+	// SCAN_INTERVAL (0/0s); the process exits non-zero if that scan fails.
 	modeOnce
 )
 
@@ -127,13 +127,13 @@ const (
 	streamCapBytes    = 1 << 20 // 1 MB
 	logDetailCapBytes = 64 * 1024
 
-	// defaultInterval is the fallback scan cadence when FCLONES_INTERVAL
+	// defaultInterval is the fallback scan cadence when SCAN_INTERVAL
 	// is unset or unparseable. Three hours matches the historical
 	// default and is conservative enough to avoid disk thrash on large
 	// libraries while still catching new duplicates within a workday.
 	defaultInterval = 3 * time.Hour
 
-	// defaultScanTimeout is the per-phase deadline when FCLONES_SCAN_TIMEOUT
+	// defaultScanTimeout is the per-phase deadline when SCAN_TIMEOUT
 	// is unset; see loadConfig for the zero (disable) and negative (reject)
 	// rules.
 	defaultScanTimeout = 12 * time.Hour
@@ -142,18 +142,18 @@ const (
 // setupLogger installs a slog text handler that emits canonical logfmt
 // (`time=... level=... msg=... k=v`) to stderr.
 func setupLogger() {
-	raw := strings.TrimSpace(cmp.Or(envx.String("FCLONES_LOG_LEVEL"), "info"))
+	raw := strings.TrimSpace(cmp.Or(envx.String("LOG_LEVEL"), "info"))
 	level, recognized := slogx.ParseLevel(raw, slog.LevelInfo)
 	slogx.Setup(slogx.Options{Level: level})
 	if !recognized {
-		slog.Warn("unrecognized FCLONES_LOG_LEVEL, defaulting to info", "value", raw)
+		slog.Warn("unrecognized LOG_LEVEL, defaulting to info", "value", raw)
 	}
 }
 
 // --- Environment ---
 
-// loadScanTimeout reads FCLONES_SCAN_TIMEOUT via envx.DurationStrict,
-// defaulting to defaultScanTimeout when unset. Zero (FCLONES_SCAN_TIMEOUT=0/0s)
+// loadScanTimeout reads SCAN_TIMEOUT via envx.DurationStrict,
+// defaulting to defaultScanTimeout when unset. Zero (SCAN_TIMEOUT=0/0s)
 // disables the per-phase deadline: the phase then runs under the parent
 // context (see phaseContext) with no time limit. A malformed value is
 // rejected at startup, and so is a negative duration — that is almost
@@ -161,7 +161,7 @@ func setupLogger() {
 // already-expired context that fails every scan, silently bricking the
 // container.
 func loadScanTimeout() (time.Duration, error) {
-	scanTimeout, ok, err := envx.DurationStrict("FCLONES_SCAN_TIMEOUT")
+	scanTimeout, ok, err := envx.DurationStrict("SCAN_TIMEOUT")
 	if err != nil {
 		// The rejected value comes back on the error (envx v1.6.0), so this does
 		// not re-read the environment. That matters beyond tidiness: os.Getenv
@@ -172,8 +172,8 @@ func loadScanTimeout() (time.Duration, error) {
 		if errors.As(err, &perr) {
 			raw = perr.Value
 		}
-		slog.Error("invalid FCLONES_SCAN_TIMEOUT", "value", raw, logKeyOutcome, "config_error", "error", err)
-		return 0, fmt.Errorf("invalid FCLONES_SCAN_TIMEOUT %q: %w", raw, err)
+		slog.Error("invalid SCAN_TIMEOUT", "value", raw, logKeyOutcome, "config_error", "error", err)
+		return 0, fmt.Errorf("invalid SCAN_TIMEOUT %q: %w", raw, err)
 	}
 	if !ok {
 		return defaultScanTimeout, nil
@@ -182,9 +182,9 @@ func loadScanTimeout() (time.Duration, error) {
 		// No ParseError here: the value PARSED and is merely negative, so the
 		// duration itself is the honest thing to name, and it needs no second
 		// environment read either.
-		slog.Error("invalid FCLONES_SCAN_TIMEOUT",
+		slog.Error("invalid SCAN_TIMEOUT",
 			"value", scanTimeout.String(), logKeyOutcome, "config_error", "error", "must be zero (no timeout) or a positive duration")
-		return 0, fmt.Errorf("invalid FCLONES_SCAN_TIMEOUT %q: must be zero (no timeout) or positive", scanTimeout.String())
+		return 0, fmt.Errorf("invalid SCAN_TIMEOUT %q: must be zero (no timeout) or positive", scanTimeout.String())
 	}
 	return scanTimeout, nil
 }
@@ -217,9 +217,9 @@ func loadConfig() (config, error) {
 		return config{}, timeoutErr
 	}
 
-	// FCLONES_INTERVAL sets the built-in scan cadence; see parseInterval for the
+	// SCAN_INTERVAL sets the built-in scan cadence; see parseInterval for the
 	// sentinel ("off"/"disabled"/zero) and fallback rules.
-	interval, mode := parseInterval(os.Getenv("FCLONES_INTERVAL"))
+	interval, mode := parseInterval(os.Getenv("SCAN_INTERVAL"))
 
 	return config{
 		Interval:     interval,
@@ -232,7 +232,7 @@ func loadConfig() (config, error) {
 	}, nil
 }
 
-// parseInterval interprets FCLONES_INTERVAL into the built-in scan interval and
+// parseInterval interprets SCAN_INTERVAL into the built-in scan interval and
 // the run mode. It delegates to scheduler.ParseInterval with WithZeroAsOnce, so:
 // "off"/"disabled" select external (idle) mode; a zero duration ("0"/"0s")
 // selects run-once mode (one scan, then exit); a positive duration sets the
@@ -242,7 +242,7 @@ func loadConfig() (config, error) {
 // mapped onto the app's runMode.
 func parseInterval(raw string) (interval time.Duration, mode runMode) {
 	s := scheduler.ParseInterval(raw, defaultInterval,
-		scheduler.WithZeroAsOnce(true), scheduler.WithName("FCLONES_INTERVAL"))
+		scheduler.WithZeroAsOnce(true), scheduler.WithName("SCAN_INTERVAL"))
 	switch s.Mode {
 	case scheduler.ModeExternal:
 		return s.Interval, modeExternal
@@ -281,7 +281,7 @@ var dangerousFlags = []string{flagTransform, flagInPlace, flagNoCopy}
 // scan invocation (buildScanArgs): --cache shares the hash cache across runs,
 // and --format is the JSON report contract DecodeReport is built against. A
 // user-supplied copy would duplicate or fight them, so both are rejected in
-// FCLONES_ARGS at startup regardless of FCLONES_ALLOW_UNSAFE (this is a
+// FCLONES_ARGS at startup regardless of ALLOW_UNSAFE_ARGS (this is a
 // functional contract, not a safety guardrail). The short form -f is handled
 // separately in rejectWrapperOwnedArgs: clap accepts `-f json`, `-f=json`,
 // and the attached `-fjson`, so ANY single-dash token starting with -f is the
@@ -317,17 +317,17 @@ func rejectWrapperOwnedArgs(raw string) error {
 // validateArgEnvs runs every startup gate over the three env vars that carry
 // fclones arguments: quoting syntax, the dangerous-flag denylist, the
 // wrapper-owned flags, and positional tokens. Only the denylist is relaxed by
-// FCLONES_ALLOW_UNSAFE; the other two are contracts rather than safety
+// ALLOW_UNSAFE_ARGS; the other two are contracts rather than safety
 // guardrails, so they hold in both modes.
 func validateArgEnvs(argsStr, actionArgs, scanPaths string) error {
-	// FCLONES_ALLOW_UNSAFE deliberately accepts ONLY the exact spelling
+	// ALLOW_UNSAFE_ARGS deliberately accepts ONLY the exact spelling
 	// "true" (case-insensitive), not envx.Bool's tolerant 1/yes/on set: the
 	// flag disables command-injection guardrails, so the accepted vocabulary
 	// stays as narrow as possible. Do not "clean up" to envx.Bool.
-	unsafeAllowed := strings.EqualFold(cmp.Or(envx.String("FCLONES_ALLOW_UNSAFE"), "false"), "true")
+	unsafeAllowed := strings.EqualFold(cmp.Or(envx.String("ALLOW_UNSAFE_ARGS"), "false"), "true")
 	if unsafeAllowed {
 		slog.Warn("unsafe flags allowed, command injection guardrails disabled",
-			"env", "FCLONES_ALLOW_UNSAFE")
+			"env", "ALLOW_UNSAFE_ARGS")
 	}
 	for _, p := range []struct{ raw, env string }{
 		{argsStr, "FCLONES_ARGS"},
@@ -348,7 +348,7 @@ func validateArgEnvs(argsStr, actionArgs, scanPaths string) error {
 	}
 
 	// Wrapper-owned flags are rejected unconditionally -- even under
-	// FCLONES_ALLOW_UNSAFE, which relaxes the safety guardrails, not the
+	// ALLOW_UNSAFE_ARGS, which relaxes the safety guardrails, not the
 	// wrapper's own report/cache contract.
 	if err := rejectWrapperOwnedArgs(argsStr); err != nil {
 		return err

@@ -23,7 +23,7 @@ const healthMarkerPath = health.DefaultPath
 // every run, so a marker present but never refreshed means the interval loop
 // is wedged and the container should probe unhealthy and restart. Two
 // intervals plus the worst-case run duration (both phases — scan and action
-// — hitting their full FCLONES_SCAN_TIMEOUT) is generous headroom for a
+// — hitting their full SCAN_TIMEOUT) is generous headroom for a
 // slow-but-progressing loop. External and run-once modes keep no deadline:
 // an idle container between sparse triggers is healthy, and a trigger-
 // written marker must not expire. The env reads are quiet and best-effort —
@@ -32,13 +32,13 @@ const healthMarkerPath = health.DefaultPath
 // invalid value loudly.
 func probeOptions() []health.ProbeOption {
 	quiet := slog.New(slog.DiscardHandler)
-	s := scheduler.ParseInterval(os.Getenv("FCLONES_INTERVAL"), defaultInterval,
-		scheduler.WithZeroAsOnce(true), scheduler.WithName("FCLONES_INTERVAL"),
+	s := scheduler.ParseInterval(os.Getenv("SCAN_INTERVAL"), defaultInterval,
+		scheduler.WithZeroAsOnce(true), scheduler.WithName("SCAN_INTERVAL"),
 		scheduler.WithIntervalLogger(quiet))
 	if s.Mode == scheduler.ModeExternal || s.Mode == scheduler.ModeOnce {
 		return nil
 	}
-	timeout, ok, err := envx.DurationStrict("FCLONES_SCAN_TIMEOUT")
+	timeout, ok, err := envx.DurationStrict("SCAN_TIMEOUT")
 	if err != nil {
 		return nil
 	}
@@ -46,7 +46,7 @@ func probeOptions() []health.ProbeOption {
 		timeout = defaultScanTimeout
 	}
 	if timeout <= 0 {
-		// FCLONES_SCAN_TIMEOUT=0 disables the per-phase deadline, so a run's
+		// SCAN_TIMEOUT=0 disables the per-phase deadline, so a run's
 		// worst-case duration is unbounded and no freshness deadline is sound.
 		return nil
 	}

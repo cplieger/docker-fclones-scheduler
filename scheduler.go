@@ -61,7 +61,7 @@ const logKeyDurationS = "duration_s"
 //     occurrences of both values above are INFO, so level disambiguates a
 //     run-once failure from a clean daemon shutdown / overlap skip;
 //   - the startup-failure literals "config_error" (invalid FCLONES_ACTION /
-//     FCLONES_SCAN_TIMEOUT / argument syntax / a dangerous flag), "cache_error"
+//     SCAN_TIMEOUT / argument syntax / a dangerous flag), "cache_error"
 //     (cache directory verification failed), and "bad_subcommand" (an unknown
 //     subcommand) emitted by loadConfig/bootstrap/main before any scan runs, so
 //     a config or cache fault that crash-loops the container is caught by the
@@ -455,7 +455,7 @@ func buildActionArgs(cfg *config) ([]string, error) {
 }
 
 // phaseContext derives the per-phase context from the configured timeout. A
-// non-positive timeout (FCLONES_SCAN_TIMEOUT=0) means "no timeout": the phase
+// non-positive timeout (SCAN_TIMEOUT=0) means "no timeout": the phase
 // runs under the parent ctx so a SIGTERM still cancels it, but no deadline
 // applies. A positive timeout bounds the phase. The caller must defer the
 // returned cancel.
