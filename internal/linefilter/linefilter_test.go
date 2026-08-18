@@ -1,325 +1,18 @@
-package ioutil_test
+package linefilter_test
 
 import (
 	"bytes"
 	"os"
 	"testing"
 
-	"github.com/cplieger/docker-fclones-scheduler/internal/ioutil"
+	"github.com/cplieger/docker-fclones-scheduler/internal/linefilter"
 	"pgregory.net/rapid"
 )
 
-func TestLimitedBufferWritesBelowMaxArePreserved(t *testing.T) {
-	t.Parallel()
-	lb := &ioutil.LimitedBuffer{Max: 10}
-
-	n, err := lb.Write([]byte("hello"))
-	if err != nil {
-		t.Fatalf("Write: unexpected error: %v", err)
-	}
-	if n != 5 {
-		t.Errorf("Write returned n=%d, want 5", n)
-	}
-	if got := lb.String(); got != "hello" {
-		t.Errorf("String() = %q, want %q", got, "hello")
-	}
-}
-
-func TestLimitedBufferTruncatesWriteThatCrossesMax(t *testing.T) {
-	t.Parallel()
-	lb := &ioutil.LimitedBuffer{Max: 5}
-
-	n, err := lb.Write([]byte("hello world"))
-	if err != nil {
-		t.Fatalf("Write: unexpected error: %v", err)
-	}
-	if n != 11 {
-		t.Errorf("Write returned n=%d, want 11 (full input length)", n)
-	}
-	if got := lb.String(); got != "hello" {
-		t.Errorf("String() = %q, want %q (truncated to max)", got, "hello")
-	}
-}
-
-func TestLimitedBufferDiscardsWritesAfterMaxReached(t *testing.T) {
-	t.Parallel()
-	lb := &ioutil.LimitedBuffer{Max: 5}
-
-	if _, err := lb.Write([]byte("hello")); err != nil {
-		t.Fatalf("first Write: %v", err)
-	}
-
-	n, err := lb.Write([]byte(" world"))
-	if err != nil {
-		t.Fatalf("second Write: %v", err)
-	}
-	if n != 6 {
-		t.Errorf("second Write returned n=%d, want 6 (full input length)", n)
-	}
-	if got := lb.String(); got != "hello" {
-		t.Errorf("String() = %q, want %q (buffer frozen at max)", got, "hello")
-	}
-}
-
-func TestLimitedBufferZeroMaxDiscardsEverything(t *testing.T) {
-	t.Parallel()
-	lb := &ioutil.LimitedBuffer{Max: 0}
-
-	n, err := lb.Write([]byte("anything"))
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if n != 8 {
-		t.Errorf("Write returned n=%d, want 8", n)
-	}
-	if got := lb.String(); got != "" {
-		t.Errorf("String() = %q, want empty", got)
-	}
-}
-
-func TestLimitedBufferEmptyWriteIsNoop(t *testing.T) {
-	t.Parallel()
-	lb := &ioutil.LimitedBuffer{Max: 5}
-
-	n, err := lb.Write(nil)
-	if err != nil {
-		t.Fatalf("Write(nil): %v", err)
-	}
-	if n != 0 {
-		t.Errorf("Write(nil) returned n=%d, want 0", n)
-	}
-
-	n, err = lb.Write([]byte{})
-	if err != nil {
-		t.Fatalf("Write(empty): %v", err)
-	}
-	if n != 0 {
-		t.Errorf("Write(empty) returned n=%d, want 0", n)
-	}
-	if got := lb.String(); got != "" {
-		t.Errorf("String() = %q, want empty", got)
-	}
-}
-
-func TestLimitedBufferExactBoundaryFill(t *testing.T) {
-	t.Parallel()
-	lb := &ioutil.LimitedBuffer{Max: 5}
-
-	n, err := lb.Write([]byte("hello"))
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if n != 5 {
-		t.Errorf("Write returned n=%d, want 5", n)
-	}
-	if got := lb.String(); got != "hello" {
-		t.Errorf("String() = %q, want %q", got, "hello")
-	}
-
-	n, err = lb.Write([]byte{})
-	if err != nil {
-		t.Fatalf("zero-length Write after fill: %v", err)
-	}
-	if n != 0 {
-		t.Errorf("zero-length Write returned n=%d, want 0", n)
-	}
-}
-
-func TestLimitedBufferTotalTracksAllBytes(t *testing.T) {
-	t.Parallel()
-	lb := &ioutil.LimitedBuffer{Max: 5}
-
-	if _, err := lb.Write([]byte("hello world")); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if got, want := lb.Total(), 11; got != want {
-		t.Errorf("Total() = %d, want %d", got, want)
-	}
-	if !lb.Truncated() {
-		t.Errorf("Truncated() = false, want true after overflow")
-	}
-	if got := lb.String(); got != "hello" {
-		t.Errorf("String() = %q, want %q", got, "hello")
-	}
-}
-
-func TestLimitedBufferNotTruncatedBelowMax(t *testing.T) {
-	t.Parallel()
-	lb := &ioutil.LimitedBuffer{Max: 10}
-
-	if _, err := lb.Write([]byte("hi")); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if lb.Truncated() {
-		t.Errorf("Truncated() = true, want false when under max")
-	}
-	if got, want := lb.Total(), 2; got != want {
-		t.Errorf("Total() = %d, want %d", got, want)
-	}
-}
-
-// TestLimitedBufferWriteFillsExactRemaining locks the exact-fill boundary: a
-// Write whose length equals the remaining room must store all of it, bringing
-// the buffer to exactly Max with nothing discarded.
-func TestLimitedBufferWriteFillsExactRemaining(t *testing.T) {
-	t.Parallel()
-	lb := &ioutil.LimitedBuffer{Max: 10}
-
-	// Partially fill so the remaining room is a non-trivial 7 bytes.
-	if n, err := lb.Write([]byte("abc")); err != nil || n != 3 {
-		t.Fatalf("setup Write(%q) = (%d, %v), want (3, nil)", "abc", n, err)
-	}
-
-	// Write exactly the remaining room (10 - 3 = 7) bytes.
-	n, err := lb.Write([]byte("defghij"))
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if n != 7 {
-		t.Errorf("Write returned n=%d, want 7", n)
-	}
-	if got := lb.String(); got != "abcdefghij" {
-		t.Errorf("String() = %q, want %q (filled to exactly Max)", got, "abcdefghij")
-	}
-	if lb.Truncated() {
-		t.Errorf("Truncated() = true, want false (total 10 == Max, nothing discarded)")
-	}
-}
-
-// TestLimitedBufferWriteAfterMaxLoweredStoresNothing locks the negative-room
-// boundary: lowering Max below the current buffer length makes the available
-// room negative, which must clamp to zero so a further Write stores nothing
-// without panicking.
-func TestLimitedBufferWriteAfterMaxLoweredStoresNothing(t *testing.T) {
-	t.Parallel()
-	lb := &ioutil.LimitedBuffer{Max: 10}
-
-	if n, err := lb.Write([]byte("0123456789")); err != nil || n != 10 {
-		t.Fatalf("setup Write = (%d, %v), want (10, nil)", n, err)
-	}
-
-	// Lower Max below the current length: Max - buf.Len() is now negative.
-	lb.Max = 4
-
-	n, err := lb.Write([]byte("more"))
-	if err != nil {
-		t.Fatalf("Write after Max lowered: %v", err)
-	}
-	if n != 4 {
-		t.Errorf("Write after Max lowered n=%d, want 4 (full input length)", n)
-	}
-	if got := lb.String(); got != "0123456789" {
-		t.Errorf("String() = %q, want %q (frozen; negative room stores nothing)", got, "0123456789")
-	}
-	if got, want := lb.Total(), 14; got != want {
-		t.Errorf("Total() = %d, want %d (10 stored + 4 discarded)", got, want)
-	}
-	if !lb.Truncated() {
-		t.Errorf("Truncated() = false, want true (total 14 exceeds lowered Max 4)")
-	}
-}
-
-func TestProperty_LimitedBufferInvariants(t *testing.T) {
-	t.Parallel()
-	rapid.Check(t, func(rt *rapid.T) {
-		maxVal := rapid.IntRange(0, 256).Draw(rt, "max")
-		numWrites := rapid.IntRange(0, 20).Draw(rt, "numWrites")
-
-		lb := &ioutil.LimitedBuffer{Max: maxVal}
-		totalInput := 0
-		totalReturned := 0
-
-		for i := range numWrites {
-			payload := rapid.SliceOfN(rapid.Byte(), 0, 64).Draw(rt, "payload")
-			totalInput += len(payload)
-
-			n, err := lb.Write(payload)
-			if err != nil {
-				rt.Fatalf("Write(len=%d): %v", len(payload), err)
-			}
-			if n != len(payload) {
-				rt.Fatalf("Write returned n=%d, want %d", n, len(payload))
-			}
-			totalReturned += n
-
-			if got := len([]byte(lb.String())); got > maxVal {
-				rt.Fatalf("buffer length %d exceeds max %d after write %d", got, maxVal, i)
-			}
-		}
-
-		if totalReturned != totalInput {
-			rt.Fatalf("sum of Write returns %d != sum of input lengths %d",
-				totalReturned, totalInput)
-		}
-
-		if got := lb.Total(); got != totalInput {
-			rt.Fatalf("Total() = %d, want sum of input lengths %d", got, totalInput)
-		}
-		if got, want := lb.Truncated(), totalInput > maxVal; got != want {
-			rt.Fatalf("Truncated() = %v, want %v (total=%d max=%d)",
-				got, want, totalInput, maxVal)
-		}
-	})
-}
-
-func TestProperty_LimitedBufferStringIsStable(t *testing.T) {
-	t.Parallel()
-	rapid.Check(t, func(rt *rapid.T) {
-		maxVal := rapid.IntRange(0, 128).Draw(rt, "max")
-		payload := rapid.SliceOfN(rapid.Byte(), 0, 200).Draw(rt, "payload")
-
-		lb := &ioutil.LimitedBuffer{Max: maxVal}
-		_, _ = lb.Write(payload)
-
-		first := lb.String()
-		second := lb.String()
-		third := lb.String()
-
-		if first != second || second != third {
-			rt.Fatalf("String() not stable: %q / %q / %q", first, second, third)
-		}
-	})
-}
-
-// TestProperty_LimitedBufferRetainsInputPrefix is the content oracle the other
-// LimitedBuffer property lacks. Across an arbitrary sequence of writes the
-// buffer must retain exactly the first min(total, Max) bytes of the
-// concatenated input, because Write greedily fills the remaining room with the
-// earliest bytes and drops the rest. TestProperty_LimitedBufferInvariants
-// asserts only length, Total, and Truncated, so a content- or
-// accumulation-corrupting mutant -- one that stores the tail instead of the
-// head, or resets the buffer on each write -- keeps those invariants and
-// survives it; this pins the retained bytes themselves.
-func TestProperty_LimitedBufferRetainsInputPrefix(t *testing.T) {
-	t.Parallel()
-	rapid.Check(t, func(rt *rapid.T) {
-		maxVal := rapid.IntRange(0, 256).Draw(rt, "max")
-		numWrites := rapid.IntRange(0, 20).Draw(rt, "numWrites")
-
-		lb := &ioutil.LimitedBuffer{Max: maxVal}
-		var concat []byte
-		for range numWrites {
-			payload := rapid.SliceOfN(rapid.Byte(), 0, 64).Draw(rt, "payload")
-			concat = append(concat, payload...)
-			if _, err := lb.Write(payload); err != nil {
-				rt.Fatalf("Write(len=%d): %v", len(payload), err)
-			}
-		}
-
-		want := concat[:min(len(concat), maxVal)]
-		if got := lb.String(); got != string(want) {
-			rt.Fatalf("String() = %q, want %q (first %d bytes of the %d-byte concatenated input)",
-				got, want, len(want), len(concat))
-		}
-	})
-}
-
-// --- Tests: filteringWriter ---
-
-func TestFilteringWriterDropsFilteredLines(t *testing.T) {
+func TestWriterDropsFilteredLines(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	fw := ioutil.NewFilteringWriter(&out)
+	fw := linefilter.New(&out)
 
 	input := "[ts] fclones:  info: Started grouping\n" +
 		"keep this warn line\n" +
@@ -336,10 +29,10 @@ func TestFilteringWriterDropsFilteredLines(t *testing.T) {
 	}
 }
 
-func TestFilteringWriterHandlesPartialLines(t *testing.T) {
+func TestWriterHandlesPartialLines(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	fw := ioutil.NewFilteringWriter(&out)
+	fw := linefilter.New(&out)
 
 	fw.Write([]byte("[ts] fclones:  info: Start"))
 	fw.Write([]byte("ed grouping\nkeep this\n"))
@@ -350,7 +43,7 @@ func TestFilteringWriterHandlesPartialLines(t *testing.T) {
 	}
 }
 
-func TestFilteringWriterSanitizesControlBytes(t *testing.T) {
+func TestWriterSanitizesControlBytes(t *testing.T) {
 	t.Parallel()
 	// fclones renders scanned filenames raw into its stderr diagnostics, and a
 	// filename is attacker-influenceable. A control byte embedded in one must not
@@ -410,7 +103,7 @@ func TestFilteringWriterSanitizesControlBytes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var out bytes.Buffer
-			fw := ioutil.NewFilteringWriter(&out)
+			fw := linefilter.New(&out)
 			if _, err := fw.Write([]byte(tc.input)); err != nil {
 				t.Fatalf("Write: %v", err)
 			}
@@ -421,18 +114,18 @@ func TestFilteringWriterSanitizesControlBytes(t *testing.T) {
 	}
 }
 
-// TestFilteringWriterPreservesMultibyteRuneSplitAcrossWrites guards the
-// interaction between FilteringWriter's cross-Write partial-line buffering and
+// TestWriterPreservesMultibyteRuneSplitAcrossWrites guards the
+// interaction between Writer's cross-Write partial-line buffering and
 // its per-line sanitization: a multi-byte UTF-8 rune whose bytes arrive in
 // separate Write calls (as a subprocess pipe read can split mid-rune) must be
 // reassembled into the complete line before sanitizeControlBytes runs, so the
 // rune is forwarded verbatim rather than escaped as two standalone invalid
 // bytes. The existing chunk-invariance property restricts input to ASCII and
-// FuzzFilteringWriter issues a single Write, so neither reaches this boundary.
-func TestFilteringWriterPreservesMultibyteRuneSplitAcrossWrites(t *testing.T) {
+// FuzzWriter issues a single Write, so neither reaches this boundary.
+func TestWriterPreservesMultibyteRuneSplitAcrossWrites(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	fw := ioutil.NewFilteringWriter(&out)
+	fw := linefilter.New(&out)
 
 	// "cafe" ends in an accented e (U+00E9 = 0xC3 0xA9); the line carries no
 	// fclones noise marker, so it is kept and sanitized. Deliver the 0xC3 lead
@@ -458,16 +151,16 @@ func TestFilteringWriterPreservesMultibyteRuneSplitAcrossWrites(t *testing.T) {
 	}
 }
 
-// TestFilteringWriterWritesLeadingBlankLine guards the newline-search boundary
+// TestWriterWritesLeadingBlankLine guards the newline-search boundary
 // in Write: a buffer whose very first byte is '\n' (idx == 0) must still be
 // recognised as a complete line and forwarded, not buffered. Mutating the
 // `idx < 0` no-newline guard to `idx <= 0` would treat a leading newline as
 // "no newline found", swallowing the entire write.
-func TestFilteringWriterWritesLeadingBlankLine(t *testing.T) {
+func TestWriterWritesLeadingBlankLine(t *testing.T) {
 	t.Parallel()
 
 	var out bytes.Buffer
-	fw := ioutil.NewFilteringWriter(&out)
+	fw := linefilter.New(&out)
 
 	if _, err := fw.Write([]byte("\nkeep this\n")); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -480,10 +173,10 @@ func TestFilteringWriterWritesLeadingBlankLine(t *testing.T) {
 	}
 }
 
-func TestFilteringWriterFlushEmitsBufferedPartialLine(t *testing.T) {
+func TestWriterFlushEmitsBufferedPartialLine(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	fw := ioutil.NewFilteringWriter(&out)
+	fw := linefilter.New(&out)
 	fw.Write([]byte("partial line without newline"))
 	fw.Flush()
 	if got := out.String(); got != "partial line without newline" {
@@ -491,10 +184,10 @@ func TestFilteringWriterFlushEmitsBufferedPartialLine(t *testing.T) {
 	}
 }
 
-func TestFilteringWriterFlushDropsFilteredLine(t *testing.T) {
+func TestWriterFlushDropsFilteredLine(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	fw := ioutil.NewFilteringWriter(&out)
+	fw := linefilter.New(&out)
 	fw.Write([]byte("[ts] fclones:  info: Started grouping"))
 	fw.Flush()
 	if got := out.String(); got != "" {
@@ -502,20 +195,20 @@ func TestFilteringWriterFlushDropsFilteredLine(t *testing.T) {
 	}
 }
 
-func TestFilteringWriterFlushEmptyIsNoop(t *testing.T) {
+func TestWriterFlushEmptyIsNoop(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	fw := ioutil.NewFilteringWriter(&out)
+	fw := linefilter.New(&out)
 	if err := fw.Flush(); err != nil {
 		t.Fatalf("Flush on empty buffer: %v", err)
 	}
 }
 
-func TestFilteringWriterFlushPropagatesSinkError(t *testing.T) {
+func TestWriterFlushPropagatesSinkError(t *testing.T) {
 	t.Parallel()
 
 	sink := &errOnWrite{}
-	fw := ioutil.NewFilteringWriter(sink)
+	fw := linefilter.New(sink)
 
 	if _, err := fw.Write([]byte("buffered partial line, no newline")); err != nil {
 		t.Fatalf("Write(partial) buffered the line but returned error %v, want nil", err)
@@ -537,15 +230,15 @@ func (e *errOnWrite) Write(p []byte) (int, error) {
 	return 0, os.ErrClosed
 }
 
-func TestFilteringWriterCapsUnboundedNoNewlineFlood(t *testing.T) {
+func TestWriterCapsUnboundedNoNewlineFlood(t *testing.T) {
 	t.Parallel()
 
-	const cap = ioutil.MaxLineBytes
+	const cap = linefilter.MaxLineBytes
 
 	t.Run("flushes oversized non-filtered partial line and resets buffer", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		fw := ioutil.NewFilteringWriter(&out)
+		fw := linefilter.New(&out)
 
 		flood := bytes.Repeat([]byte("x"), cap+1)
 		n, err := fw.Write(flood)
@@ -573,7 +266,7 @@ func TestFilteringWriterCapsUnboundedNoNewlineFlood(t *testing.T) {
 	t.Run("drops oversized filtered partial line and resets buffer", func(t *testing.T) {
 		t.Parallel()
 		var out bytes.Buffer
-		fw := ioutil.NewFilteringWriter(&out)
+		fw := linefilter.New(&out)
 
 		// A >1MB no-newline run that contains a filtered pattern: the cap fires
 		// and the line is dropped (not forwarded), buffer reset. The line carries
@@ -599,7 +292,7 @@ func TestFilteringWriterCapsUnboundedNoNewlineFlood(t *testing.T) {
 	t.Run("propagates sink error and resets buffer on oversized flush", func(t *testing.T) {
 		t.Parallel()
 		sink := &errOnWrite{}
-		fw := ioutil.NewFilteringWriter(sink)
+		fw := linefilter.New(sink)
 
 		flood := bytes.Repeat([]byte("x"), cap+1)
 		n, err := fw.Write(flood)
@@ -615,11 +308,11 @@ func TestFilteringWriterCapsUnboundedNoNewlineFlood(t *testing.T) {
 	})
 }
 
-func TestFilteringWriterCapFiresAcrossMultipleWrites(t *testing.T) {
+func TestWriterCapFiresAcrossMultipleWrites(t *testing.T) {
 	t.Parallel()
-	const maxLine = ioutil.MaxLineBytes
+	const maxLine = linefilter.MaxLineBytes
 	var out bytes.Buffer
-	fw := ioutil.NewFilteringWriter(&out)
+	fw := linefilter.New(&out)
 	half := bytes.Repeat([]byte("y"), maxLine/2+1)
 	if _, err := fw.Write(half); err != nil {
 		t.Fatalf("Write(half #1): %v", err)
@@ -637,9 +330,9 @@ func TestFilteringWriterCapFiresAcrossMultipleWrites(t *testing.T) {
 
 func TestFloodsCountsForcedFlushes(t *testing.T) {
 	t.Parallel()
-	const maxLine = ioutil.MaxLineBytes
+	const maxLine = linefilter.MaxLineBytes
 	var out bytes.Buffer
-	fw := ioutil.NewFilteringWriter(&out)
+	fw := linefilter.New(&out)
 
 	if got := fw.Floods(); got != 0 {
 		t.Errorf("Floods() = %d before any write, want 0", got)
@@ -671,11 +364,11 @@ func TestFloodsCountsForcedFlushes(t *testing.T) {
 	}
 }
 
-func TestFilteringWriterPropagatesSinkErrorOnCompleteLine(t *testing.T) {
+func TestWriterPropagatesSinkErrorOnCompleteLine(t *testing.T) {
 	t.Parallel()
 
 	sink := &errOnWrite{}
-	fw := ioutil.NewFilteringWriter(sink)
+	fw := linefilter.New(sink)
 
 	input := []byte("keep this line\n")
 	n, err := fw.Write(input)
@@ -690,12 +383,12 @@ func TestFilteringWriterPropagatesSinkErrorOnCompleteLine(t *testing.T) {
 	}
 }
 
-// TestProperty_FilteringWriterChunkInvariant asserts that FilteringWriter's
+// TestProperty_WriterChunkInvariant asserts that Writer's
 // filtered output is independent of how the input byte stream is split across
 // Write calls, for inputs whose lines stay under MaxLineBytes (the common
 // fclones-output case). Lines are capped at 40 bytes so the no-newline
 // cap-flush path never fires, under which chunk-invariance would not hold.
-func TestProperty_FilteringWriterChunkInvariant(t *testing.T) {
+func TestProperty_WriterChunkInvariant(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
 		numLines := rapid.IntRange(0, 20).Draw(rt, "numLines")
@@ -711,7 +404,7 @@ func TestProperty_FilteringWriterChunkInvariant(t *testing.T) {
 		}
 
 		var refOut bytes.Buffer
-		ref := ioutil.NewFilteringWriter(&refOut)
+		ref := linefilter.New(&refOut)
 		if _, err := ref.Write(stream); err != nil {
 			rt.Fatalf("reference Write: %v", err)
 		}
@@ -720,7 +413,7 @@ func TestProperty_FilteringWriterChunkInvariant(t *testing.T) {
 		}
 
 		var gotOut bytes.Buffer
-		fw := ioutil.NewFilteringWriter(&gotOut)
+		fw := linefilter.New(&gotOut)
 		rest := stream
 		for len(rest) > 0 {
 			cut := rapid.IntRange(1, len(rest)).Draw(rt, "cut")
@@ -739,13 +432,13 @@ func TestProperty_FilteringWriterChunkInvariant(t *testing.T) {
 	})
 }
 
-func TestFilteringWriterCapResetsBufferAfterSinkError(t *testing.T) {
+func TestWriterCapResetsBufferAfterSinkError(t *testing.T) {
 	t.Parallel()
 
-	const cap = ioutil.MaxLineBytes
+	const cap = linefilter.MaxLineBytes
 
 	sink := &failingThenRecordingSink{}
-	fw := ioutil.NewFilteringWriter(sink)
+	fw := linefilter.New(sink)
 
 	flood := bytes.Repeat([]byte("x"), cap+1)
 	if _, err := fw.Write(flood); err == nil {
@@ -776,13 +469,13 @@ func (s *failingThenRecordingSink) Write(p []byte) (int, error) {
 	return s.got.Write(p)
 }
 
-func TestFilteringWriterCapNotTrippedAtExactBoundary(t *testing.T) {
+func TestWriterCapNotTrippedAtExactBoundary(t *testing.T) {
 	t.Parallel()
 
-	const maxLine = ioutil.MaxLineBytes
+	const maxLine = linefilter.MaxLineBytes
 
 	var out bytes.Buffer
-	fw := ioutil.NewFilteringWriter(&out)
+	fw := linefilter.New(&out)
 
 	// A no-newline run of exactly MaxLineBytes must NOT trip the cap: the guard
 	// is `len(fw.buf) > MaxLineBytes`, so the buffer is held (not flushed) until
@@ -803,18 +496,18 @@ func TestFilteringWriterCapNotTrippedAtExactBoundary(t *testing.T) {
 	}
 }
 
-// TestFilteringWriterFloodThresholdTracksMaxLineBytes pins the no-newline flood
+// TestWriterFloodThresholdTracksMaxLineBytes pins the no-newline flood
 // threshold to the exported MaxLineBytes constant that scheduler.go logs as
 // cap_bytes alongside flood_count. A run of exactly MaxLineBytes is held
 // (Floods()==0); one byte past it force-flushes exactly once (Floods()==1), so
 // the operator-facing cap can never silently drift from the real flush boundary.
-func TestFilteringWriterFloodThresholdTracksMaxLineBytes(t *testing.T) {
+func TestWriterFloodThresholdTracksMaxLineBytes(t *testing.T) {
 	t.Parallel()
 
 	var out bytes.Buffer
-	fw := ioutil.NewFilteringWriter(&out)
+	fw := linefilter.New(&out)
 
-	if _, err := fw.Write(bytes.Repeat([]byte("x"), ioutil.MaxLineBytes)); err != nil {
+	if _, err := fw.Write(bytes.Repeat([]byte("x"), linefilter.MaxLineBytes)); err != nil {
 		t.Fatalf("Write(exact MaxLineBytes): %v", err)
 	}
 	if out.Len() != 0 {
@@ -827,10 +520,34 @@ func TestFilteringWriterFloodThresholdTracksMaxLineBytes(t *testing.T) {
 	if _, err := fw.Write([]byte("y")); err != nil {
 		t.Fatalf("Write(+1 past MaxLineBytes): %v", err)
 	}
-	if out.Len() != ioutil.MaxLineBytes+1 {
-		t.Errorf("sink got %d bytes after crossing MaxLineBytes, want %d", out.Len(), ioutil.MaxLineBytes+1)
+	if out.Len() != linefilter.MaxLineBytes+1 {
+		t.Errorf("sink got %d bytes after crossing MaxLineBytes, want %d", out.Len(), linefilter.MaxLineBytes+1)
 	}
 	if got := fw.Floods(); got != 1 {
 		t.Errorf("Floods() = %d after crossing MaxLineBytes, want 1", got)
+	}
+}
+
+// TestEscapeUnsafeMatchesPassthroughPolicy pins the exported escaper the
+// slog-attribute sink uses (streamAttrs) to the same policy the stderr
+// passthrough applies: one class (runesafe's unsafe set), one output shape
+// (\xNN), newline/tab framing preserved. A drift between the two sinks would
+// reopen CWE-117 on whichever one lagged.
+func TestEscapeUnsafeMatchesPassthroughPolicy(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, in, want string }{
+		{"ESC escaped", "a\x1b[31mred", `a\x1b[31mred`},
+		{"RLO bidi override escaped", "evil\u202egnp.txt", `evil\xe2\x80\xaegnp.txt`},
+		{"U+2028 escaped", "x\u2028y", `x\xe2\x80\xa8y`},
+		{"multi-line tail keeps framing", "line1\nline2\tcol", "line1\nline2\tcol"},
+		{"legit unicode verbatim", "caf\u00e9 \u65e5\u672c 50\u2030", "caf\u00e9 \u65e5\u672c 50\u2030"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := linefilter.EscapeUnsafe(tc.in); got != tc.want {
+				t.Errorf("EscapeUnsafe(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

@@ -5,9 +5,9 @@ import (
 	"os"
 	"sync"
 
-	"github.com/cplieger/envx"
+	"github.com/cplieger/envx/v2"
 	"github.com/cplieger/health"
-	"github.com/cplieger/scheduler/v3"
+	"github.com/cplieger/scheduler/v4"
 )
 
 // healthMarkerPath is where the health marker file lives. Docker's
@@ -33,7 +33,7 @@ const healthMarkerPath = health.DefaultPath
 func probeOptions() []health.ProbeOption {
 	quiet := slog.New(slog.DiscardHandler)
 	s := scheduler.ParseInterval(os.Getenv("FCLONES_INTERVAL"), defaultInterval,
-		scheduler.WithZeroAsOnce(), scheduler.WithName("FCLONES_INTERVAL"),
+		scheduler.WithZeroAsOnce(true), scheduler.WithName("FCLONES_INTERVAL"),
 		scheduler.WithIntervalLogger(quiet))
 	if s.Mode == scheduler.ModeExternal || s.Mode == scheduler.ModeOnce {
 		return nil
