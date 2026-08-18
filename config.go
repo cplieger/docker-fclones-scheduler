@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -141,7 +142,7 @@ const (
 // setupLogger installs a slog text handler that emits canonical logfmt
 // (`time=... level=... msg=... k=v`) to stderr.
 func setupLogger() {
-	raw := strings.TrimSpace(envx.String("FCLONES_LOG_LEVEL", "info"))
+	raw := strings.TrimSpace(cmp.Or(envx.String("FCLONES_LOG_LEVEL"), "info"))
 	level, recognized := slogx.ParseLevel(raw, slog.LevelInfo)
 	slogx.Setup(slogx.Options{Level: level})
 	if !recognized {
@@ -189,16 +190,16 @@ func loadScanTimeout() (time.Duration, error) {
 }
 
 func loadConfig() (config, error) {
-	actionStr := envx.String("FCLONES_ACTION", string(actionGroup))
+	actionStr := cmp.Or(envx.String("FCLONES_ACTION"), string(actionGroup))
 	parsedAction, parseErr := parseAction(actionStr)
 	if parseErr != nil {
 		slog.Error("invalid FCLONES_ACTION", "action", actionStr, logKeyOutcome, "config_error", "error", parseErr)
 		return config{}, parseErr
 	}
 
-	scanPaths := envx.String("FCLONES_SCAN_PATHS", scanDir)
-	argsStr := envx.String("FCLONES_ARGS", "")
-	actionArgs := envx.String("FCLONES_ACTION_ARGS", "")
+	scanPaths := cmp.Or(envx.String("FCLONES_SCAN_PATHS"), scanDir)
+	argsStr := envx.String("FCLONES_ARGS")
+	actionArgs := envx.String("FCLONES_ACTION_ARGS")
 	if err := validateArgEnvs(argsStr, actionArgs, scanPaths); err != nil {
 		return config{}, err
 	}
@@ -323,7 +324,7 @@ func validateArgEnvs(argsStr, actionArgs, scanPaths string) error {
 	// "true" (case-insensitive), not envx.Bool's tolerant 1/yes/on set: the
 	// flag disables command-injection guardrails, so the accepted vocabulary
 	// stays as narrow as possible. Do not "clean up" to envx.Bool.
-	unsafeAllowed := strings.EqualFold(envx.String("FCLONES_ALLOW_UNSAFE", "false"), "true")
+	unsafeAllowed := strings.EqualFold(cmp.Or(envx.String("FCLONES_ALLOW_UNSAFE"), "false"), "true")
 	if unsafeAllowed {
 		slog.Warn("unsafe flags allowed, command injection guardrails disabled",
 			"env", "FCLONES_ALLOW_UNSAFE")
