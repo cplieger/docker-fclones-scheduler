@@ -93,7 +93,7 @@ func FuzzParseInterval(f *testing.F) {
 		// The returned interval must always be positive: the daemon ticker passes it
 		// to time.NewTicker (main.go), which panics on a non-positive duration.
 		// parseInterval is the sole gate protecting that call from an arbitrary
-		// FCLONES_INTERVAL env value.
+		// SCAN_INTERVAL env value.
 		if interval <= 0 {
 			t.Fatalf("parseInterval(%q) interval = %s, want > 0 (time.NewTicker panics on a non-positive duration)", input, interval)
 		}

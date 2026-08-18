@@ -121,7 +121,7 @@ func bootstrap(ctx context.Context) (config, error) {
 }
 
 // runOnce performs exactly one scan+action then returns, so the process
-// exits afterward -- the one-shot mode selected by FCLONES_INTERVAL=0. It
+// exits afterward -- the one-shot mode selected by SCAN_INTERVAL=0. It
 // runs the job directly (no daemon, no socket: there is nothing to trigger
 // out-of-band in a process that exits after one run) and is the marker's
 // single writer for its short life. A failed scan returns a non-nil error so

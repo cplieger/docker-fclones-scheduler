@@ -15,9 +15,9 @@ binary is `wrapper`. The root `main` package is small and split by concern:
 - `main.go`: dispatch (`health` probe, the `scan` trigger client, the
   default long-running process) and the composition root `run`, which wires
   the health marker (`health.NewMarker` from `github.com/cplieger/health`)
-  and dispatches on `config.Mode` (derived from `FCLONES_INTERVAL`):
+  and dispatches on `config.Mode` (derived from `SCAN_INTERVAL`):
   `runOnce` performs a single direct scan+action and exits
-  (`FCLONES_INTERVAL=0`), while the built-in and external modes hand every
+  (`SCAN_INTERVAL=0`), while the built-in and external modes hand every
   run to the daemon.
 - `daemon.go`: the single owner of scan execution in the long-running
   modes (the shared single-owner scheduler shape, matching
@@ -44,7 +44,7 @@ binary is `wrapper`. The root `main` package is small and split by concern:
   a shutdown drain latch), and `jobHealthSignal` (skip/interrupt carve-outs).
 - `config.go`: environment loading (`loadConfig`), logger setup
   (`setupLogger`), the `FCLONES_ACTION` allowlist (`parseAction`), the
-  dangerous-flag rejection (`rejectDangerousArgs`), and the `FCLONES_INTERVAL`
+  dangerous-flag rejection (`rejectDangerousArgs`), and the `SCAN_INTERVAL`
   interpreter (`parseInterval`, delegating to `scheduler.ParseInterval` with
   `WithZeroAsOnce`, maps `Schedule.Mode` → `runMode`: a positive duration runs
   built-in, `off`/`disabled` idles, `0`/`0s` runs once, and an empty,
@@ -87,7 +87,7 @@ intact when touching `config.go` or `scheduler.go`:
 - `FCLONES_ACTION` is validated against the `group` / `remove` / `link` /
   `dedupe` allowlist in `parseAction`.
 - `--transform`, `--in-place`, and `--no-copy` are rejected in
-  `rejectDangerousArgs` unless `FCLONES_ALLOW_UNSAFE=true`. New flag handling
+  `rejectDangerousArgs` unless `ALLOW_UNSAFE_ARGS=true`. New flag handling
   must preserve this opt-in gate. Every entry must exist in the pinned fclones:
   a fourth entry, `--command`, sat here until 2026-08 and blocked nothing,
   because fclones has no such flag (its exec flag has always been

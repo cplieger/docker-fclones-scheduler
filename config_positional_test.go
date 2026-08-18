@@ -59,7 +59,7 @@ func TestRejectPositionalArgs(t *testing.T) {
 }
 
 // TestLoadConfig_positionalArgsRejected verifies the gate holds at loadConfig
-// level for both arg vars and in BOTH safety modes: FCLONES_ALLOW_UNSAFE
+// level for both arg vars and in BOTH safety modes: ALLOW_UNSAFE_ARGS
 // relaxes the dangerous-flag guardrails, not the wrapper's scan-path contract.
 func TestLoadConfig_positionalArgsRejected(t *testing.T) {
 	for _, envVar := range []string{"FCLONES_ARGS", "FCLONES_ACTION_ARGS"} {
@@ -67,7 +67,7 @@ func TestLoadConfig_positionalArgsRejected(t *testing.T) {
 			t.Run(envVar+"/allow_unsafe="+unsafeMode, func(t *testing.T) {
 				setCleanFclonesEnv(t)
 				t.Setenv(envVar, "--name '*.mp4*' '*.mkv'")
-				t.Setenv("FCLONES_ALLOW_UNSAFE", unsafeMode)
+				t.Setenv("ALLOW_UNSAFE_ARGS", unsafeMode)
 
 				_, err := loadConfig()
 				if err == nil {

@@ -91,8 +91,8 @@ func TestHealthController_MarkUnhealthyAlwaysWrites(t *testing.T) {
 func TestProbeOptions(t *testing.T) {
 	setEnv := func(t *testing.T, interval, timeout string) {
 		t.Helper()
-		t.Setenv("FCLONES_INTERVAL", interval)
-		t.Setenv("FCLONES_SCAN_TIMEOUT", timeout)
+		t.Setenv("SCAN_INTERVAL", interval)
+		t.Setenv("SCAN_TIMEOUT", timeout)
 	}
 
 	t.Run("built-in default arms a deadline", func(t *testing.T) {

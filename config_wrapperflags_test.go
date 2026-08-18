@@ -51,14 +51,14 @@ func TestRejectWrapperOwnedArgs(t *testing.T) {
 }
 
 // TestLoadConfig_wrapperOwnedFlagsRejected verifies the gate holds at
-// loadConfig level in BOTH safety modes: FCLONES_ALLOW_UNSAFE relaxes the
+// loadConfig level in BOTH safety modes: ALLOW_UNSAFE_ARGS relaxes the
 // dangerous-flag guardrails, not the wrapper's own report/cache contract.
 func TestLoadConfig_wrapperOwnedFlagsRejected(t *testing.T) {
 	for _, unsafeMode := range []string{"false", "true"} {
 		t.Run("allow_unsafe="+unsafeMode, func(t *testing.T) {
 			setCleanFclonesEnv(t)
 			t.Setenv("FCLONES_ARGS", "--format json")
-			t.Setenv("FCLONES_ALLOW_UNSAFE", unsafeMode)
+			t.Setenv("ALLOW_UNSAFE_ARGS", unsafeMode)
 
 			if _, err := loadConfig(); err == nil {
 				t.Fatal("loadConfig(FCLONES_ARGS=--format json) = nil error, want the wrapper-owned rejection")
