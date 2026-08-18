@@ -1,53 +1,17 @@
-package ioutil_test
+package linefilter_test
 
 import (
 	"bytes"
 	"strings"
 	"testing"
 
-	"github.com/cplieger/docker-fclones-scheduler/internal/ioutil"
+	"github.com/cplieger/docker-fclones-scheduler/internal/linefilter"
 )
 
-func FuzzLimitedBuffer(f *testing.F) {
-	f.Add([]byte("hello world"), 5)
-	f.Add([]byte("short"), 100)
-	f.Add([]byte(""), 0)
-	f.Add([]byte("exactly"), 7)
-	f.Add([]byte("negative cap"), -5)
-	f.Fuzz(func(t *testing.T, data []byte, max int) {
-		lb := &ioutil.LimitedBuffer{Max: max}
-		n, err := lb.Write(data)
-		if err != nil {
-			t.Fatalf("Write should never error, got: %v", err)
-		}
-		if n != len(data) {
-			t.Fatalf("Write returned %d, want %d", n, len(data))
-		}
-		// A non-positive Max clamps to an effective cap of 0 (the
-		// max(0, lb.Max-lb.buf.Len()) guard in Write), so the buffer content
-		// must never exceed max(0, max).
-		effCap := max
-		if effCap < 0 {
-			effCap = 0
-		}
-		if len(lb.String()) > effCap {
-			t.Fatalf("buffer len %d exceeds effective cap %d", len(lb.String()), effCap)
-		}
-		// Total must equal bytes written
-		if lb.Total() != len(data) {
-			t.Fatalf("Total() = %d, want %d", lb.Total(), len(data))
-		}
-		// Truncated iff wrote more than max
-		if lb.Truncated() != (len(data) > max) {
-			t.Fatalf("Truncated() = %v, want %v", lb.Truncated(), len(data) > max)
-		}
-	})
-}
-
-func FuzzFilteringWriter(f *testing.F) {
+func FuzzWriter(f *testing.F) {
 	f.Add("info: Started grouping\nkeep me\n")
 	f.Add("no newline at all")
-	f.Add(strings.Repeat("a", ioutil.MaxLineBytes+1)) // > MaxLineBytes: covers the no-newline flood-flush path
+	f.Add(strings.Repeat("a", linefilter.MaxLineBytes+1)) // > MaxLineBytes: covers the no-newline flood-flush path
 	f.Add("")
 	f.Add("\n\n\n")
 	f.Add("info: Scanned 5\npartial line")
@@ -56,7 +20,7 @@ func FuzzFilteringWriter(f *testing.F) {
 	f.Add("\x1b")                                                 // lone control byte, no newline: sanitized on Flush
 	f.Fuzz(func(t *testing.T, input string) {
 		var sink bytes.Buffer
-		fw := ioutil.NewFilteringWriter(&sink)
+		fw := linefilter.New(&sink)
 
 		n, err := fw.Write([]byte(input))
 		if err != nil {
@@ -71,7 +35,7 @@ func FuzzFilteringWriter(f *testing.F) {
 
 		out := sink.Bytes()
 
-		// Bounded expansion: FilteringWriter drops whole lines and rewrites each C0/DEL
+		// Bounded expansion: Writer drops whole lines and rewrites each C0/DEL
 		// control byte (and any invalid-UTF-8 byte) to a 4-byte \xNN escape via
 		// sanitizeControlBytes, so output can exceed input, but never by more than 4x.
 		// The old drop-only bound (len(out) > len(input)) held only before the

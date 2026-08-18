@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/cplieger/docker-fclones-scheduler/internal/args"
-	"github.com/cplieger/envx"
-	"github.com/cplieger/scheduler/v3"
+	"github.com/cplieger/envx/v2"
+	"github.com/cplieger/scheduler/v4"
 	"github.com/cplieger/slogx"
 )
 
@@ -241,7 +241,7 @@ func loadConfig() (config, error) {
 // mapped onto the app's runMode.
 func parseInterval(raw string) (interval time.Duration, mode runMode) {
 	s := scheduler.ParseInterval(raw, defaultInterval,
-		scheduler.WithZeroAsOnce(), scheduler.WithName("FCLONES_INTERVAL"))
+		scheduler.WithZeroAsOnce(true), scheduler.WithName("FCLONES_INTERVAL"))
 	switch s.Mode {
 	case scheduler.ModeExternal:
 		return s.Interval, modeExternal

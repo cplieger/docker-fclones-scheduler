@@ -1,15 +1,17 @@
-package ioutil
+package linefilter
 
 import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/cplieger/runesafe/v2"
 )
 
 // shouldFilterLine is unexported (no production caller outside this package),
-// so its tests live here in the internal (package ioutil) test file rather
-// than the external ioutil_test package. The external tests cover the public
-// surface (FilteringWriter / LimitedBuffer); these pin the
+// so its tests live here in the internal (package linefilter) test file rather
+// than the external linefilter_test package. The external tests cover the public
+// surface (Writer / capbuf.Buffer); these pin the
 // noise-filter predicate directly. FuzzShouldFilterLine deliberately
 // re-declares the noise pattern lists as an independent level-keyed oracle (not
 // the production infoProgressPatterns/warnNoisePatterns vars), so a wrong edit to
@@ -63,7 +65,7 @@ func TestShouldFilterLine(t *testing.T) {
 		{"[2026-04-26 11:00:03.072] fclones:  warn: Started grouping the cache", false},
 		// fclones: prefix present but the remainder has no second colon (no level
 		// separator). shouldFilterLine returns false at the second strings.Cut
-		// guard; this pins ioutil.go's malformed-level branch, which the well-formed
+		// guard; this pins linefilter.go's malformed-level branch, which the well-formed
 		// table cases and the (prefix-free) fuzz seeds never reach deterministically.
 		{"[2026-04-26 11:00:03.072] fclones: warnnocolon doesn't support FIEMAP ioctl API", false},
 	}
@@ -137,16 +139,20 @@ func FuzzShouldFilterLine(f *testing.F) {
 	})
 }
 
-// TestSanitizeControlBytesEscapesWellFormedC1 pins the C1 fix (l-f5): the C1
-// control block U+0080..U+009F must be escaped even when it arrives as its
-// well-formed 2-byte UTF-8 encoding (0xC2 0x80..0x9F), because those are
-// category-Cc control codepoints that drive terminal escape sequences and a
-// scanned filename can embed them (a residual CWE-117 vector the byte-only
-// escaper missed). The boundary is exact: U+00A0 (NBSP) and every higher rune
-// (accented Latin, CJK, emoji) is forwarded verbatim. Calls sanitizeControlBytes
-// directly (byte-in / byte-out) so both code paths are exercised: an input made
-// only of a C1 rune would otherwise take the no-alloc fast path.
-func TestSanitizeControlBytesEscapesWellFormedC1(t *testing.T) {
+// TestSanitizeControlBytesEscapesUnsafeRunes pins the well-formed-rune half of
+// the escape class, which is runesafe.IsUnsafeNonASCII's: the C1 control block
+// U+0080..U+009F even in its 2-byte UTF-8 encoding (terminal escape
+// introducers), the Unicode bidi controls (Trojan-Source reordering), and
+// U+2028/U+2029 (record forgery in Unicode-line-terminator-splitting
+// consumers) -- each a CWE-117 vector on an attacker-influenced scanned
+// filename. The boundaries are exact: the nearest sibling codepoint outside
+// each class (NBSP U+00A0 past the C1 block, U+202F past the U+202A-202E bidi
+// run, U+2065 in the gap before the isolates, U+2030 past U+2029) and ordinary
+// non-ASCII (accented Latin, CJK) are forwarded verbatim. Calls
+// sanitizeControlBytes directly (byte-in / byte-out) so both code paths are
+// exercised: an input made only of an unsafe rune would otherwise take the
+// no-alloc fast path.
+func TestSanitizeControlBytesEscapesUnsafeRunes(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -190,6 +196,52 @@ func TestSanitizeControlBytesEscapesWellFormedC1(t *testing.T) {
 			in:   []byte("caf\u00e9\u009b"),
 			want: "caf\u00e9" + `\xc2\x9b`,
 		},
+		{
+			// The classes the pre-runesafe escaper forwarded verbatim
+			// (Trojan-Source, CWE-117): a bidi override is well-formed 3-byte
+			// UTF-8 and is NOT a C1 control, so only the shared predicate
+			// catches it. An RLO in a filename visually reorders the rendered
+			// log line in an operator terminal.
+			name: "U+202E RLO bidi override is escaped",
+			in:   []byte("evil\u202egnp.txt"),
+			want: `evil\xe2\x80\xaegnp.txt`,
+		},
+		{
+			name: "U+2066 LRI isolate is escaped",
+			in:   []byte("a\u2066b"),
+			want: `a\xe2\x81\xa6b`,
+		},
+		{
+			// U+2028/U+2029 are line terminators to any consumer that splits
+			// records on the Unicode class rather than bare \n; escaping them
+			// keeps one visual line one record everywhere downstream.
+			name: "U+2028 line separator is escaped",
+			in:   []byte("x\u2028y"),
+			want: `x\xe2\x80\xa8y`,
+		},
+		{
+			name: "U+2029 paragraph separator is escaped",
+			in:   []byte("x\u2029y"),
+			want: `x\xe2\x80\xa9y`,
+		},
+		// The nearest sibling OUTSIDE each unsafe class stays verbatim: the
+		// escape set must not creep into legitimate typography, and an
+		// off-by-one in the class tables fails here, not seven codepoints out.
+		{
+			name: "U+202F narrow NBSP just past the U+202E bidi run is forwarded verbatim",
+			in:   []byte("a\u202fb"),
+			want: "a\u202fb",
+		},
+		{
+			name: "U+2065 unassigned gap before the bidi isolates is forwarded verbatim",
+			in:   []byte("a\u2065b"),
+			want: "a\u2065b",
+		},
+		{
+			name: "U+2030 per-mille just past U+2029 is forwarded verbatim",
+			in:   []byte("50\u2030"),
+			want: "50\u2030",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -202,16 +254,19 @@ func TestSanitizeControlBytesEscapesWellFormedC1(t *testing.T) {
 }
 
 // FuzzSanitizeControlBytes pins the properties of the unexported sanitizer
-// directly (FilteringWriter as a whole is not idempotent because of line
+// directly (Writer as a whole is not idempotent because of line
 // framing, so idempotency can only be asserted on the function itself). The
 // seed corpus runs deterministically every PR; the properties are asserted
 // against the post-UTF-8-awareness behavior (a standalone C1 / invalid byte is
-// escaped, valid multi-byte runes pass through verbatim EXCEPT well-formed C1
-// controls U+0080..U+009F, whose 2-byte UTF-8 encoding is escaped).
+// escaped; valid multi-byte runes pass through verbatim EXCEPT the runes
+// runesafe.IsUnsafeNonASCII refuses -- C1 controls, bidi controls, and
+// U+2028/U+2029 -- whose UTF-8 bytes are escaped).
 func FuzzSanitizeControlBytes(f *testing.F) {
 	f.Add("clean printable text /scan/file.txt")
 	f.Add("esc \x1b[31mred\x1b[0m reset")
 	f.Add("nul\x00 and del\x7f bytes")
+	f.Add("bidi \u202e override and isolate \u2066")
+	f.Add("seps \u2028 and \u2029 forge lines")
 	f.Add("tab\there newline\nkept")
 	f.Add("valid multibyte caf\u00e9 \u65e5\u672c\u8a9e kept")
 	f.Add("standalone C1 \x9b and invalid \xff escaped")
@@ -245,11 +300,12 @@ func FuzzSanitizeControlBytes(f *testing.F) {
 		// returned verbatim. The verbatim condition is UTF-8-aware, so a standalone
 		// C1 / invalid byte (>=0x80 but not part of a valid rune) is NOT clean even
 		// though it is neither a C0 control nor DEL -- it is escaped instead. A
-		// WELL-FORMED C1 control (U+0080..U+009F, e.g. 0xC2 0x9B) is likewise NOT
-		// clean: it drives terminal escapes and is escaped even though its 2-byte
-		// UTF-8 is valid, so the identity guarantee holds only for lines free of C1
-		// controls. The C1 exclusion is computed here via an independent rune scan
-		// (not the production byte-pair check), so a discrepancy between the two is
+		// well-formed rune in runesafe's unsafe non-ASCII classes (C1 controls,
+		// bidi controls, U+2028/U+2029) is likewise NOT clean: each drives
+		// terminal escapes or reorders/forges the rendered line, so the identity
+		// guarantee holds only for lines free of them. The exclusion is computed
+		// here via an independent rune scan against runesafe.IsUnsafeNonASCII
+		// (not the production byte checks), so a discrepancy between the two is
 		// caught rather than assumed away.
 		clean := utf8.Valid([]byte(input))
 		if clean {
@@ -262,7 +318,7 @@ func FuzzSanitizeControlBytes(f *testing.F) {
 		}
 		if clean {
 			for _, r := range input {
-				if r >= 0x80 && r <= 0x9f {
+				if runesafe.IsUnsafeNonASCII(r) {
 					clean = false
 					break
 				}

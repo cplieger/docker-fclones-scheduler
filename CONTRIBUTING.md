@@ -32,7 +32,7 @@ binary is `wrapper`. The root `main` package is small and split by concern:
   queue with exactly one result per accepted request and no coalescing, the
   owner-only unix-socket server at `/tmp/fclones-wrapper.sock`, and the
   newline-JSON wire frames `queued`/`started`/`done`) is the
-  `scheduler` library's broker (`scheduler/v3/trigger`, payload
+  `scheduler` library's broker (`scheduler/v4/trigger`, payload
   `struct{}`: a scan takes no arguments); `daemon.go` wires it and owns
   the policy (executor semantics, log wording).
 - `client.go`: the thin synchronous `scan` client (exit code = run
@@ -65,12 +65,13 @@ binary is `wrapper`. The root `main` package is small and split by concern:
   success / timeout / shutdown / exec_error classification used by both
   phases.
 
-Three leaf packages under `internal/` hold the pure, well-tested logic:
+Four leaf packages under `internal/` hold the pure, well-tested logic:
 
 - `internal/args`: quote-aware argument splitter (`args.Parse`). Env-var
   argument strings are split here, never handed to a shell.
-- `internal/ioutil`: `FilteringWriter` (drops known fclones noise lines)
-  and `LimitedBuffer` (bounded stderr capture).
+- `internal/linefilter`: `Writer` (drops known fclones noise lines and
+  escapes control/bidi runes before they reach the log sink).
+- `internal/capbuf`: `Buffer` (bounded stderr capture).
 - `internal/parsing`: the strict streaming JSON scan-report decoder
   (`DecodeReport`), the text action-summary parser (`ParseActionSummary`),
   and human-byte formatting.

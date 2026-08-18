@@ -13,9 +13,10 @@ import (
 	"time"
 
 	"github.com/cplieger/docker-fclones-scheduler/internal/args"
-	"github.com/cplieger/docker-fclones-scheduler/internal/ioutil"
+	"github.com/cplieger/docker-fclones-scheduler/internal/capbuf"
+	"github.com/cplieger/docker-fclones-scheduler/internal/linefilter"
 	"github.com/cplieger/docker-fclones-scheduler/internal/parsing"
-	"github.com/cplieger/scheduler/v3"
+	"github.com/cplieger/scheduler/v4"
 )
 
 // defaultCommandRunner builds the fclones subprocess commands with graceful
@@ -150,15 +151,20 @@ func markerAction(ctxErr, runErr error) (set, healthy bool) {
 // truncated) plus the stdout trio when stdout was captured (the scan phase
 // streams stdout to the report file and passes nil). Factoring it out of both
 // branches keeps the two terminal outcomes provably emitting one key shape.
-func streamAttrs(stderr, stdout *ioutil.LimitedBuffer) []any {
+func streamAttrs(stderr, stdout *capbuf.Buffer) []any {
+	// The captures pass through linefilter.EscapeUnsafe on their way into the
+	// attribute: they carry the same attacker-influenceable filenames the
+	// stderr passthrough escapes, and a JSON handler forwards bidi controls
+	// verbatim, so the raw capture would keep the CWE-117 vector open on the
+	// Loki side while the passthrough closed it on the terminal side.
 	attrs := []any{
-		"stderr", stderr.String(),
+		"stderr", linefilter.EscapeUnsafe(stderr.String()),
 		"stderr_total_bytes", stderr.Total(),
 		"stderr_truncated", stderr.Truncated(),
 	}
 	if stdout != nil {
 		attrs = append(attrs,
-			"stdout", stdout.String(),
+			"stdout", linefilter.EscapeUnsafe(stdout.String()),
 			"stdout_total_bytes", stdout.Total(),
 			"stdout_truncated", stdout.Truncated())
 	}
@@ -178,7 +184,7 @@ func classifyAndLogOutcome(
 	phase string,
 	runErr error,
 	timeout, duration time.Duration,
-	stderr, stdout *ioutil.LimitedBuffer,
+	stderr, stdout *capbuf.Buffer,
 	extra ...any,
 ) (done bool, err error) {
 	switch outcome := classifyExecOutcome(parent, phaseCtx, runErr); outcome {
@@ -275,8 +281,8 @@ func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd sche
 	scanCtx, cancel := phaseContext(ctx, cfg.PhaseTimeout)
 	defer cancel()
 
-	errBuf := &ioutil.LimitedBuffer{Max: streamCapBytes}
-	scanFilter := ioutil.NewFilteringWriter(os.Stderr)
+	errBuf := &capbuf.Buffer{Max: streamCapBytes}
+	scanFilter := linefilter.New(os.Stderr)
 	cmd := newCmd(scanCtx, "fclones", scanArgs...)
 	cmd.Stdout = tmpFile
 	cmd.Stderr = io.MultiWriter(scanFilter, errBuf)
@@ -287,7 +293,7 @@ func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd sche
 	scanFilter.Flush()
 	if n := scanFilter.Floods(); n > 0 {
 		log.Warn("fclones emitted a no-newline output flood; partial line force-flushed at cap",
-			"flood_count", n, "cap_bytes", ioutil.MaxLineBytes)
+			"flood_count", n, "cap_bytes", linefilter.MaxLineBytes)
 	}
 	if cerr := tmpFile.Close(); cerr != nil {
 		log.Warn("failed to close report temp file", "error", cerr)
@@ -519,9 +525,9 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 	}
 	defer inFile.Close()
 
-	actionStdout := &ioutil.LimitedBuffer{Max: streamCapBytes}
-	actionStderr := &ioutil.LimitedBuffer{Max: streamCapBytes}
-	actionFilter := ioutil.NewFilteringWriter(os.Stderr)
+	actionStdout := &capbuf.Buffer{Max: streamCapBytes}
+	actionStderr := &capbuf.Buffer{Max: streamCapBytes}
+	actionFilter := linefilter.New(os.Stderr)
 	actionCmd := newCmd(actionCtx, "fclones", actionCmdArgs...)
 	actionCmd.Stdin = inFile
 	actionCmd.Stdout = actionStdout
@@ -533,7 +539,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 	actionFilter.Flush()
 	if n := actionFilter.Floods(); n > 0 {
 		log.Warn("fclones emitted a no-newline output flood; partial line force-flushed at cap",
-			"flood_count", n, "cap_bytes", ioutil.MaxLineBytes)
+			"flood_count", n, "cap_bytes", linefilter.MaxLineBytes)
 	}
 	if done, phaseErr := classifyAndLogOutcome(ctx, actionCtx, log, "action", runErr,
 		cfg.PhaseTimeout, duration, actionStderr, actionStdout, "action", cfg.Action); done {

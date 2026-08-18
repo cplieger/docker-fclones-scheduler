@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/docker-fclones-scheduler/internal/ioutil"
+	"github.com/cplieger/docker-fclones-scheduler/internal/capbuf"
 	"github.com/cplieger/docker-fclones-scheduler/internal/parsing"
 	"pgregory.net/rapid"
 )
@@ -711,7 +711,7 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 
 		done, err := classifyAndLogOutcome(t.Context(), t.Context(), log,
 			"scan", nil, time.Minute, time.Second,
-			&ioutil.LimitedBuffer{Max: 1024}, nil)
+			&capbuf.Buffer{Max: 1024}, nil)
 
 		if done {
 			t.Error("classifyAndLogOutcome(success) done = true, want false")
@@ -731,7 +731,7 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 
 		done, err := classifyAndLogOutcome(cancelledCtx(), t.Context(), log,
 			"scan", context.Canceled, time.Minute, time.Second,
-			&ioutil.LimitedBuffer{Max: 1024}, nil)
+			&capbuf.Buffer{Max: 1024}, nil)
 
 		if !done {
 			t.Error("classifyAndLogOutcome(shutdown) done = false, want true")
@@ -751,7 +751,7 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
-		stderr := &ioutil.LimitedBuffer{Max: 1024}
+		stderr := &capbuf.Buffer{Max: 1024}
 		_, _ = stderr.Write([]byte("boom"))
 
 		done, err := classifyAndLogOutcome(t.Context(), deadlineCtx(), log,
@@ -777,7 +777,7 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
-		stderr := &ioutil.LimitedBuffer{Max: 1024}
+		stderr := &capbuf.Buffer{Max: 1024}
 		_, _ = stderr.Write([]byte("permission denied"))
 
 		done, err := classifyAndLogOutcome(t.Context(), t.Context(), log,
@@ -806,8 +806,8 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
-		stderr := &ioutil.LimitedBuffer{Max: 1024}
-		stdout := &ioutil.LimitedBuffer{Max: 1024}
+		stderr := &capbuf.Buffer{Max: 1024}
+		stdout := &capbuf.Buffer{Max: 1024}
 		_, _ = stdout.Write([]byte("actionout"))
 
 		done, err := classifyAndLogOutcome(t.Context(), t.Context(), log,

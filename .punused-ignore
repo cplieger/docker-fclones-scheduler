@@ -10,3 +10,14 @@
 # siblings runMode.String and phaseOutcome.String are not flagged only because
 # they also have direct callers. Upstream: bep/punused#3.
 method (action).String
+
+#
+# `(*capbuf.Buffer).Write` is called only through io.Writer dispatch inside the
+# stdlib: scheduler.go hands the buffer to io.MultiWriter and exec.Cmd.Stderr,
+# and those call Write from stdlib code gopls does not index as a reference.
+# Before the ioutil split the same package happened to contain linefilter's own
+# `fw.w.Write` interface call site, which masked the blind spot; the split
+# moved the only in-workspace io.Writer.Write call into another package and
+# surfaced it. Same class as bep/punused#3 above: interface/dynamic dispatch
+# invisible to the reference scan.
+method (*Buffer).Write
