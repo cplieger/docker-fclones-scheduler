@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"pgregory.net/rapid"
@@ -556,30 +557,44 @@ func TestVerifyDirTimeoutOnCancelledContext(t *testing.T) {
 
 func TestVerifyDirWithProbeBoundsHungProbeByTimeout(t *testing.T) {
 	t.Parallel()
-	// A live (non-cancelled) parent context: the function's own timeout,
-	// not parent cancellation, must bound a probe that never returns (a
-	// hung filesystem). The probe is released only at cleanup so its
-	// goroutine does not outlive the test.
-	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
-	hungProbe := func(string) error {
-		<-release
-		return nil
-	}
+	// Runs in a synctest bubble so the bound is asserted EXACTLY rather than
+	// against a slack window. On a real clock the only honest assertion is a
+	// generous upper bound (the old one was 2s for a 50ms timeout), which a
+	// timeout inflated by an order of magnitude still satisfies. Inside the
+	// bubble time.Since reads the fake clock, so the elapsed time is the
+	// timeout to the nanosecond and any arithmetic drift fails.
+	//
+	// Bubble-safe: the probe goroutine parks on a channel receive (a durably
+	// blocking operation, so the clock can advance to the deadline) and the
+	// cleanup that releases it runs inside the bubble, immediately before
+	// synctest.Test returns.
+	synctest.Test(t, func(t *testing.T) {
+		// A live (non-cancelled) parent context: the function's own timeout,
+		// not parent cancellation, must bound a probe that never returns (a
+		// hung filesystem). The probe is released only at cleanup so its
+		// goroutine does not outlive the test.
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		hungProbe := func(string) error {
+			<-release
+			return nil
+		}
 
-	start := time.Now()
-	err := verifyDirWithProbe(t.Context(), t.TempDir(), 50*time.Millisecond, hungProbe)
-	elapsed := time.Since(start)
+		const timeout = 50 * time.Millisecond
+		start := time.Now()
+		err := verifyDirWithProbe(t.Context(), t.TempDir(), timeout, hungProbe)
+		elapsed := time.Since(start)
 
-	if err == nil {
-		t.Fatal("verifyDirWithProbe with a hung probe and live parent: expected a timeout error, got nil")
-	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("verifyDirWithProbe error = %q, want it to contain \"timed out\"", err)
-	}
-	if elapsed > 2*time.Second {
-		t.Errorf("verifyDirWithProbe took %s, want it bounded near the 50ms timeout", elapsed)
-	}
+		if err == nil {
+			t.Fatal("verifyDirWithProbe with a hung probe and live parent: expected a timeout error, got nil")
+		}
+		if !strings.Contains(err.Error(), "timed out") {
+			t.Errorf("verifyDirWithProbe error = %q, want it to contain \"timed out\"", err)
+		}
+		if elapsed != timeout {
+			t.Errorf("verifyDirWithProbe took %s, want exactly the %s timeout", elapsed, timeout)
+		}
+	})
 }
 
 // --- Tests: setupLogger ---
