@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/cplieger/docker-fclones-scheduler/internal/capbuf"
@@ -564,19 +565,26 @@ func TestShouldRunAction(t *testing.T) {
 func TestPhaseContext(t *testing.T) {
 	t.Parallel()
 
-	t.Run("positive timeout sets a deadline near now+timeout", func(t *testing.T) {
+	t.Run("positive timeout sets a deadline exactly timeout from now", func(t *testing.T) {
 		t.Parallel()
-		start := time.Now()
-		ctx, cancel := phaseContext(t.Context(), 30*time.Second)
-		defer cancel()
+		// A synctest bubble puts time.Now and the context deadline on the same
+		// fake clock, so the deadline is asserted to the nanosecond. On a real
+		// clock the only honest assertion was a +/-1s window around 30s, which
+		// a phaseContext that added a spurious second still satisfied.
+		synctest.Test(t, func(t *testing.T) {
+			const timeout = 30 * time.Second
+			start := time.Now()
+			ctx, cancel := phaseContext(t.Context(), timeout)
+			defer cancel()
 
-		deadline, ok := ctx.Deadline()
-		if !ok {
-			t.Fatal("phaseContext(bg, 30s): no deadline set, want a deadline")
-		}
-		if d := deadline.Sub(start); d < 29*time.Second || d > 31*time.Second {
-			t.Errorf("phaseContext(bg, 30s) deadline in %s, want ~30s from start", d)
-		}
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatalf("phaseContext(bg, %s): no deadline set, want a deadline", timeout)
+			}
+			if d := deadline.Sub(start); d != timeout {
+				t.Errorf("phaseContext(bg, %s) deadline in %s, want exactly %s from start", timeout, d, timeout)
+			}
+		})
 	})
 
 	t.Run("zero timeout sets no deadline", func(t *testing.T) {
