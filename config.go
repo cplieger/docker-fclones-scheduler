@@ -152,6 +152,19 @@ func setupLogger() {
 
 // --- Environment ---
 
+// rejectedValue returns the exact string an envx parse failed on, or "" when
+// err is not an envx parse error. It carries the value off the error rather
+// than re-reading the environment, which matters beyond tidiness: os.Getenv
+// returns the value UNTRIMMED, so a second read could name " 5x " beside a
+// parse error about "5x". ParseError.Value is the string the parse actually
+// failed on.
+func rejectedValue(err error) string {
+	if perr, ok := errors.AsType[*envx.ParseError](err); ok {
+		return perr.Value
+	}
+	return ""
+}
+
 // loadScanTimeout reads SCAN_TIMEOUT via envx.DurationStrict,
 // defaulting to defaultScanTimeout when unset. Zero (SCAN_TIMEOUT=0/0s)
 // disables the per-phase deadline: the phase then runs under the parent
@@ -163,15 +176,7 @@ func setupLogger() {
 func loadScanTimeout() (time.Duration, error) {
 	scanTimeout, ok, err := envx.DurationStrict("SCAN_TIMEOUT")
 	if err != nil {
-		// The rejected value comes back on the error (envx v1.6.0), so this does
-		// not re-read the environment. That matters beyond tidiness: os.Getenv
-		// returns the value UNTRIMMED, so it could name " 5x " beside a parse
-		// error about "5x". perr.Value is the string the parse actually failed on.
-		var perr *envx.ParseError
-		raw := ""
-		if errors.As(err, &perr) {
-			raw = perr.Value
-		}
+		raw := rejectedValue(err)
 		slog.Error("invalid SCAN_TIMEOUT", "value", raw, logKeyOutcome, "config_error", "error", err)
 		return 0, fmt.Errorf("invalid SCAN_TIMEOUT %q: %w", raw, err)
 	}

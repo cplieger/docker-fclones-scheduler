@@ -100,7 +100,7 @@ RUN cat > /usr/src/fclones-scheduler.cdx.json <<EOF
 }
 EOF
 
-FROM golang:1.26-trixie@sha256:87ffdb09b6a2e29ff910748b745395e8a0299aa80b7c0551cdca9b55e3fd2b3e AS go-builder
+FROM golang:1.27-trixie@sha256:22b64c486d44847387a2d9591bb705dc4b3a1227bb393d76a9d4ae176d046327 AS go-builder
 ENV GOTOOLCHAIN=auto
 
 WORKDIR /src
