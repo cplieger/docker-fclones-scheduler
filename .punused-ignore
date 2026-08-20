@@ -1,6 +1,6 @@
 # punused findings adjudicated as false positives. One literal substring per
 # line, matched against punused's output line; full-line `#` comments carry the
-# reason. Invalid-by-construction classes: `.kiro/steering/tools.md`.
+# reason.
 #
 # `action` is a named string type carrying an explicit `var _ fmt.Stringer`
 # assertion in config.go, and cfg.Action is passed as a slog attr value from
