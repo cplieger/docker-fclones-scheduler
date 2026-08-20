@@ -6,7 +6,7 @@
 # renovate: datasource=github-tags depName=pkolaczk/fclones
 ARG FCLONES_VERSION=v0.35.0
 
-FROM rust:1.98-trixie@sha256:24d7521393650b3791bcb57a328d8ed77046734742691366cc2566cce13d492d AS fclones-builder
+FROM rust:1.98-trixie@sha256:7f7a53a25a0319dd8284e279d529d45759cb384d59b14cc6806132910f45522e AS fclones-builder
 
 WORKDIR /usr/src/fclones
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
