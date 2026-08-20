@@ -78,7 +78,10 @@ The `scan` subcommand submits one run request to the daemon, blocks until the
 scan finishes, and exits non-zero on failure. The run executes inside the
 daemon, so its full output lands on the container's log stream; the trigger
 sees only lifecycle lines and the result. The daemon updates the same health
-marker the healthcheck reports. Example with
+marker the healthcheck reports. If you interrupt the exec (SIGINT or SIGTERM),
+the client exits non-zero, and the daemon completes the scan it accepted. A
+trigger that kills the exec on its own timeout therefore records a failed job
+while the scan continues. Example with
 [Ofelia](https://github.com/mcuadros/ofelia) labels:
 
 ```yaml
