@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cplieger/jsoncap"
+	"github.com/cplieger/jsoncap/v2"
 )
 
 // Report is a decoded fclones JSON scan report: the header's exact numeric
@@ -179,7 +179,7 @@ func (rd *reportDecoder) fail(err error) error {
 // decodeGroups streams the groups array, retaining at most keepGroups mapped
 // groups in report.Groups while counting full-document totals, and validates
 // each group's structure as it passes. Elements are decoded one at a time --
-// deliberately not jsoncap.Array, which materializes every element into one
+// deliberately not Decoder.Array, which materializes every element into one
 // slice and would defeat the bounded-memory retention this decoder exists
 // for.
 func decodeGroups(d *jsoncap.Decoder, keepGroups int, report *Report) error {
