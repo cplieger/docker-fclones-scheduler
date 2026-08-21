@@ -8,7 +8,7 @@ require (
 	github.com/cplieger/jsoncap/v2 v2.0.0
 	github.com/cplieger/runesafe/v2 v2.0.0
 	github.com/cplieger/scheduler/v4 v4.0.0
-	github.com/cplieger/slogx v1.6.2
+	github.com/cplieger/slogx v1.6.3
 	pgregory.net/rapid v1.3.0
 )
 
