@@ -696,6 +696,47 @@ func TestSweepStaleReportsContinuesPastUnremovable(t *testing.T) {
 	}
 }
 
+// A report temp file the sweep cannot delete is the only sign an operator gets
+// that stale files are piling up in the shared /cache directory, so the
+// failure must be reported at warn level and name the file it could not
+// remove. A file that WAS removed is routine and stays at debug. This swaps
+// the process-global logger, so it does not run in parallel.
+func TestSweepStaleReportsWarnsOnlyAboutWhatItCouldNotRemove(t *testing.T) {
+	dir := t.TempDir()
+
+	// A non-empty directory whose name matches the glob makes os.Remove fail
+	// with ENOTEMPTY; the plain file beside it is removed cleanly.
+	blocked := filepath.Join(dir, "fclones_report_aaa.txt")
+	if err := os.Mkdir(blocked, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(blocked, "child"), []byte("y"), 0o644); err != nil {
+		t.Fatalf("WriteFile child: %v", err)
+	}
+	removable := filepath.Join(dir, "fclones_report_bbb.txt")
+	if err := os.WriteFile(removable, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	var logs strings.Builder
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	sweepStaleReports(dir)
+
+	out := logs.String()
+	if !strings.Contains(out, `msg="failed to remove stale report temp file"`) {
+		t.Errorf("sweepStaleReports(dir with an unremovable match) logged %q, want a removal-failure warning", out)
+	}
+	if !strings.Contains(out, blocked) {
+		t.Errorf("sweepStaleReports warning = %q, want it to name the unremovable path %q", out, blocked)
+	}
+	if strings.Contains(out, removable) {
+		t.Errorf("sweepStaleReports warning = %q, want no warning about %q, which it removed", out, removable)
+	}
+}
+
 func TestClassifyAndLogOutcome(t *testing.T) {
 	t.Parallel()
 

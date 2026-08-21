@@ -87,6 +87,17 @@ func TestWriterSanitizesControlBytes(t *testing.T) {
 			want:  "cannot read file /scan/caf\u00e9\\x9b: denied\n",
 		},
 		{
+			// 0x80 is the lowest UTF-8 continuation byte, so standing alone it
+			// is invalid UTF-8 and must be escaped like any other stray byte.
+			// It is also the exact edge of the ASCII test (utf8.RuneSelf), the
+			// one byte value that decides between "forward this byte verbatim"
+			// and "decode a rune here", so a wrong comparison leaks precisely
+			// this byte and nothing else.
+			name:  "standalone 0x80 continuation byte is escaped",
+			input: "cannot read file /scan/a\x80b: denied\n",
+			want:  "cannot read file /scan/a\\x80b: denied\n",
+		},
+		{
 			// The well-formed 2-byte UTF-8 C1 CSI (U+009B = 0xC2 0x9B) is the
 			// multibyte twin of the bare 0x9B above: a category-Cc control that
 			// drives terminal escapes, so it is escaped even though its encoding is

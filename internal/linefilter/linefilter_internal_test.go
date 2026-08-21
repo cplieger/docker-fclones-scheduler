@@ -270,6 +270,7 @@ func FuzzSanitizeControlBytes(f *testing.F) {
 	f.Add("tab\there newline\nkept")
 	f.Add("valid multibyte caf\u00e9 \u65e5\u672c\u8a9e kept")
 	f.Add("standalone C1 \x9b and invalid \xff escaped")
+	f.Add("lone continuation byte \x80 at the ASCII edge")
 	f.Add("wellformed C1 \u009b escaped, nbsp \u00a0 and \u00e9 kept")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, input string) {
@@ -281,6 +282,15 @@ func FuzzSanitizeControlBytes(f *testing.F) {
 			if (b < 0x20 && b != '\n' && b != '\t') || b == 0x7f {
 				t.Fatalf("forbidden control byte %#02x survived in %q for input %q", b, out, input)
 			}
+		}
+
+		// Well-formedness: the sanitized line is valid UTF-8. Escaping exists so
+		// a byte no consumer can decode reaches the log sink as printable ASCII
+		// instead, so an undecodable byte surviving into the output is a hole in
+		// the escape class -- and it is invisible to the control-byte check
+		// above, which only looks below 0x20.
+		if !utf8.Valid(out) {
+			t.Fatalf("sanitize(%q) = %q, which is not valid UTF-8", input, out)
 		}
 
 		// Idempotency (required of any sanitizer): the escaped form is valid UTF-8
