@@ -179,6 +179,41 @@ deliver through your Alertmanager exactly like Prometheus metric alerts.
 groups:
   - name: docker-fclones-scheduler
     rules:
+      # The deadman. Both rules below fire on a record the wrapper LOGGED, so a
+      # wedged scheduler that logs nothing at all trips neither. This one fires
+      # on silence instead.
+      #
+      # 28h, not 8h, and the size comes from the RUNTIME budget rather than the
+      # interval. SCAN_TIMEOUT defaults to 12h PER PHASE, and `scan complete` is
+      # logged after the scan phase but before the action phase, so the gap
+      # between two heartbeats legitimately spans up to 12h of action, then the
+      # interval, then up to 12h of the next scan. An 8h window fires during
+      # ordinary work on a large filesystem. Recompute this if you change
+      # SCAN_TIMEOUT: roughly 2x the phase timeout plus your interval. With
+      # SCAN_TIMEOUT=0 the phases are unbounded and no finite window is sound,
+      # the same caveat the healthcheck's freshness deadline already carries.
+      #
+      # In external mode (SCAN_INTERVAL=off) substitute your external
+      # scheduler's cadence for the interval. In run-once mode (SCAN_INTERVAL=0)
+      # drop this rule: a container that exits on purpose is silent by design.
+      - alert: FclonesScanStalled
+        expr: |
+          absent_over_time({container="fclones"} |= "scan complete" [28h])
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "no fclones scan-completion heartbeat in 28h"
+          description: >
+            The wrapper logs a `scan complete` line at the end of every scan
+            phase, including one that found no duplicates, and none has arrived
+            in 28h. The usual cause is a wedged daemon, a scan stuck past its
+            phase timeout, or nothing triggering runs in external mode. An
+            absence rule cannot tell that apart from a container that never
+            started or was renamed, or a log pipeline that stopped shipping this
+            stream, so rule those out first. The file-marker healthcheck arms
+            its own freshness deadline in built-in mode and covers the same
+            failure, but only where something acts on an unhealthy container.
       - alert: FclonesLinkEstablished
         expr: |
           sum by (files_deduped, reclaimed_human) (
