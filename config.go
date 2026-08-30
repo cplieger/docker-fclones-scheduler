@@ -142,7 +142,7 @@ const (
 // setupLogger installs a slog text handler that emits canonical logfmt
 // (`time=... level=... msg=... k=v`) to stderr.
 func setupLogger() {
-	raw := strings.TrimSpace(cmp.Or(envx.String("LOG_LEVEL"), "info"))
+	raw := envx.String("LOG_LEVEL")
 	level, recognized := slogx.ParseLevel(raw, slog.LevelInfo)
 	slogx.Setup(slogx.Options{Level: level})
 	if !recognized {
