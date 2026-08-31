@@ -9,6 +9,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/docker-fclones-scheduler/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/docker-fclones-scheduler)
 [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/docker-fclones-scheduler/releases)
 
+<!-- hub-overview BEGIN -->
 Find and deduplicate files on a schedule, reclaiming wasted disk space automatically.
 
 ## What it does
@@ -32,6 +33,7 @@ aggregators (Alloy, Promtail, etc.) and alerting via Grafana or similar.
 - **Distroless and rootless:** runs as `nonroot` (UID 65532) on `gcr.io/distroless/static-debian13` with no shell or package manager
 - **Dangerous flags blocked by default:** `--transform`, `--in-place`, and `--no-copy` are rejected unless you explicitly opt in with `ALLOW_UNSAFE_ARGS=true`, preventing command injection via environment variables
 - **Structured logs:** logfmt with UTC timestamps, so log lines are zone-stable regardless of the container's `TZ` and alerting needs no custom exporter
+<!-- hub-overview END -->
 
 ## Quick start
 
