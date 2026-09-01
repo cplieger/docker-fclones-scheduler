@@ -76,7 +76,7 @@ func run(ctx context.Context) error {
 	case modeOnce:
 		return runOnce(ctx, marker, &cfg)
 	case modeBuiltin, modeExternal:
-		return runDaemon(ctx, &cfg, newHealthController(marker), defaultCommandRunner)
+		return runDaemon(ctx, &cfg, health.NewLatch(marker), defaultCommandRunner)
 	default:
 		panic(fmt.Sprintf("unhandled runMode: %d", int(cfg.Mode)))
 	}

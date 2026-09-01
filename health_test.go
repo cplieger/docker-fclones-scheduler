@@ -6,13 +6,6 @@ import (
 	"testing"
 )
 
-// recordingMarker is a healthMarker fake capturing every Set call.
-type recordingMarker struct {
-	writes []bool
-}
-
-func (m *recordingMarker) Set(healthy bool) { m.writes = append(m.writes, healthy) }
-
 func TestJobHealthSignal(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -41,48 +34,6 @@ func TestJobHealthSignal(t *testing.T) {
 				t.Errorf("healthy = %v, want %v", healthy, tt.wantHealthy)
 			}
 		})
-	}
-}
-
-func TestHealthController_DrainLatch(t *testing.T) {
-	t.Parallel()
-	m := &recordingMarker{}
-	hc := newHealthController(m)
-
-	hc.markInitial(false) // built-in boot: unhealthy
-	hc.apply(true)        // first successful run
-	hc.beginDrain()       // shutdown: latch unhealthy
-	hc.apply(true)        // late success must NOT restore healthy
-	hc.apply(false)       // unhealthy still allowed
-	hc.markInitial(true)  // no-op after drain
-
-	want := []bool{false, true, false, false}
-	if len(m.writes) != len(want) {
-		t.Fatalf("marker writes = %v, want %v", m.writes, want)
-	}
-	for i := range want {
-		if m.writes[i] != want[i] {
-			t.Fatalf("marker writes = %v, want %v", m.writes, want)
-		}
-	}
-}
-
-func TestHealthController_MarkUnhealthyAlwaysWrites(t *testing.T) {
-	t.Parallel()
-	m := &recordingMarker{}
-	hc := newHealthController(m)
-
-	hc.markUnhealthy()
-	hc.beginDrain()
-	hc.markUnhealthy()
-
-	if len(m.writes) != 3 { // markUnhealthy, drain latch, markUnhealthy
-		t.Fatalf("marker writes = %v, want 3 unconditional unhealthy writes", m.writes)
-	}
-	for i, w := range m.writes {
-		if w {
-			t.Errorf("write %d = healthy, want every write unhealthy", i)
-		}
 	}
 }
 

@@ -3,7 +3,6 @@ package main
 import (
 	"log/slog"
 	"os"
-	"sync"
 
 	"github.com/cplieger/envx/v2"
 	"github.com/cplieger/health"
@@ -50,70 +49,4 @@ func jobHealthSignal(ctxErr error, ran bool, runErr error) (set, healthy bool) {
 		return false, false
 	}
 	return markerAction(ctxErr, runErr)
-}
-
-// healthMarker is the marker behaviour healthController depends on.
-// *health.Marker satisfies it; tests inject a fake to observe writes.
-type healthMarker interface {
-	Set(healthy bool)
-}
-
-// healthController is the single writer of the health marker in the daemon
-// modes. It enforces one invariant the bare marker cannot: once shutdown
-// begins, health is monotonic toward unhealthy — a run finishing during
-// drain can never flip the marker back to healthy.
-type healthController struct {
-	marker   healthMarker
-	mu       sync.Mutex
-	draining bool
-}
-
-// newHealthController returns a controller that writes through marker.
-func newHealthController(marker healthMarker) *healthController {
-	return &healthController{marker: marker}
-}
-
-// markInitial sets the pre-run state: unhealthy for the built-in scheduler
-// (no run has completed yet, so the first successful one flips it) and
-// healthy for the idle external-trigger container (nothing has failed). It
-// is a no-op once draining.
-func (h *healthController) markInitial(healthy bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.draining {
-		return
-	}
-	h.marker.Set(healthy)
-}
-
-// apply writes one run's health value, unless shutdown has begun and that
-// value is healthy (the drain latch stops a late success from masking
-// shutdown). Callers gate on jobHealthSignal's set flag first.
-func (h *healthController) apply(healthy bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.draining && healthy {
-		return
-	}
-	h.marker.Set(healthy)
-}
-
-// beginDrain latches shutdown and marks unhealthy immediately, so observers
-// see the draining signal before in-flight work finishes. After it, apply
-// and markInitial can never restore healthy.
-func (h *healthController) beginDrain() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.draining = true
-	h.marker.Set(false)
-}
-
-// markUnhealthy writes an unconditional unhealthy marker for a failure that
-// happens outside a run (a startup bootstrap failure). Unhealthy writes are
-// always permitted — draining or not — so this takes the lock only to
-// serialize with the other writers.
-func (h *healthController) markUnhealthy() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.marker.Set(false)
 }
