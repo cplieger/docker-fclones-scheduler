@@ -19,73 +19,31 @@ import (
 	"github.com/cplieger/scheduler/v4"
 )
 
-// defaultCommandRunner builds the fclones subprocess commands with graceful
-// shutdown — SIGTERM on context cancellation, then a DefaultGrace (5s) window
-// before os/exec escalates to SIGKILL — via the shared scheduler library
-// (identical to the hand-rolled runner it replaces). The caller wires
-// Stdout/Stderr on the returned command before Run.
 var defaultCommandRunner = scheduler.NewCommandRunner(scheduler.DefaultGrace)
 
-// reportTempPattern is the os.CreateTemp filename pattern for the per-scan fclones
-// report under /cache. cleanStaleReports globs the identical pattern to reclaim
-// orphans, so the two MUST stay in lockstep -- a drift here silently stops the sweep
-// from matching any orphan. Keep both call sites on this one constant.
+// reportTempPattern is the os.CreateTemp pattern for the per-scan report under
+// /cache. cleanStaleReports globs the identical pattern to reclaim orphans, so
+// the two must stay in lockstep.
 const reportTempPattern = "fclones_report_*.txt"
 
-// logKeyDurationS is the slog attribute key for an integer-seconds phase
-// duration. It is emitted on the scan-complete, action-complete, timeout, and
-// exec-error log lines so completed and failed phase durations can be charted
-// from one numeric field. The shutdown (interrupted) line deliberately omits
-// it: an interrupted phase never ran to a natural end, so its elapsed time is
-// not a meaningful phase duration.
+// logKeyDurationS tags an integer-seconds phase duration; omitted on the
+// interrupted-shutdown line since an interrupted phase has no meaningful
+// duration.
 const logKeyDurationS = "duration_s"
 
-// logKeyOutcome is the slog attribute key tagging the terminal outcome of a run
-// or startup so a single Loki/Grafana query (outcome=~".+") catches every
-// outcome on one field. It is emitted on every non-success outcome and, for the
-// run-once mode where the exit code is the batch-job result, on the terminal
-// success outcome too. The values:
-//
-//   - the classified phaseOutcome on the terminal phase lines: "timeout",
-//     "exec_error", "shutdown";
-//   - "lock_error" (scan lock could not be acquired) and "start_error" (bad
-//     args or temp-file creation failed) for the pre-exec failures that mark a
-//     run unhealthy before a phase outcome exists;
-//   - "skipped" on the overlap-skip path when a job is already running;
-//   - "success" on the run-once happy path ("run once complete"), the one
-//     terminal success that is tagged so a one-shot's healthy completion is
-//     queryable alongside its failures;
-//   - on the run-once terminal paths (main.go runOnce), "shutdown" (interrupt
-//     mid-scan) and "skipped" (scan lock held) are re-emitted at WARN, so a
-//     one-shot's batch failure is queryable on this field; the benign daemon
-//     occurrences of both values above are INFO, so level disambiguates a
-//     run-once failure from a clean daemon shutdown / overlap skip;
-//   - the startup-failure literals "config_error" (invalid FCLONES_ACTION /
-//     SCAN_TIMEOUT / argument syntax / a dangerous flag), "cache_error"
-//     (cache directory verification failed), and "bad_subcommand" (an unknown
-//     subcommand) emitted by loadConfig/bootstrap/main before any scan runs, so
-//     a config or cache fault that crash-loops the container is caught by the
-//     same query rather than being silently missed.
-//
-// Because the run-once success line flows through this key, an
-// outcome=~".+" query matches that one healthy line in addition to every
-// failure; scope to outcome!="success" to view non-success outcomes only.
+// logKeyOutcome tags the terminal outcome of a run or startup so one
+// Loki/Grafana query (outcome=~".+") catches every outcome. On the run-once
+// terminal paths, "shutdown"/"skipped" are re-emitted at WARN (vs. INFO for
+// the benign daemon occurrences), so level disambiguates a one-shot failure
+// from a clean daemon shutdown/overlap skip.
 const logKeyOutcome = "outcome"
 
 // cleanStaleReports removes orphaned fclones report temp files left in /cache
-// by a previous scan whose `defer os.Remove` never ran -- e.g. the container
-// was SIGKILLed after the 5s WaitDelay grace, OOM-killed, or lost power
-// mid-scan. Because /cache is a persistent volume these orphans accumulate
-// across container restarts. Intended for daemon startup; it takes the same
-// advisory flock that serialises scans before sweeping, so it can never unlink
-// a live report owned by a concurrent scan in any process.
+// by a previous scan whose `defer os.Remove` never ran (SIGKILL after grace,
+// OOM, power loss). /cache is a persistent volume, so orphans accumulate
+// across restarts. Takes the same advisory flock scans use before sweeping,
+// so it never unlinks a report owned by a concurrent scan in any process.
 func cleanStaleReports() {
-	// Take the same advisory flock that serialises scans before sweeping: a
-	// concurrent cross-process `wrapper scan` (e.g. an Ofelia docker exec firing
-	// as the container restarts) may hold a live report file matching the glob.
-	// Acquiring the lock first guarantees no scan is in flight in any process, so
-	// every match is a genuine orphan. If the lock is held, skip the sweep -- the
-	// orphans (if any) are reclaimed on a later startup when no scan races.
 	lock, ok, lockErr := scheduler.TryLock(lockFile)
 	if lockErr != nil {
 		slog.Warn("cannot acquire scan lock for stale-report sweep, skipping; orphaned report temp files (if any) will be reclaimed on a later startup",
@@ -101,12 +59,9 @@ func cleanStaleReports() {
 	sweepStaleReports(cacheDir)
 }
 
-// sweepStaleReports removes report temp files matching reportTempPattern in dir.
-// It is split out of cleanStaleReports (which acquires the scan flock before
-// calling this) so a test can exercise the glob+remove against a temp dir and
-// assert the create/glob lockstep on reportTempPattern. Callers MUST already
-// hold the scan lock: sweepStaleReports does no locking itself and would
-// otherwise race a live scan's report file.
+// sweepStaleReports removes report temp files matching reportTempPattern in
+// dir. Callers must already hold the scan lock: it does no locking itself and
+// would otherwise race a live scan's report file.
 func sweepStaleReports(dir string) {
 	matches, err := filepath.Glob(filepath.Join(dir, reportTempPattern))
 	if err != nil {
@@ -133,12 +88,10 @@ func newScanID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// markerAction decides how runFclonesJob's deferred health-marker update
-// behaves once a run finishes. When the parent context was cancelled
-// (ctxErr != nil) the run was interrupted rather than completed, so set is
-// false and the marker is left untouched, preserving the last finished
-// run's state. Otherwise set is true and healthy reports whether the run
-// succeeded (runErr == nil).
+// markerAction decides runFclonesJob's deferred health-marker update. When
+// the parent context was cancelled (ctxErr != nil) the run was interrupted
+// rather than completed, so set is false and the marker is left untouched.
+// Otherwise set is true and healthy reports whether the run succeeded.
 func markerAction(ctxErr, runErr error) (set, healthy bool) {
 	if ctxErr != nil {
 		return false, false
@@ -146,17 +99,14 @@ func markerAction(ctxErr, runErr error) (set, healthy bool) {
 	return true, runErr == nil
 }
 
-// streamAttrs returns the captured-output slog attributes shared by the timeout
-// and exec-error terminal outcomes: the stderr trio (value, total bytes,
-// truncated) plus the stdout trio when stdout was captured (the scan phase
-// streams stdout to the report file and passes nil). Factoring it out of both
-// branches keeps the two terminal outcomes provably emitting one key shape.
+// streamAttrs returns the captured-output slog attributes shared by the
+// timeout and exec-error outcomes: the stderr trio plus the stdout trio when
+// stdout was captured (the scan phase streams stdout to the report file and
+// passes nil).
 func streamAttrs(stderr, stdout *capbuf.Buffer) []any {
-	// The captures pass through linefilter.EscapeUnsafe on their way into the
-	// attribute: they carry the same attacker-influenceable filenames the
-	// stderr passthrough escapes, and a JSON handler forwards bidi controls
-	// verbatim, so the raw capture would keep the CWE-117 vector open on the
-	// Loki side while the passthrough closed it on the terminal side.
+	// Escaped here too (not just at the terminal writer): a JSON handler
+	// forwards bidi controls verbatim, so the raw capture would keep the
+	// CWE-117 vector open on the Loki side.
 	attrs := []any{
 		"stderr", linefilter.EscapeUnsafe(stderr.String()),
 		"stderr_total_bytes", stderr.Total(),
@@ -171,13 +121,13 @@ func streamAttrs(stderr, stdout *capbuf.Buffer) []any {
 	return attrs
 }
 
-// classifyAndLogOutcome classifies a finished subprocess run and logs any terminal
-// (non-success) outcome with the attribute shape shared by the scan and action phases,
-// returning (done, err): done is true for every outcome except outcomeSuccess, and err is the
-// value the phase should return (nil for an expected shutdown). Keeping both phases on this one
-// path stops their log keys, return semantics, and truncation attrs from drifting. The action
-// phase passes its captured stdout buffer (the scan sends stdout to the report file, so it passes
-// nil) and any phase-specific attrs via extra.
+// classifyAndLogOutcome classifies a finished subprocess run and logs any
+// terminal (non-success) outcome, returning (done, err): done is true for
+// every outcome except outcomeSuccess, and err is the value the phase should
+// return (nil for an expected shutdown). Keeps the scan and action phases'
+// log keys, return semantics, and truncation attrs from drifting apart. The
+// action phase passes its stdout buffer (the scan passes nil) and any
+// phase-specific attrs via extra.
 func classifyAndLogOutcome(
 	parent, phaseCtx context.Context,
 	log *slog.Logger,
@@ -232,18 +182,14 @@ func classifyAndLogOutcome(
 }
 
 // runFclonesJob attempts one scan+action. It returns ran=false ONLY when the
-// scan lock was already held by another process (the advisory-flock overlap
-// skip; with the daemon owning all in-process runs, that means a DIFFERENT
-// container or a manual `docker run` sharing this /cache): no scan or action
-// ran, and the caller decides what a no-op means for its mode. In every
-// other outcome (success, bad args, exec failure, timeout, interrupt)
-// ran=true -- the job acquired the lock and did its work or tried to. err is
+// scan lock was already held by another process (a different container or a
+// manual `docker run` sharing this /cache — the daemon owns all in-process
+// runs): no scan or action ran. In every other outcome ran=true. err is
 // non-nil on a genuine failure; on the lock-skip and on a clean run it is
 // nil, so callers that care about "did a scan actually happen" must inspect
-// ran, not just err. Marker writes are the CALLER's job (the daemon's
-// healthController, or runOnce directly), routed through jobHealthSignal so
-// a skip writes nothing and an interrupted run leaves the last real
-// outcome in place.
+// ran, not just err. Marker writes are the caller's job, routed through
+// jobHealthSignal so a skip writes nothing and an interrupted run leaves the
+// last real outcome in place.
 func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd scheduler.CommandRunner) (ran bool, err error) {
 	lock, ok, lockErr := scheduler.TryLock(lockFile)
 	if lockErr != nil {
@@ -316,10 +262,9 @@ func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd sche
 		log.Warn("failed to close report file after decode", "error", cerr)
 	}
 	if decErr != nil {
-		// The scan succeeded but its report is not the contract the wrapper
-		// was built against -- upstream format drift, an interrupted write, or
-		// a corrupt report. Fail the run loudly (non-zero, unhealthy marker):
-		// silently degraded stats are exactly what the JSON contract rules out.
+		// A successful scan with an undecodable report means upstream format
+		// drift, an interrupted write, or corruption — fail loudly rather than
+		// risk silently degraded stats.
 		log.Error("fclones report decode failed; failing the run",
 			"reason", "decode_error", logKeyOutcome, "decode_error", "error", decErr)
 		return true, fmt.Errorf("decode fclones report: %w", decErr)
@@ -345,14 +290,12 @@ func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd sche
 	return true, runFclonesAction(ctx, cfg, tmpPath, log, newCmd)
 }
 
-// shouldRunAction reports whether the dedup action phase should run after a
-// scan. Report-only mode never runs an action; otherwise the action runs
-// exactly when the decoded report carries duplicate groups (the decode is
-// strict, so a zero here is a genuine zero -- the old drift-suspicion
-// fallback died with the text parser).
+// shouldRunAction reports whether the action phase should run after a scan.
+// Report-only mode never runs an action; otherwise it runs exactly when the
+// report carries duplicate groups (the decode is strict, so a zero here is
+// a genuine zero).
 func shouldRunAction(log *slog.Logger, cfg *config, hasDuplicates bool) bool {
 	if cfg.Action == actionGroup {
-		// Report-only: there is no action to run.
 		return false
 	}
 	if !hasDuplicates {
@@ -364,17 +307,17 @@ func shouldRunAction(log *slog.Logger, cfg *config, hasDuplicates bool) bool {
 }
 
 // Duplicate-detail log caps. maxLoggedGroups also bounds how many decoded
-// groups DecodeReport retains in memory (the streamed totals cover the rest),
-// so the caps govern memory as well as log volume.
+// groups DecodeReport retains in memory (the streamed totals cover the
+// rest).
 const (
 	maxLoggedGroups = 100
 	maxLoggedPairs  = 500
 )
 
-// logDuplicateGroups emits one `duplicate file` Info line per (keeper,
-// duplicate) pair from the report's retained groups, bounded by the pair and
-// byte caps; the truncation line reports full-document totals from the
-// streamed counts.
+// logDuplicateGroups emits one `duplicate file` line per (keeper, duplicate)
+// pair from the report's retained groups, bounded by the pair and byte caps;
+// the truncation line reports full-document totals from the streamed
+// counts.
 func logDuplicateGroups(log *slog.Logger, report *parsing.Report) {
 	pairsEmitted := 0
 	detailBytes := 0
@@ -429,8 +372,8 @@ func buildScanArgs(cfg *config) ([]string, error) {
 
 	// Wrapper-owned flags: --cache shares the fclones hash cache across runs,
 	// and -f json is the report contract DecodeReport is built against. Both
-	// are rejected in FCLONES_ARGS at startup (rejectWrapperOwnedArgs), so
-	// user args can never fight them.
+	// are rejected in FCLONES_ARGS at startup, so user args can never fight
+	// them.
 	cmdArgs = append(cmdArgs, "--cache", "-f", "json")
 	return cmdArgs, nil
 }
@@ -455,10 +398,9 @@ func buildActionArgs(cfg *config) ([]string, error) {
 }
 
 // phaseContext derives the per-phase context from the configured timeout. A
-// non-positive timeout (SCAN_TIMEOUT=0) means "no timeout": the phase
-// runs under the parent ctx so a SIGTERM still cancels it, but no deadline
-// applies. A positive timeout bounds the phase. The caller must defer the
-// returned cancel.
+// non-positive timeout (SCAN_TIMEOUT=0) means no deadline, but the phase
+// still runs under the parent ctx so SIGTERM cancels it. The caller must
+// defer the returned cancel.
 func phaseContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if timeout <= 0 {
 		return context.WithCancel(ctx)
@@ -467,17 +409,12 @@ func phaseContext(ctx context.Context, timeout time.Duration) (context.Context, 
 }
 
 // resolveActionSummary parses the action phase's captured streams into an
-// ActionSummary, preferring a recognized "Processed ... reclaimed ..." line
-// from stderr (where fclones prints its summary) and falling back to stdout.
-// A matched stdout summary wins over an unmatched stderr fallback line, so
-// stderr diagnostics can never mask a real summary that went to stdout; when
-// stderr matches nothing and is empty, stdout's parse is used either way,
-// preserving the original fallback precedence. When NEITHER stream contains a
-// recognizable summary but output exists, it warns with the "possible fclones
-// format drift" marker: the summary parse is the action-phase analogue of the
-// group-report parse, and without this warning an upstream wording change
-// silently zeroes the files_deduped/bytes_reclaimed fields that log-based
-// success notifications key on, while the run stays healthy.
+// ActionSummary, preferring a recognized stderr summary (where fclones
+// prints it) and falling back to stdout. A matched stdout summary wins over
+// an unmatched stderr fallback line. When neither stream has a recognizable
+// summary but output exists, it warns "possible fclones format drift":
+// without this, an upstream wording change silently zeroes the
+// files_deduped/bytes_reclaimed fields while the run stays healthy.
 func resolveActionSummary(log *slog.Logger, act action, stderrOut, stdoutOut string) parsing.ActionSummary {
 	summary := parsing.ParseActionSummary(stderrOut)
 	if !summary.Matched {
@@ -567,8 +504,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 		"reclaimed_human", parsing.HumanBytes(summary.ReclaimedBytes),
 	}
 	if summary.Estimated {
-		// dedupe reports an advisory upper bound ("reclaimed up to X"), so mark
-		// the figure as a ceiling rather than an exact reclaim.
+		// dedupe reports an advisory upper bound ("reclaimed up to X").
 		attrs = append(attrs, "reclaimed_estimated", true)
 	}
 	if summary.Files == 0 && summary.ReclaimedBytes == 0 && summary.RawLine != "" {

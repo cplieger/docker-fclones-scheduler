@@ -14,13 +14,13 @@ func FuzzDecodeReport(f *testing.F) {
 		`"redundant_file_size":10,"missing_file_count":0,"missing_file_size":0}},` +
 		`"groups":[{"file_len":10,"file_hash":"h","files":["/k","/d"]}]}`
 	f.Add(valid, 100)
-	f.Add(valid[:40], 100)                                         // truncated
-	f.Add(`{"header":{"stats":null},"groups":[]}`, 1)              // null stats
-	f.Add(`{"groups":[]}`, 0)                                      // missing header
-	f.Add(`{"header":{"stats":{"group_count":9}},"groups":[]}`, 5) // count mismatch
-	f.Add("# Redundant: 5 files (1.2 GB)\n", 100)                  // old text format
-	f.Add(valid+`{"second":true}`, 100)                            // trailing data rejected
-	f.Add(`{"header":{"stats":null},"groups":null}`, 1)            // null groups rejected
+	f.Add(valid[:40], 100)
+	f.Add(`{"header":{"stats":null},"groups":[]}`, 1)
+	f.Add(`{"groups":[]}`, 0)
+	f.Add(`{"header":{"stats":{"group_count":9}},"groups":[]}`, 5)
+	f.Add("# Redundant: 5 files (1.2 GB)\n", 100)
+	f.Add(valid+`{"second":true}`, 100)
+	f.Add(`{"header":{"stats":null},"groups":null}`, 1)
 	f.Add("", -1)
 	f.Fuzz(func(t *testing.T, doc string, keep int) {
 		got, err := parsing.DecodeReport(strings.NewReader(doc), keep)
@@ -32,9 +32,6 @@ func FuzzDecodeReport(f *testing.F) {
 			}
 			return
 		}
-		// Success invariants: the header count matches the streamed count,
-		// retention respects the cap, and every retained group is structurally
-		// sound (keep-first keeper plus at least one duplicate).
 		if got.Stats.GroupCount != got.TotalGroups {
 			t.Fatalf("GroupCount %d != TotalGroups %d: doc=%q", got.Stats.GroupCount, got.TotalGroups, doc)
 		}
@@ -73,31 +70,23 @@ func FuzzParseActionSummary(f *testing.F) {
 		if summary.ReclaimedBytes < 0 {
 			t.Fatalf("ReclaimedBytes must be >= 0, got %d", summary.ReclaimedBytes)
 		}
-		// Files and ReclaimedBytes are only assigned inside the block that
-		// first populates RawLine, so a non-zero metric implies a non-empty RawLine.
+		// Files/ReclaimedBytes are only assigned alongside RawLine.
 		if (summary.Files > 0 || summary.ReclaimedBytes > 0) && summary.RawLine == "" {
 			t.Fatalf("Files=%d ReclaimedBytes=%d set but RawLine empty: input=%q",
 				summary.Files, summary.ReclaimedBytes, input)
 		}
-		// Matched is the metrics' provenance flag: metrics and Estimated are
-		// parsed only from a recognized summary line, so on the fallback path
-		// (Matched false) all of them must be zero values. A matched summary's
-		// RawLine must carry the anchors the match keyed on.
+		// Matched is the provenance flag: metrics/Estimated are parsed only
+		// from a recognized line, so on the fallback path all are zero.
 		if !summary.Matched && (summary.Files != 0 || summary.ReclaimedBytes != 0 || summary.Estimated) {
 			t.Fatalf("Matched=false but metrics set: %+v input=%q", summary, input)
 		}
-		// (Only the "Processed" anchor is guaranteed in RawLine: the match's
-		// "reclaimed" anchor is tested against the whole source line, which
-		// may place it before the "Processed" offset RawLine starts at.)
+		// Only the "Processed" anchor is guaranteed in RawLine.
 		if summary.Matched && !strings.HasPrefix(summary.RawLine, "Processed") {
 			t.Fatalf("Matched=true but RawLine does not start at the match anchor: %q input=%q",
 				summary.RawLine, input)
 		}
-		// Provenance: a non-empty RawLine must be derivable from the input --
-		// either the TrimSpace of a whole line (fallback path) or
-		// TrimSpace(line[idx:]) at the "Processed" offset (match path). This
-		// grounds the parser's output in its input so a fabricated RawLine
-		// cannot pass.
+		// Provenance: a non-empty RawLine must be derivable from the input,
+		// so a fabricated RawLine cannot pass.
 		if summary.RawLine != "" {
 			derivable := false
 			for line := range strings.SplitSeq(input, "\n") {
@@ -126,8 +115,8 @@ func FuzzParseHumanBytes(f *testing.F) {
 	f.Add("3.7 TB")
 	f.Add("garbage")
 	f.Add("")
-	// Guard regression seeds: NaN/Inf/overflow/negative all clamp to 0, and
-	// the deleted IEC tolerance stays deleted (KiB parses to 0).
+	// NaN/Inf/overflow/negative all clamp to 0; the deleted IEC tolerance
+	// stays deleted (KiB parses to 0).
 	f.Add("Inf KB")
 	f.Add("-Inf KB")
 	f.Add("NaN MB")
@@ -140,7 +129,7 @@ func FuzzParseHumanBytes(f *testing.F) {
 		if result < 0 {
 			t.Fatalf("ParseHumanBytes must return >= 0, got %d", result)
 		}
-		// If result > 0, the input must have had exactly 2 fields
+		// If result > 0, the input must have had exactly 2 fields.
 		if result > 0 {
 			fields := strings.Fields(input)
 			if len(fields) != 2 {
@@ -158,28 +147,25 @@ func FuzzHumanBytesRoundTrip(f *testing.F) {
 	f.Add(int64(1500000000))
 	f.Add(int64(1_000_000_000_000_000))     // 1 PB
 	f.Add(int64(1_000_000_000_000_000_000)) // 1 EB
-	f.Add(int64(math.MaxInt64))             // exabyte-scale upper bound (regression seed for the EB panic + overflow guard)
+	f.Add(int64(math.MaxInt64))             // EB-scale upper bound
 	f.Fuzz(func(t *testing.T, n int64) {
 		if n < 0 {
-			return // skip negative values
+			return
 		}
 		s := parsing.HumanBytes(n)
 		if s == "" {
 			t.Fatal("HumanBytes must not return empty string")
 		}
-		// Must contain a space separating number and unit
 		if !strings.Contains(s, " ") {
 			t.Fatalf("HumanBytes(%d) = %q, expected space-separated", n, s)
 		}
-		// Round-trip: ParseHumanBytes(HumanBytes(n)) should approximate n
 		parsed := parsing.ParseHumanBytes(s)
 		if parsed < 0 {
 			t.Fatalf("round-trip produced negative: HumanBytes(%d)=%q -> %d", n, s, parsed)
 		}
-		// Round-trip must stay within the one-decimal-mantissa
-		// precision HumanBytes can represent (relative error < 10%).
-		// This is the same bound the rapid property asserts, applied
-		// here so the coverage-guided weekly run is meaningful too.
+		// Round-trip must stay within HumanBytes' one-decimal-mantissa
+		// precision (relative error < 10%), the same bound the rapid
+		// property asserts.
 		if n > 0 {
 			diff := parsed - n
 			if diff < 0 {

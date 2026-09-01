@@ -11,21 +11,10 @@ import (
 	"github.com/cplieger/scheduler/v4/trigger"
 )
 
-// --- `scan` subcommand: the trigger client ---
-//
-// A thin adapter over the scheduler library's synchronous trigger client: it
-// submits one run request (the empty `{}` frame — a scan takes no arguments)
-// and blocks until the daemon reports the run result, exiting 0/1 with that
-// result. The external trigger contract is unchanged (`docker exec fclones
-// /app/wrapper scan`, exit code = run outcome), and the run itself executes
-// inside the daemon: its logs land on the container's log stream in every
-// mode, while this process's output is only its own lifecycle lines. The
-// library owns the transport (dial, wire order, failure taxonomy); this file
-// owns the wording — the lifecycle lines an Ofelia job log captures. The
-// client never touches the health marker — the daemon is its single writer —
-// so the old silent-heartbeat-loss footgun (a mismatched exec user failing
-// the marker write) is structurally gone; a mismatched user now fails loudly
-// at connect (the socket is owner-only).
+// The `scan` subcommand: a thin trigger client over the scheduler library.
+// The run executes inside the daemon (its logs land on the container's log
+// stream); this file only submits the request and reports the result. The
+// client never touches the health marker — the daemon is its single writer.
 
 // runClient performs one triggered run via the daemon at socketPath and
 // returns the process exit code: 0 on success (including the documented
@@ -34,11 +23,8 @@ import (
 func runClient(socketPath string) int {
 	setupLogger()
 
-	// The daemon owns the run; this process only waits for its result, and
-	// that wait is unbounded by contract. Bind it to the terminal so an
-	// operator interrupting the `docker exec` unwinds here -- closing the
-	// connection, which the daemon observes -- instead of leaving the socket
-	// half-open until the kernel reaps this process.
+	// Unbounded wait by contract; bind to the terminal so an interrupted
+	// `docker exec` closes the connection instead of leaving the socket open.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -61,9 +47,6 @@ func runClient(socketPath string) int {
 		slog.Error("cannot send scan request", "error", err)
 		return 1
 	case errors.Is(err, context.Canceled):
-		// The operator interrupted the wait. The daemon keeps running the
-		// scan it already accepted; only this observer gave up, so the exit
-		// code reports "outcome unknown to me", not "the scan failed".
 		slog.Warn("interrupted while waiting for the scan; it continues in the daemon")
 		return 1
 	case err != nil:
@@ -78,8 +61,6 @@ func finishResult(ev trigger.Event) int {
 	if ev.OK {
 		attrs := []any{"duration_ms", ev.DurationMs}
 		if ev.Reason != "" {
-			// An OK result can carry a reason: the cross-container lock skip
-			// (no scan ran; the documented overlap tolerance exits 0).
 			attrs = append(attrs, "reason", ev.Reason)
 		}
 		slog.Info("triggered scan complete", attrs...)

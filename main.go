@@ -15,13 +15,10 @@ import (
 // --- Main ---
 
 // main dispatches on the first argument: `health` runs the Docker probe,
-// `scan` triggers one run via the daemon's socket and exits with that run's
-// result (the external-trigger entry point), and anything else (including no
-// argument) runs the long-lived process that owns all runs.
+// `scan` triggers one run via the daemon's socket, and anything else
+// (including no argument) runs the long-lived process that owns all runs.
 func main() {
-	// CLI health probe for the Docker healthcheck (distroless has no
-	// curl/wget). Checked before the logger is configured because RunProbe
-	// calls os.Exit. Built-in mode arms a freshness deadline (probeOptions).
+	// Checked before the logger is configured because RunProbe calls os.Exit.
 	if len(os.Args) > 1 && os.Args[1] == "health" {
 		health.RunProbe(healthMarkerPath, probeOptions()...)
 	}
@@ -39,8 +36,6 @@ func dispatch() int {
 
 	switch cmd {
 	case "daemon":
-		// run/bootstrap already logs each failure once at the layer with the
-		// most context, so exit non-zero here without a bare re-log.
 		if err := run(context.Background()); err != nil {
 			return 1
 		}
@@ -48,8 +43,6 @@ func dispatch() int {
 	case "scan":
 		return runClient(socketPath)
 	default:
-		// An unrecognized subcommand is almost certainly a typo; fail
-		// loudly instead of silently falling through to the daemon.
 		setupLogger()
 		slog.Error("unknown subcommand", "command", cmd, logKeyOutcome, "bad_subcommand", "valid", "scan, health")
 		return 2
@@ -57,19 +50,12 @@ func dispatch() int {
 }
 
 // run is the composition root for the long-running container (the default
-// no-arg command). It wires dependencies and dispatches on the configured
-// mode: run-once performs a single direct run and exits, while the two
-// long-running modes hand ownership of every run to the daemon (executor +
-// trigger socket, plus the interval ticker in built-in mode). Returning an
-// error exits non-zero.
+// no-arg command): wires dependencies and dispatches on the configured mode.
+// Returning an error exits non-zero.
 func run(ctx context.Context) error {
-	// Construct the marker before bootstrap so a startup bootstrap failure --
-	// e.g. verifyCacheDir when /cache is read-only or full -- clears any stale
-	// healthy marker left by a SIGKILLed prior run and honors the documented
-	// "built-in mode begins unhealthy" / "unhealthy when /cache is full or
-	// read-only" contract. NewMarker probes /tmp (healthMarkerPath), not
-	// /cache, so it constructs fine before bootstrap. The daemon owns the
-	// marker file for the container's lifetime and cleans up on exit.
+	// Constructed before bootstrap so a startup failure (e.g. /cache
+	// read-only or full) still clears a stale healthy marker from a
+	// SIGKILLed prior run. NewMarker probes /tmp, not /cache.
 	marker := health.NewMarker(healthMarkerPath)
 	defer marker.Cleanup()
 
@@ -79,8 +65,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 
-	// Reclaim report temp files orphaned in /cache by a previous hard-killed
-	// scan. Safe here: this process has no scan in flight at startup, and the
+	// Safe here: this process has no scan in flight at startup, and the
 	// sweep takes the cross-container lock before touching anything.
 	cleanStaleReports()
 
@@ -97,12 +82,10 @@ func run(ctx context.Context) error {
 	}
 }
 
-// bootstrap performs the shared startup prologue for every mode: it installs
+// bootstrap performs the shared startup prologue for every mode: installs
 // the logger, loads and validates config, and verifies the cache directory
 // is writable. Each failure is logged exactly once at the layer with the
-// most context — loadConfig logs the specific invalid setting at the leaf,
-// and the cache-dir failure is logged here — so callers exit non-zero
-// without re-logging.
+// most context.
 func bootstrap(ctx context.Context) (config, error) {
 	setupLogger()
 
@@ -120,32 +103,14 @@ func bootstrap(ctx context.Context) (config, error) {
 	return cfg, nil
 }
 
-// runOnce performs exactly one scan+action then returns, so the process
-// exits afterward -- the one-shot mode selected by SCAN_INTERVAL=0. It
-// runs the job directly (no daemon, no socket: there is nothing to trigger
-// out-of-band in a process that exits after one run) and is the marker's
-// single writer for its short life. A failed scan returns a non-nil error so
-// the container exits non-zero (visible to an orchestrator running it as a
-// batch job).
-//
-// run-once exits non-zero on every outcome that did NOT complete a clean
-// scan, because here the exit code IS the batch job result. Three
-// non-success cases, all distinct from the daemon modes which treat them as
-// benign:
-//   - exec failure / timeout: runFclonesJob returns a non-nil error (handled below).
-//   - interrupt (SIGTERM/SIGINT mid-run): runFclonesJob treats a parent-context
-//     cancellation as a clean stop and returns (ran=true, nil); for the one-shot, a
-//     pod evicted / deadline-killed mid-scan must instead fail so the orchestrator
-//     retries, so a cancelled context is converted to an error.
-//   - lock-contention skip: another process held the /cache scan lock, so
-//     runFclonesJob returned (ran=false, nil) WITHOUT scanning. The daemon modes
-//     correctly no-op here, but a one-shot that performed no scan is not a
-//     successful run, so it is reported as a non-zero SKIPPED outcome (and the
-//     marker set unhealthy, since no successful scan recorded one) rather than a
-//     silent exit-0 no-op the orchestrator would mark Complete.
+// runOnce performs exactly one scan+action then returns (SCAN_INTERVAL=0).
+// It runs the job directly (no daemon, no socket) and is the marker's single
+// writer for its short life. Unlike the daemon modes, every non-success
+// outcome here — exec failure, an interrupt mid-run, or a lock-contention
+// skip — exits non-zero, because the exit code IS the batch job result.
 func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
-	// Begins unhealthy: clear any stale health file from a previous run that
-	// crashed before its defer ran. The single scan flips it on success.
+	// Begins unhealthy: clears any stale health file from a previous run
+	// that crashed before its defer ran.
 	marker.Set(false)
 
 	slog.Info("container started (run once)",
@@ -158,26 +123,17 @@ func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
 	}
 	switch outcome := classifyRunOnceOutcome(ran, err, ctx.Err()); outcome {
 	case runOnceFailed:
-		// Exec failure or timeout: already logged with full context; exit non-zero.
 		return err
 	case runOnceSkipped:
-		// The scan lock was held by another process, so no scan or action ran.
-		// jobHealthSignal writes no marker on a skip, so set it unhealthy here
-		// so the exit code and the healthcheck agree (this run accomplished
-		// nothing). Report SKIPPED as a non-zero outcome so a batch
-		// orchestrator retries instead of recording a no-op as success.
+		// jobHealthSignal writes no marker on a skip; set it here so the
+		// exit code and the healthcheck agree.
 		marker.Set(false)
 		slog.Warn("run-once skipped: another process holds the scan lock; no scan ran",
 			logKeyOutcome, "skipped", "lock", lockFile)
 		return errors.New("run-once skipped: scan lock held by another process")
 	case runOnceInterrupted:
-		// Interrupted before the single run completed: report a non-zero exit so
-		// a batch orchestrator treats the cut-short run as a failure, not a success.
-		// The phase logged this as INFO outcome=shutdown (benign for a daemon); re-log
-		// at WARN with the outcome tag so the batch failure is visible to a log-based
-		// alert and not mistaken for a clean daemon shutdown. Reuses the existing
-		// "shutdown" outcome value (as the skip path reuses "skipped"); WARN vs the
-		// phase's INFO disambiguates.
+		// The phase logged this at INFO (benign for a daemon); re-log at WARN
+		// with the outcome tag so a batch failure isn't read as a clean stop.
 		slog.Warn("run-once interrupted before completion; batch run failed",
 			logKeyOutcome, "shutdown", "cause", context.Cause(ctx))
 		return fmt.Errorf("run-once interrupted before completion: %w", context.Cause(ctx))

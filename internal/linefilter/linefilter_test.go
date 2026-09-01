@@ -45,14 +45,10 @@ func TestWriterHandlesPartialLines(t *testing.T) {
 
 func TestWriterSanitizesControlBytes(t *testing.T) {
 	t.Parallel()
-	// fclones renders scanned filenames raw into its stderr diagnostics, and a
-	// filename is attacker-influenceable. A control byte embedded in one must not
-	// reach the log sink unescaped (CWE-117 log injection): emit rewrites C0
-	// bytes (except '\n' and '\t'), DEL, the C1 control block U+0080..U+009F
-	// (even when encoded as valid 2-byte UTF-8), and any byte that is not part of
-	// a valid UTF-8 sequence (e.g. a standalone C1 control) to a visible \xNN
-	// escape, while leaving the '\n' line framing and every other valid multi-byte
-	// UTF-8 rune intact.
+	// fclones renders scanned filenames raw into stderr, and a filename is
+	// attacker-influenceable. emit rewrites C0 (except '\n'/'\t'), DEL, the
+	// C1 control block (even 2-byte-UTF-8-encoded), and any invalid UTF-8
+	// byte to a visible \xNN escape (CWE-117), leaving other runes intact.
 	tests := []struct {
 		name  string
 		input string
@@ -79,32 +75,22 @@ func TestWriterSanitizesControlBytes(t *testing.T) {
 			want:  "cannot read file /scan/caf\u00e9\t\u65e5\u672c\u8a9e: denied\n",
 		},
 		{
-			// A bare 0x9B is the 8-bit C1 CSI (the single-byte equivalent of the
-			// ESC[ neutralized above); standing alone it is invalid UTF-8, so it is
-			// escaped, while the valid multi-byte rune beside it survives verbatim.
+			// 0x9B is the 8-bit C1 CSI, invalid standing alone as UTF-8.
 			name:  "standalone C1 CSI byte is escaped while valid UTF-8 is preserved",
 			input: "cannot read file /scan/caf\u00e9\x9b: denied\n",
 			want:  "cannot read file /scan/caf\u00e9\\x9b: denied\n",
 		},
 		{
-			// 0x80 is the lowest UTF-8 continuation byte, so standing alone it
-			// is invalid UTF-8 and must be escaped like any other stray byte.
-			// It is also the exact edge of the ASCII test (utf8.RuneSelf), the
-			// one byte value that decides between "forward this byte verbatim"
-			// and "decode a rune here", so a wrong comparison leaks precisely
-			// this byte and nothing else.
+			// 0x80 is the lowest UTF-8 continuation byte and the exact edge of
+			// the ASCII test (utf8.RuneSelf); a wrong comparison leaks this
+			// byte specifically.
 			name:  "standalone 0x80 continuation byte is escaped",
 			input: "cannot read file /scan/a\x80b: denied\n",
 			want:  "cannot read file /scan/a\\x80b: denied\n",
 		},
 		{
-			// The well-formed 2-byte UTF-8 C1 CSI (U+009B = 0xC2 0x9B) is the
-			// multibyte twin of the bare 0x9B above: a category-Cc control that
-			// drives terminal escapes, so it is escaped even though its encoding is
-			// valid UTF-8, while an accented rune (é) and an NBSP (U+00A0) beside it
-			// survive verbatim. Under the byte-only escaper this line would have
-			// taken the verbatim fast path (no C0/DEL byte present) and leaked the
-			// C1 to the terminal.
+			// The well-formed 2-byte C1 CSI (U+009B) must still be escaped
+			// despite being valid UTF-8; a byte-only escaper would miss it.
 			name:  "well-formed multibyte C1 CSI is escaped, NBSP and accents preserved",
 			input: "cannot read file /scan/caf\u00e9\u009b\u00a0x: denied\n",
 			want:  "cannot read file /scan/caf\u00e9\\xc2\\x9b\u00a0x: denied\n",
@@ -125,22 +111,18 @@ func TestWriterSanitizesControlBytes(t *testing.T) {
 	}
 }
 
-// TestWriterPreservesMultibyteRuneSplitAcrossWrites guards the
-// interaction between Writer's cross-Write partial-line buffering and
-// its per-line sanitization: a multi-byte UTF-8 rune whose bytes arrive in
-// separate Write calls (as a subprocess pipe read can split mid-rune) must be
-// reassembled into the complete line before sanitizeControlBytes runs, so the
-// rune is forwarded verbatim rather than escaped as two standalone invalid
-// bytes. The existing chunk-invariance property restricts input to ASCII and
-// FuzzWriter issues a single Write, so neither reaches this boundary.
+// TestWriterPreservesMultibyteRuneSplitAcrossWrites guards a multi-byte rune
+// split across separate Write calls (as a subprocess pipe read can split
+// mid-rune): it must be reassembled into the complete line before
+// sanitization runs, so it is forwarded verbatim rather than escaped as two
+// invalid bytes.
 func TestWriterPreservesMultibyteRuneSplitAcrossWrites(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
 	fw := linefilter.New(&out)
 
-	// "cafe" ends in an accented e (U+00E9 = 0xC3 0xA9); the line carries no
-	// fclones noise marker, so it is kept and sanitized. Deliver the 0xC3 lead
-	// byte and the 0xA9 continuation byte in separate Write calls.
+	// "café" ends in U+00E9 (0xC3 0xA9); deliver the lead and continuation
+	// bytes in separate Write calls.
 	line := []byte("cannot read file /scan/caf\u00e9: denied\n")
 	idx := bytes.IndexByte(line, 0xC3)
 	if idx < 0 {
@@ -162,11 +144,9 @@ func TestWriterPreservesMultibyteRuneSplitAcrossWrites(t *testing.T) {
 	}
 }
 
-// TestWriterWritesLeadingBlankLine guards the newline-search boundary
-// in Write: a buffer whose very first byte is '\n' (idx == 0) must still be
-// recognised as a complete line and forwarded, not buffered. Mutating the
-// `idx < 0` no-newline guard to `idx <= 0` would treat a leading newline as
-// "no newline found", swallowing the entire write.
+// TestWriterWritesLeadingBlankLine guards the newline-search boundary:
+// a buffer whose first byte is '\n' must still be forwarded, not buffered
+// (mutating `idx < 0` to `idx <= 0` would swallow the whole write).
 func TestWriterWritesLeadingBlankLine(t *testing.T) {
 	t.Parallel()
 
@@ -263,8 +243,8 @@ func TestWriterCapsUnboundedNoNewlineFlood(t *testing.T) {
 			t.Errorf("sink got %d bytes, want %d (oversized line flushed at cap)", out.Len(), len(flood))
 		}
 
-		// Buffer was reset at the cap: a following newline-terminated line is
-		// emitted on its own, not concatenated with the flushed flood.
+		// Buffer resets at the cap: a following line is emitted alone, not
+		// concatenated with the flushed flood.
 		out.Reset()
 		if _, err := fw.Write([]byte("next\n")); err != nil {
 			t.Fatalf("Write(next): %v", err)
@@ -279,10 +259,8 @@ func TestWriterCapsUnboundedNoNewlineFlood(t *testing.T) {
 		var out bytes.Buffer
 		fw := linefilter.New(&out)
 
-		// A >1MB no-newline run that contains a filtered pattern: the cap fires
-		// and the line is dropped (not forwarded), buffer reset. The line carries
-		// a genuine "fclones:  info:" prefix so it is filtered under the positional
-		// policy (a bare "info: Scanned " with no fclones prefix is no longer noise).
+		// A >1MB no-newline run carrying a genuine "fclones: info:" noise
+		// marker: the cap fires and the filtered line is dropped.
 		flood := append([]byte("[ts] fclones:  info: Scanned "), bytes.Repeat([]byte("9"), cap+1)...)
 		if _, err := fw.Write(flood); err != nil {
 			t.Fatalf("Write(filtered flood): %v", err)
@@ -349,8 +327,8 @@ func TestFloodsCountsForcedFlushes(t *testing.T) {
 		t.Errorf("Floods() = %d before any write, want 0", got)
 	}
 
-	// Two separate no-newline runs each strictly exceed MaxLineBytes, so each
-	// forces a cap-flush and bumps the flood counter.
+	// Two separate no-newline runs each exceed MaxLineBytes, so each forces
+	// a cap-flush and bumps the flood counter.
 	if _, err := fw.Write(bytes.Repeat([]byte("x"), maxLine+1)); err != nil {
 		t.Fatalf("Write(flood #1): %v", err)
 	}
@@ -365,8 +343,7 @@ func TestFloodsCountsForcedFlushes(t *testing.T) {
 		t.Errorf("Floods() = %d after a second flood, want 2", got)
 	}
 
-	// A sub-cap, newline-terminated line is emitted normally and must NOT bump
-	// the flood counter.
+	// A sub-cap, newline-terminated line must not bump the flood counter.
 	if _, err := fw.Write([]byte("short line\n")); err != nil {
 		t.Fatalf("Write(short): %v", err)
 	}
@@ -394,11 +371,10 @@ func TestWriterPropagatesSinkErrorOnCompleteLine(t *testing.T) {
 	}
 }
 
-// TestProperty_WriterChunkInvariant asserts that Writer's
-// filtered output is independent of how the input byte stream is split across
-// Write calls, for inputs whose lines stay under MaxLineBytes (the common
-// fclones-output case). Lines are capped at 40 bytes so the no-newline
-// cap-flush path never fires, under which chunk-invariance would not hold.
+// TestProperty_WriterChunkInvariant asserts filtered output is independent
+// of how the input is split across Write calls, for lines under
+// MaxLineBytes (capped at 40 bytes so the no-newline cap-flush path never
+// fires, under which chunk-invariance would not hold).
 func TestProperty_WriterChunkInvariant(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {
@@ -456,9 +432,8 @@ func TestWriterCapResetsBufferAfterSinkError(t *testing.T) {
 		t.Fatal("Write(flood) whose cap-flush hits a first-call-failing sink = nil error, want the sink error")
 	}
 
-	// The cap-flush resets the partial-line buffer even when the sink write
-	// fails, so a following newline-terminated line must be emitted alone --
-	// the >1MB flood must not be re-prefixed onto it.
+	// The cap-flush resets the buffer even when the sink write fails, so the
+	// >1MB flood must not be re-prefixed onto the following line.
 	if _, err := fw.Write([]byte("next\n")); err != nil {
 		t.Fatalf("Write(next) after the cap-flush sink error: %v", err)
 	}
@@ -488,9 +463,8 @@ func TestWriterCapNotTrippedAtExactBoundary(t *testing.T) {
 	var out bytes.Buffer
 	fw := linefilter.New(&out)
 
-	// A no-newline run of exactly MaxLineBytes must NOT trip the cap: the guard
-	// is `len(fw.buf) > MaxLineBytes`, so the buffer is held (not flushed) until
-	// it strictly exceeds the cap.
+	// A no-newline run of exactly MaxLineBytes must not trip the cap: the
+	// guard is `len(fw.buf) > MaxLineBytes`, held until strictly exceeded.
 	if _, err := fw.Write(bytes.Repeat([]byte("x"), maxLine)); err != nil {
 		t.Fatalf("Write(exact-cap): %v", err)
 	}
@@ -498,7 +472,7 @@ func TestWriterCapNotTrippedAtExactBoundary(t *testing.T) {
 		t.Errorf("sink got %d bytes after an exactly-MaxLineBytes write, want 0 (cap not yet exceeded)", out.Len())
 	}
 
-	// One more no-newline byte pushes the buffer strictly past the cap, flushing.
+	// One more byte pushes strictly past the cap, flushing.
 	if _, err := fw.Write([]byte("y")); err != nil {
 		t.Fatalf("Write(+1): %v", err)
 	}
@@ -507,11 +481,9 @@ func TestWriterCapNotTrippedAtExactBoundary(t *testing.T) {
 	}
 }
 
-// TestWriterFloodThresholdTracksMaxLineBytes pins the no-newline flood
-// threshold to the exported MaxLineBytes constant that scheduler.go logs as
-// cap_bytes alongside flood_count. A run of exactly MaxLineBytes is held
-// (Floods()==0); one byte past it force-flushes exactly once (Floods()==1), so
-// the operator-facing cap can never silently drift from the real flush boundary.
+// TestWriterFloodThresholdTracksMaxLineBytes pins the flood threshold to the
+// exported MaxLineBytes constant scheduler.go logs as cap_bytes, so the
+// operator-facing cap can never drift from the real flush boundary.
 func TestWriterFloodThresholdTracksMaxLineBytes(t *testing.T) {
 	t.Parallel()
 
@@ -539,11 +511,9 @@ func TestWriterFloodThresholdTracksMaxLineBytes(t *testing.T) {
 	}
 }
 
-// TestEscapeUnsafeMatchesPassthroughPolicy pins the exported escaper the
-// slog-attribute sink uses (streamAttrs) to the same policy the stderr
-// passthrough applies: one class (runesafe's unsafe set), one output shape
-// (\xNN), newline/tab framing preserved. A drift between the two sinks would
-// reopen CWE-117 on whichever one lagged.
+// TestEscapeUnsafeMatchesPassthroughPolicy pins the exported escaper
+// (streamAttrs) to the same policy the stderr passthrough applies, so a
+// drift between the two sinks can't reopen CWE-117 on whichever lagged.
 func TestEscapeUnsafeMatchesPassthroughPolicy(t *testing.T) {
 	t.Parallel()
 	cases := []struct{ name, in, want string }{

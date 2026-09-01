@@ -24,11 +24,10 @@ func FuzzRejectDangerousArgs(f *testing.F) {
 			}
 			return
 		}
-		// The oracle re-derives the MATCHING rule (exact match or a "flag="
-		// prefix, case-folded) over the production list rather than a second
-		// copy of it: a hardcoded copy is what let a phantom --command entry
-		// live in both places. The list's CONTENTS are pinned by
-		// TestRejectDangerousArgs instead.
+		// Re-derives the MATCHING rule (exact match or a "flag=" prefix,
+		// case-folded) over the production list rather than a copy of it: a
+		// hardcoded copy is what let a phantom --command entry live in both
+		// places. The list's contents are pinned by TestRejectDangerousArgs.
 		wantReject := false
 		for _, arg := range parsed {
 			lower := strings.ToLower(arg)
@@ -59,16 +58,13 @@ func FuzzParseAction(f *testing.F) {
 		act, err := parseAction(input)
 		validSet := map[action]bool{actionGroup: true, actionRemove: true, actionLink: true, actionDedupe: true}
 		if err == nil {
-			// Must be a valid action
 			if !validSet[act] {
 				t.Fatalf("parseAction(%q) returned unknown action %q", input, act)
 			}
-			// String representation must match input
 			if act.String() != input {
 				t.Fatalf("action.String() = %q, want %q", act.String(), input)
 			}
 		} else {
-			// Error must mention "invalid action"
 			if !strings.Contains(err.Error(), "invalid action") {
 				t.Fatalf("unexpected error format: %v", err)
 			}
@@ -90,15 +86,14 @@ func FuzzParseInterval(f *testing.F) {
 	f.Fuzz(func(t *testing.T, input string) {
 		interval, mode := parseInterval(input)
 
-		// The returned interval must always be positive: the daemon ticker passes it
-		// to time.NewTicker (main.go), which panics on a non-positive duration.
-		// parseInterval is the sole gate protecting that call from an arbitrary
-		// SCAN_INTERVAL env value.
+		// interval must always be positive: main.go passes it to
+		// time.NewTicker, which panics on a non-positive duration, and
+		// parseInterval is the sole gate on an arbitrary SCAN_INTERVAL.
 		if interval <= 0 {
 			t.Fatalf("parseInterval(%q) interval = %s, want > 0 (time.NewTicker panics on a non-positive duration)", input, interval)
 		}
-		// The mode must be one of the three defined run modes; a fourth value
-		// would panic run()'s and runMode.String()'s exhaustive switches.
+		// mode must be one of the three defined run modes; a fourth value
+		// panics run()'s and runMode.String()'s exhaustive switches.
 		switch mode {
 		case modeBuiltin, modeExternal, modeOnce:
 		default:

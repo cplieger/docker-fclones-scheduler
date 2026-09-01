@@ -19,21 +19,16 @@ func FuzzParse(f *testing.F) {
 	f.Fuzz(func(t *testing.T, input string) {
 		result, err := Parse(input)
 		if err != nil {
-			// Errors are expected for unterminated quotes / trailing backslash
 			if strings.Contains(input, `"`) || strings.Contains(input, `'`) || strings.HasSuffix(input, `\`) {
-				return // valid error case
+				return
 			}
-			// If no quotes or trailing backslash, should not error
 			t.Fatalf("unexpected error for input %q: %v", input, err)
 		}
-		// On success, no token should be empty
 		for i, tok := range result {
 			if tok == "" {
 				t.Fatalf("token %d is empty for input %q", i, input)
 			}
 		}
-		// All non-whitespace content from input should appear in tokens
-		// (modulo quote/escape characters)
 		joined := strings.Join(result, "")
 		for _, r := range input {
 			if r == '"' || r == '\'' || r == '\\' || r == ' ' || r == '\t' {
@@ -46,12 +41,10 @@ func FuzzParse(f *testing.F) {
 	})
 }
 
-// FuzzParse_roundtrip asserts that any token slice Parse emits can be
-// re-expressed (by backslash-escaping every rune) and re-parsed back to the
-// identical slice. Backslash escaping is the parser's universal literal
-// mechanism -- it applies inside and outside quotes -- so this exercises the
-// full token space (spaces, quotes, control chars) that the bounded rapid
-// round-trip generator in args_test.go cannot reach.
+// FuzzParse_roundtrip asserts any token slice Parse emits can be re-expressed
+// (backslash-escaping every rune) and re-parsed to the identical slice —
+// exercising the full token space the bounded rapid generator in
+// args_test.go cannot reach.
 func FuzzParse_roundtrip(f *testing.F) {
 	f.Add(`plain args`)
 	f.Add(`"quoted value" 'single'`)
@@ -61,10 +54,10 @@ func FuzzParse_roundtrip(f *testing.F) {
 	f.Fuzz(func(t *testing.T, input string) {
 		tokens, err := Parse(input)
 		if err != nil {
-			return // only round-trip inputs Parse accepts
+			return
 		}
-		// Re-express each token by escaping every rune; join tokens with a
-		// single unescaped space (which Parse treats as a separator).
+		// Re-express each token by escaping every rune; join with a single
+		// unescaped space (Parse's separator).
 		var sb strings.Builder
 		for i, tok := range tokens {
 			if i > 0 {

@@ -10,14 +10,12 @@ import (
 func TestClassifyExecOutcome(t *testing.T) {
 	t.Parallel()
 
-	// Helper to create a cancelled context.
 	cancelledCtx := func() context.Context {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		return ctx
 	}
 
-	// Helper to create a deadline-exceeded context.
 	deadlineCtx := func() context.Context {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		defer cancel()
