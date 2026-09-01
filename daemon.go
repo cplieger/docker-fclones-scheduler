@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/cplieger/health"
 	"github.com/cplieger/scheduler/v4"
 	"github.com/cplieger/scheduler/v4/trigger"
 )
@@ -29,33 +30,32 @@ const queueCapacity = 16
 // daemon carries the executor's dependencies.
 type daemon struct {
 	queue *trigger.Queue[struct{}]
-	// hc is the single writer of the health marker; every run outcome
-	// funnels through it.
-	hc     *healthController
+	// health is the single writer of the marker; every run outcome funnels through it.
+	health *health.Latch
 	cfg    *config
 	newCmd scheduler.CommandRunner
 }
 
 // runDaemon runs the two long-running modes (built-in and external): binds
-// the trigger socket, wires the health controller, starts the executor, and
+// the trigger socket, wires the health latch, starts the executor, and
 // — in built-in mode — drives the interval ticker. Returning an error exits
 // non-zero.
-func runDaemon(ctx context.Context, cfg *config, hc *healthController, newCmd scheduler.CommandRunner) error {
+func runDaemon(ctx context.Context, cfg *config, state *health.Latch, newCmd scheduler.CommandRunner) error {
 	ln, err := trigger.Listen(socketPath)
 	if err != nil {
 		slog.Error("cannot bind trigger socket", "path", socketPath, "error", err)
-		hc.markUnhealthy()
+		state.Set(false)
 		return err
 	}
 	defer func() { _ = os.Remove(socketPath) }()
 
 	// Built-in mode starts unhealthy until the first run proves the setup;
 	// external mode starts healthy (idle, nothing has failed).
-	hc.markInitial(cfg.Mode == modeExternal)
+	state.Set(cfg.Mode == modeExternal)
 
 	d := &daemon{
 		queue:  trigger.NewQueue[struct{}](queueCapacity),
-		hc:     hc,
+		health: state,
 		cfg:    cfg,
 		newCmd: newCmd,
 	}
@@ -87,7 +87,7 @@ func runDaemon(ctx context.Context, cfg *config, hc *healthController, newCmd sc
 	slog.Info("shutting down", "cause", context.Cause(ctx))
 	// Latch unhealthy before the in-flight run resolves so observers see the
 	// drain, and to block a late healthy write.
-	d.hc.beginDrain()
+	d.health.BeginDrain()
 
 	// Stop admission, then wait for the executor, ticker and handlers to
 	// finish delivering results to everything already accepted.
@@ -136,7 +136,7 @@ func (d *daemon) tick(trig string) {
 }
 
 // run performs one request: run the scan+action job, route the outcome
-// through the health controller, and return the result. Runs under the
+// through the health latch, and return the result. Runs under the
 // shutdown-cancellable ctx on purpose: SIGTERM interrupts an in-flight
 // fclones phase, and jobHealthSignal's interrupted-run carve-out keeps that
 // drain from registering as a failure. A cross-container lock skip
@@ -146,7 +146,7 @@ func (d *daemon) run(ctx context.Context, trig string, _ struct{}) trigger.Outco
 
 	ran, err := runFclonesJob(ctx, d.cfg, trig, d.newCmd)
 	if set, healthy := jobHealthSignal(ctx.Err(), ran, err); set {
-		d.hc.apply(healthy)
+		d.health.Set(healthy)
 	}
 
 	out := trigger.Outcome{OK: err == nil, Duration: time.Since(start)}
