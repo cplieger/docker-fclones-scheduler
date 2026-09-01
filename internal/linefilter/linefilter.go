@@ -13,11 +13,9 @@ import (
 	"github.com/cplieger/runesafe/v2"
 )
 
-// MaxLineBytes bounds the partial-line buffer in Writer so a
-// no-newline byte flood cannot grow it without limit. It is the threshold a
-// flood force-flush trips (see Floods), so the caller logs it directly rather
-// than a coincidentally-equal config constant. It mirrors the 1 MB stderr cap
-// the caller applies to its capbuf.Buffer sink.
+// MaxLineBytes bounds the partial-line buffer so a no-newline byte flood
+// cannot grow it without limit; mirrors the 1 MB stderr cap on the caller's
+// capbuf.Buffer sink.
 const MaxLineBytes = 1 << 20 // 1 MB
 
 // Writer wraps an io.Writer and drops lines matching known-recurring
@@ -34,18 +32,16 @@ func New(w io.Writer) *Writer {
 }
 
 // noiseMarker is a body substring that marks noise at its level. An optional
-// prefix, when set, additionally requires the message body to begin with
-// fclones' own framing for that notice, so a marker echoed in an attacker-named
-// scanned path (which fclones prefixes with "cannot read file ", never with the
-// notice's own framing) cannot suppress a genuine same-level diagnostic.
+// prefix additionally requires the message body to begin with fclones' own
+// framing for that notice, so a marker echoed in an attacker-named scanned
+// path cannot suppress a genuine same-level diagnostic.
 type noiseMarker struct {
 	substr string
 	prefix string // "" means no prefix anchor
 }
 
-// infoProgressPatterns mark info-level progress noise (matched against the
-// message body of a genuine fclones info line; see shouldFilterLine). These
-// carry no prefix anchor: the phrases are fclones-controlled framing already.
+// infoProgressPatterns mark info-level progress noise; no prefix anchor
+// needed since these phrases are fclones-controlled framing already.
 var infoProgressPatterns = []noiseMarker{
 	{substr: "Started grouping"},
 	{substr: "Started deduplicating"},
@@ -53,39 +49,29 @@ var infoProgressPatterns = []noiseMarker{
 	{substr: "Found "},
 }
 
-// warnNoisePatterns mark warn-level noise. The FIEMAP notice ("doesn't support
-// FIEMAP ioctl API", e.g. on ZFS) is benign and recurrent and
-// is emitted by fclones at warn level. It is matched against the message body
-// of a genuine fclones warn line -- not anywhere in the raw line -- AND anchored
-// to fclones' own framing for the canonical notice ("File system <fs> on device
-// <dev> doesn't support FIEMAP ioctl API ..."). fclones prefixes path read
-// errors with "cannot read file ", never with "File system ", so a genuine
-// same-level warn that merely echoes the phrase in an attacker-named scanned
-// filename is NOT suppressed.
+// warnNoisePatterns mark warn-level noise. The FIEMAP notice (e.g. on ZFS) is
+// benign and recurrent; anchored to fclones' own framing ("File system <fs>
+// on device <dev> doesn't support FIEMAP ioctl API ...") so a genuine warn
+// that merely echoes the phrase in an attacker-named scanned filename (which
+// fclones instead prefixes "cannot read file ") is not suppressed.
 var warnNoisePatterns = []noiseMarker{
 	{substr: "doesn't support FIEMAP ioctl API", prefix: "File system "},
 }
 
-// noisePatternsByLevel maps an fclones log level to the body markers dropped at
-// that level. A marker is matched ONLY against the message body of a line whose
-// level field equals the key (see shouldFilterLine), never against the raw
-// line, so an attacker-controlled scanned filename echoing a marker cannot
-// suppress the line that reports it. Re-audit on a FCLONES_VERSION bump (see
-// CONTRIBUTING.md).
+// noisePatternsByLevel maps an fclones log level to the body markers dropped
+// at that level. Matched only against the message body of a line whose level
+// field equals the key, never the raw line, so an attacker-controlled
+// filename cannot suppress the line reporting it. Re-audit on a
+// FCLONES_VERSION bump.
 var noisePatternsByLevel = map[string][]noiseMarker{
 	"info": infoProgressPatterns,
 	"warn": warnNoisePatterns,
 }
 
-// shouldFilterLine returns true when a given line should be suppressed.
-//
-// It reads the level positionally from the FIRST "fclones:" prefix that fclones
-// itself emits (an attacker cannot inject text ahead of it), then drops the line
-// only when a noise marker registered for that exact level appears in the
-// message body. A marker carrying a prefix anchor additionally requires the body
-// to begin with fclones' own framing for that notice, so neither a marker echoed
-// in a scanned filename at a different level NOR one echoed in a genuine
-// same-level diagnostic about an attacker-named path can suppress it.
+// shouldFilterLine returns true when a given line should be suppressed. It
+// reads the level positionally from fclones' own "fclones:" prefix (an
+// attacker cannot inject text ahead of it), then drops the line only when a
+// noise marker registered for that exact level appears in the message body.
 func shouldFilterLine(line string) bool {
 	const prefix = "fclones:"
 	_, after, ok := strings.Cut(line, prefix)
@@ -102,10 +88,8 @@ func shouldFilterLine(line string) bool {
 		return false
 	}
 	// fclones renders the body with a leading space after the level colon
-	// ("warn: File system ..."); trim it so a marker's prefix anchor matches the
-	// body's own framing rather than that separator space. Trimming is
-	// behavior-preserving for the substring check (a leading space is never part
-	// of a marker phrase).
+	// ("warn: File system ..."); trim it so a prefix anchor matches the
+	// body's own framing rather than that separator space.
 	body := strings.TrimLeft(msg, " ")
 	for _, m := range patterns {
 		if m.prefix != "" && !strings.HasPrefix(body, m.prefix) {
@@ -129,24 +113,14 @@ func isC0OrDEL(b byte) bool {
 	return (b < 0x20 && b != '\n' && b != '\t') || b == 0x7f
 }
 
-// containsUnsafeRune reports whether p (assumed valid UTF-8 by its caller) holds
-// any rune runesafe.IsUnsafeNonASCII refuses, so an unsafe multi-byte rune
-// cannot slip through the fast path verbatim.
-//
-// The predicate is runesafe's, not a local list. This function used to look for
-// the 2-byte C1 encoding only, which meant the two classes above the C1 block --
-// the Unicode bidi controls and U+2028/U+2029 -- were well-formed UTF-8 with
-// nothing to escape, took the fast path, and reached an operator terminal and
-// Loki verbatim (Trojan-Source reordering and forged log records on an
-// attacker-influenced filename). Deferring the class definition to the shared
-// predicate is what keeps that gap from reopening.
+// containsUnsafeRune reports whether p (assumed valid UTF-8 by its caller)
+// holds any rune runesafe.IsUnsafeNonASCII refuses (the Unicode bidi controls
+// and U+2028/U+2029 are well-formed UTF-8 with nothing else to catch them —
+// deferring to the shared predicate is what keeps that gap from reopening).
 func containsUnsafeRune(p []byte) bool {
-	// Decode in place rather than `range string(p)`: the conversion heap-copies
-	// the line, and this guard runs on EVERY clean line (and on the flood
-	// force-flush path, where the copy would be a transient >1 MB allocation on
-	// the path whose purpose is bounding memory). The caller guarantees valid
-	// UTF-8, and IsUnsafeNonASCII is false for ASCII and RuneError alike, so a
-	// plain DecodeRune walk is byte-for-byte equivalent.
+	// Decode in place rather than `range string(p)`: the conversion would
+	// heap-copy the line on every call, including the flood force-flush path
+	// whose purpose is bounding memory.
 	for i := 0; i < len(p); {
 		r, size := utf8.DecodeRune(p[i:])
 		if runesafe.IsUnsafeNonASCII(r) {
@@ -163,11 +137,10 @@ func escHexByte(dst []byte, b byte) []byte {
 	return append(dst, '\\', 'x', hexDigits[b>>4], hexDigits[b&0x0f])
 }
 
-// escapeControlBytes is the allocating slow path of sanitizeControlBytes. It
-// rewrites each C0/DEL byte, each byte that cannot form a valid rune (incl. a
-// bare 8-bit C1 control), and the UTF-8 bytes of each well-formed rune
-// runesafe.IsUnsafeNonASCII refuses (C1 controls, bidi controls, U+2028/U+2029)
-// to a visible "\xNN" escape, while forwarding every other valid rune verbatim.
+// escapeControlBytes is the allocating slow path of sanitizeControlBytes: it
+// rewrites each C0/DEL byte, each invalid-UTF-8 byte, and the bytes of each
+// rune runesafe.IsUnsafeNonASCII refuses to a visible "\xNN" escape, while
+// forwarding every other valid rune verbatim.
 func escapeControlBytes(line []byte) []byte {
 	out := make([]byte, 0, len(line))
 	for i := 0; i < len(line); {
@@ -182,12 +155,9 @@ func escapeControlBytes(line []byte) []byte {
 			i++
 			continue
 		}
-		// b >= 0x80: decode the rune. A standalone/invalid byte and any rune
-		// runesafe.IsUnsafeNonASCII refuses -- a C1 control (drives terminal
-		// escapes despite being valid UTF-8), a Unicode bidi control (reorders
-		// the rendered line), U+2028/U+2029 (line terminators a JSON consumer
-		// may split on) -- are escaped byte-by-byte; every other valid
-		// multi-byte rune is forwarded verbatim.
+		// A standalone/invalid byte, or a rune runesafe.IsUnsafeNonASCII
+		// refuses (a C1 control, a bidi control, U+2028/U+2029), is escaped
+		// byte-by-byte; every other valid multi-byte rune is forwarded as-is.
 		r, size := utf8.DecodeRune(line[i:])
 		if (r == utf8.RuneError && size == 1) || runesafe.IsUnsafeNonASCII(r) {
 			for j := range size {
@@ -202,31 +172,15 @@ func escapeControlBytes(line []byte) []byte {
 	return out
 }
 
-// sanitizeControlBytes neutralizes, by rewriting each byte to a visible "\xNN"
-// escape before the line is forwarded to the log sink: C0 control bytes
-// (0x00-0x1F) other than '\n' and '\t', DEL (0x7F), any byte that is not part
-// of a valid UTF-8 sequence (which includes a standalone C1 control such as
-// the bare 8-bit CSI 0x9B), and the UTF-8 bytes of every well-formed rune
-// runesafe.IsUnsafeNonASCII refuses: the C1 block U+0080..U+009F (terminal
-// escape introducers even in their 2-byte form, e.g. U+009B = 0xC2 0x9B), the
-// Unicode bidi controls (a filename embedding an RLO visually reorders the
-// rendered log line -- Trojan-Source), and U+2028/U+2029 (line terminators a
-// downstream viewer may split records on). The class definition is runesafe's,
-// shared across the fleet, so this sink cannot drift from the fleet policy;
-// the \xNN output shape is this package's (space-replacement would destroy
-// the forensic record of WHICH bytes arrived).
-//
-// fclones renders scanned filenames raw into its stderr diagnostics (e.g.
-// "cannot read file <path>"), and <path> is attacker-influenceable: without
-// this rewrite those runes would reach an operator's terminal or Loki
-// unescaped (CWE-117 log injection). '\n' is left intact so the line-oriented
-// framing is preserved (Write has already split on it, so a line reaching emit
-// holds at most a single trailing '\n'); '\t' is a benign, common separator.
-// Every other valid multi-byte UTF-8 rune (accented Latin such as U+00E9,
-// NBSP U+00A0, CJK, emoji) is forwarded verbatim so legitimate non-ASCII
-// filenames survive. The input is returned unchanged, without allocating, when
-// it is already valid UTF-8 with nothing to escape (the common case), so
-// well-formed fclones output pays no copy.
+// sanitizeControlBytes rewrites, to a visible "\xNN" escape, every C0
+// control byte (0x00-0x1F) except '\n'/'\t', DEL (0x7F), any byte not part of
+// a valid UTF-8 sequence, and every rune runesafe.IsUnsafeNonASCII refuses
+// (the C1 block, Unicode bidi controls, U+2028/U+2029). fclones renders
+// attacker-influenceable scanned filenames raw into its stderr diagnostics;
+// without this rewrite those bytes would reach an operator's terminal or
+// Loki unescaped (CWE-117 log injection / Trojan-Source). Every other valid
+// multi-byte rune (accented Latin, CJK, emoji) is forwarded verbatim. Returns
+// the input unchanged, without allocating, when it is already clean.
 func sanitizeControlBytes(line []byte) []byte {
 	// Fast path: valid UTF-8 with no C0/DEL control and no unsafe non-ASCII
 	// rune -> forward verbatim, no alloc.
@@ -237,26 +191,17 @@ func sanitizeControlBytes(line []byte) []byte {
 }
 
 // EscapeUnsafe applies sanitizeControlBytes' exact policy to an arbitrary
-// string for sinks OUTSIDE the line-filtered stderr passthrough -- today the
-// slog attributes that carry a failed subprocess's captured stderr/stdout
-// tails. Those captures hold the same attacker-influenceable filenames the
-// passthrough escapes, and a JSON log handler escapes C0 controls but forwards
-// bidi controls and U+2028/U+2029 verbatim, so the rendered Loki line is
-// reorderable without this (same CWE-117 vector, different sink). One exported
-// entry point keeps both sinks on one policy: the class is runesafe's, the
-// forensic \xNN output shape is this package's. '\n' and '\t' stay intact
-// here too -- a multi-line stderr tail keeps its framing inside the quoted
-// attribute value.
+// string, for sinks outside the line-filtered stderr passthrough — the slog
+// attributes carrying a failed subprocess's captured stderr/stdout tails,
+// which hold the same attacker-influenceable filenames but where a JSON log
+// handler alone would forward bidi controls and U+2028/U+2029 verbatim.
 func EscapeUnsafe(s string) string {
 	return string(sanitizeControlBytes([]byte(s)))
 }
 
-// emit applies the noise filter to a single line and writes it through to the
-// wrapped writer unless it is filtered, sanitizing control bytes first (see
-// sanitizeControlBytes) so control characters in attacker-named scanned paths
-// cannot inject terminal escapes or forge log content. It is the single
-// filter-then-write step shared by Write's per-line and flood-flush paths and
-// by Flush.
+// emit applies the noise filter to a single line and writes it through
+// unless filtered, sanitizing control bytes first so attacker-named scanned
+// paths cannot inject terminal escapes or forge log content.
 func (fw *Writer) emit(line []byte) error {
 	if shouldFilterLine(string(line)) {
 		return nil
@@ -274,10 +219,9 @@ func (fw *Writer) Write(p []byte) (int, error) {
 	for {
 		idx := bytes.IndexByte(buf, '\n')
 		if idx < 0 {
-			// Copy the unconsumed tail into a fresh buffer rather than aliasing
-			// buf (fw.buf = buf): earlier iterations may have re-sliced buf past
-			// already-emitted lines, so aliasing would pin their backing array.
-			// fw.buf is nil here, so append allocates a tight copy of just the tail.
+			// Copy the unconsumed tail into a fresh buffer rather than
+			// aliasing buf: earlier iterations may have re-sliced buf past
+			// already-emitted lines, which would pin their backing array.
 			fw.buf = append(fw.buf, buf...)
 			if len(fw.buf) > MaxLineBytes {
 				fw.floods++
@@ -310,8 +254,7 @@ func (fw *Writer) Flush() error {
 	return fw.emit(line)
 }
 
-// Floods reports how many times the partial-line buffer exceeded MaxLineBytes
-// and was force-flushed (a no-newline output flood). It mirrors the visibility
-// capbuf.Buffer.Total/Truncated give their cap: the caller logs a non-zero
-// count so the otherwise-silent flood bound is observable in Loki/Grafana.
+// Floods reports how many times the partial-line buffer exceeded
+// MaxLineBytes and was force-flushed, so the caller can log a non-zero count
+// making the otherwise-silent flood bound observable.
 func (fw *Writer) Floods() int { return fw.floods }

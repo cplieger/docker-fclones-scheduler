@@ -38,16 +38,10 @@ type Report struct {
 }
 
 // ReportStats carries the fclones report-header statistics the wrapper
-// consumes: GroupCount for the header/document cross-check and
-// RedundantFileSize for the reclaimable total on the `scan complete` log
-// line. Upstream's FileStats carries further keys (total_file_count,
-// total_file_size, redundant_file_count, missing_file_count,
-// missing_file_size); they are deliberately not mapped and pass through the
-// decoder's unknown-field tolerance -- add a field here only alongside the
-// consumer that reads it. Upstream (fclones FileStats, serialized by serde
-// as snake_case bare integers) declares the container Option<FileStats>;
-// DecodeReport rejects the null/absent case, so consumers always see
-// concrete values.
+// consumes. Upstream's FileStats carries further keys, deliberately not
+// mapped here; add a field only alongside the consumer that reads it.
+// Upstream declares the container Option<FileStats>; DecodeReport rejects
+// the null/absent case, so consumers always see concrete values.
 type ReportStats struct {
 	GroupCount        int   `json:"group_count"`
 	RedundantFileSize int64 `json:"redundant_file_size"`
@@ -77,9 +71,9 @@ type DuplicateGroup struct {
 }
 
 // DecodeReport strictly decodes an fclones JSON report (`fclones group -f
-// json`) from r, streaming the groups array element by element so memory is
-// bounded by the retained groups plus one in-flight group, never by report
-// size. keepGroups caps how many groups are retained in Report.Groups for
+// json`) from r, streaming the groups array so memory is bounded by the
+// retained groups plus one in-flight group, never by report size.
+// keepGroups caps how many groups are retained in Report.Groups for
 // per-pair logging (non-positive retains none); totals are counted across
 // the whole document regardless.
 //
@@ -87,21 +81,11 @@ type DuplicateGroup struct {
 // after the top-level object, a missing header, an absent or null
 // header.stats, a missing groups array, a group with fewer than two files
 // or a negative file_len, or a header group_count that disagrees with the
-// streamed group count is an error -- the caller fails the run loudly.
-// Unknown fields at any level are tolerated so additive upstream changes do
-// not break the wrapper. The keeper is files[0] (fclones' own keep-first
-// semantics).
+// streamed group count is an error. Unknown fields at any level are
+// tolerated. The keeper is files[0] (fclones' own keep-first semantics).
 //
-// The token walk is built on jsoncap with no element budget or array
-// cap (both 0): the report is fclones' own local output, not an untrusted
-// upstream, so the decoder is used for its streaming walk, not its
-// cardinality caps.
-//
-// Wire shape verified against pinned upstream fclones v0.35.0
-// (fclones/src/report.rs: SerializableReport{header, groups},
-// ReportHeader.stats Option<FileStats>, FileGroup{file_len, file_hash,
-// files}); the format is stable since fclones 0.18. Re-verify on every
-// FCLONES_VERSION bump (see CONTRIBUTING).
+// Wire shape verified against pinned upstream fclones v0.35.0; stable since
+// fclones 0.18. Re-verify on every FCLONES_VERSION bump.
 func DecodeReport(r io.Reader, keepGroups int) (Report, error) {
 	d := jsoncap.NewDecoder(r, 0)
 	rd := reportDecoder{keepGroups: keepGroups}
@@ -177,11 +161,9 @@ func (rd *reportDecoder) fail(err error) error {
 }
 
 // decodeGroups streams the groups array, retaining at most keepGroups mapped
-// groups in report.Groups while counting full-document totals, and validates
-// each group's structure as it passes. Elements are decoded one at a time --
-// deliberately not Decoder.Array, which materializes every element into one
-// slice and would defeat the bounded-memory retention this decoder exists
-// for.
+// groups while counting full-document totals. Elements are decoded one at a
+// time, deliberately not via Decoder.Array, which would materialize every
+// element and defeat the bounded-memory retention this decoder exists for.
 func decodeGroups(d *jsoncap.Decoder, keepGroups int, report *Report) error {
 	if err := openStrict(d, json.Delim('[')); err != nil {
 		return fmt.Errorf("report groups: %w", err)
@@ -214,11 +196,9 @@ func decodeGroups(d *jsoncap.Decoder, keepGroups int, report *Report) error {
 	return nil
 }
 
-// openStrict consumes a container's opening delimiter via jsoncap.Open,
-// treating a JSON null (Open's ok=false, no error) as malformed: this
-// decoder has no use for json.Unmarshal's null-into-container tolerance --
-// a null where the report's structure belongs is upstream drift and must
-// fail loudly.
+// openStrict consumes a container's opening delimiter, treating a JSON null
+// (Open's ok=false, no error) as malformed: a null where the report's
+// structure belongs is upstream drift and must fail loudly.
 func openStrict(d *jsoncap.Decoder, delim json.Delim) error {
 	ok, err := d.Open(delim)
 	if err != nil {
@@ -248,15 +228,10 @@ type ActionSummary struct {
 	Matched bool
 }
 
-// reclaimedMetrics parses the file count and reclaimed byte total from a trimmed
-// "Processed <files> files and reclaimed [up to ]<num> <unit> [space]" line.
-// fields[1] is the file count. The reclaimed <num> <unit> normally sit at
-// fields[5..6]; the dedupe action prints "reclaimed up to <num> <unit>" (its
-// reclaim is an advisory upper bound), which shifts them to fields[7..8] and
-// sets estimated. The >= 7 check guarantees fields[5..6] exist for the exact
-// form; the shifted form is bounds-checked before fields[7..8] are read. A
-// non-numeric or negative file count leaves files at 0 while the reclaimed size
-// is parsed independently.
+// reclaimedMetrics parses the file count and reclaimed byte total from a
+// trimmed "Processed <files> files and reclaimed [up to ]<num> <unit>
+// [space]" line. The reclaimed <num> <unit> normally sit at fields[5..6];
+// dedupe's "reclaimed up to" shifts them to fields[7..8] and sets estimated.
 func reclaimedMetrics(rawLine string) (files int, reclaimedBytes int64, estimated bool) {
 	fields := strings.Fields(rawLine)
 	if len(fields) < 7 {
@@ -303,11 +278,9 @@ func ParseActionSummary(stdout string) ActionSummary {
 }
 
 // byteUnitMultipliers maps an upper-cased size unit to its byte multiplier.
-// fclones (via bytesize 1.3.0, the pinned version) renders DECIMAL SI units
-// (KB..EB) -- the same system HumanBytes emits, so the parse and format sides
-// agree. Re-verify the unit system on FCLONES_VERSION bumps (CONTRIBUTING);
-// an unrecognized unit parses to 0, which the action-summary drift warning
-// then surfaces.
+// fclones renders decimal SI units (KB..EB) — the same system HumanBytes
+// emits. Re-verify on FCLONES_VERSION bumps; an unrecognized unit parses to
+// 0, which the action-summary drift warning then surfaces.
 var byteUnitMultipliers = map[string]int64{
 	"B":  1,
 	"KB": 1_000, "K": 1_000,
@@ -337,11 +310,10 @@ func parseHumanBytes(s string) int64 {
 }
 
 // floatToInt64 converts a byte-count float64 to int64, returning 0 for NaN,
-// negative, or out-of-int64-range values. The range is checked BEFORE the
-// conversion because converting an out-of-range float64 to int64 is
+// negative, or out-of-range values. The range is checked BEFORE conversion
+// because converting an out-of-range float64 to int64 is
 // implementation-defined (amd64 wraps to MinInt64, arm64 saturates to
-// MaxInt64), so a post-conversion sign check is not portable. This also
-// rejects the Inf/NaN literals that strconv.ParseFloat accepts.
+// MaxInt64), so a post-conversion sign check is not portable.
 func floatToInt64(f float64) int64 {
 	if math.IsNaN(f) || f < 0 || f >= float64(math.MaxInt64) {
 		return 0

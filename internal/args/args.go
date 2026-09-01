@@ -2,8 +2,7 @@
 // honouring single and double quotes and backslash escapes. Unlike a POSIX
 // shell, a backslash escapes the next rune even inside single quotes, so a
 // literal backslash inside single quotes must be doubled (write '\\d+' for
-// the regex \d+). Applies to FCLONES_ARGS, FCLONES_ACTION_ARGS, and
-// FCLONES_SCAN_PATHS.
+// the regex \d+).
 package args
 
 import (
@@ -11,7 +10,6 @@ import (
 	"strings"
 )
 
-// parser holds the running state of Parse.
 type parser struct {
 	args      []string
 	current   strings.Builder
@@ -20,7 +18,6 @@ type parser struct {
 	escaped   bool
 }
 
-// flushToken appends the current builder to args and resets it.
 func (p *parser) flushToken() {
 	if p.current.Len() > 0 {
 		p.args = append(p.args, p.current.String())
@@ -28,7 +25,6 @@ func (p *parser) flushToken() {
 	}
 }
 
-// step applies one input rune to the parser state.
 func (p *parser) step(r rune) {
 	if p.escaped {
 		p.current.WriteRune(r)

@@ -75,8 +75,8 @@ func TestBuildScanArgs(t *testing.T) {
 		},
 	}
 
-	// wrapperOwnedSuffix is the wrapper-appended tail every scan invocation
-	// must end with: the shared cache flag plus the JSON report contract.
+	// wrapperOwnedSuffix is the wrapper-appended tail: shared cache flag
+	// plus the JSON report contract.
 	wrapperOwnedSuffix := []string{"--cache", "-f", "json"}
 
 	for _, tt := range tests {
@@ -292,9 +292,8 @@ func TestDefaultCommandRunnerGracefulShutdown(t *testing.T) {
 
 func TestDefaultCommandRunnerCancelSendsSIGTERM(t *testing.T) {
 	t.Parallel()
-	// The graceful-shutdown contract: cancelling the context SIGTERMs the
-	// child (not the default SIGKILL), giving fclones the 5s WaitDelay grace
-	// to flush its cache. A trivial sleep child makes this deterministic.
+	// Cancelling the context must SIGTERM the child (not the default
+	// SIGKILL), giving fclones the 5s WaitDelay grace to flush its cache.
 	if _, err := exec.LookPath("sleep"); err != nil {
 		t.Skipf("sleep not available: %v", err)
 	}
@@ -349,9 +348,9 @@ func TestMarkerAction(t *testing.T) {
 
 // --- Tests: logDuplicateGroups ---
 
-// makeDupReport builds a parsing.Report with n RETAINED groups of
-// dupsPerGroup duplicates each, whose document totals equal the retained
-// content (pass overrides to model a retention-capped decode).
+// makeDupReport builds a parsing.Report with n retained groups of
+// dupsPerGroup duplicates each; totals default to matching the retained
+// content (override to model a retention-capped decode).
 func makeDupReport(n, dupsPerGroup, pathLen int) *parsing.Report {
 	groups := make([]parsing.DuplicateGroup, n)
 	for i := range groups {
@@ -436,9 +435,8 @@ func TestLogDuplicateGroups(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		// Model a retention-capped decode: maxLoggedGroups retained groups,
-		// but a 150-group document. Every retained pair is emitted and the
-		// truncation summary reports the full-document totals.
+		// Models a retention-capped decode: maxLoggedGroups retained groups
+		// but a 150-group document.
 		report := makeDupReport(maxLoggedGroups, 1, 2)
 		report.TotalGroups = 150
 		report.TotalDuplicates = 150
@@ -461,10 +459,8 @@ func TestLogDuplicateGroups(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		// A single (keeper, duplicate) pair whose lengths sum to exactly
-		// logDetailCapBytes. The byte cap is exclusive: a pair landing right on
-		// it is still emitted and no truncation fires. An inclusive cap would
-		// drop this pair and log "byte cap reached" instead.
+		// A single pair whose lengths sum to exactly logDetailCapBytes: the
+		// cap is exclusive, so a pair landing right on it is still emitted.
 		keeper := strings.Repeat("k", 10)
 		dup := strings.Repeat("d", logDetailCapBytes-10)
 		report := parsing.Report{
@@ -498,9 +494,7 @@ func TestLogDuplicateGroups(t *testing.T) {
 		}
 		logDuplicateGroups(log, &report)
 
-		// Groups are displayed one-based: group index i is rendered as group
-		// i+1, so the first group is group=1 and the second group=2. A shifted
-		// numbering (i-1, i, or i%1) would render group=-1/group=0 instead.
+		// Groups are displayed one-based (index i renders as group i+1).
 		out := buf.String()
 		if !strings.Contains(out, "group=1") {
 			t.Errorf("first group not labelled group=1 (one-based display), got %q", out)
@@ -567,10 +561,8 @@ func TestPhaseContext(t *testing.T) {
 
 	t.Run("positive timeout sets a deadline exactly timeout from now", func(t *testing.T) {
 		t.Parallel()
-		// A synctest bubble puts time.Now and the context deadline on the same
-		// fake clock, so the deadline is asserted to the nanosecond. On a real
-		// clock the only honest assertion was a +/-1s window around 30s, which
-		// a phaseContext that added a spurious second still satisfied.
+		// A synctest bubble puts time.Now and the deadline on the same fake
+		// clock, so it is asserted to the nanosecond.
 		synctest.Test(t, func(t *testing.T) {
 			const timeout = 30 * time.Second
 			start := time.Now()
@@ -638,8 +630,8 @@ func TestSweepStaleReports(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	// Two files matching reportTempPattern, created exactly as runFclonesJob
-	// creates them, plus one non-matching file that must survive the sweep.
+	// Two files matching reportTempPattern (created as runFclonesJob creates
+	// them) plus one non-matching file that must survive the sweep.
 	var stale []string
 	for range 2 {
 		f, err := os.CreateTemp(dir, reportTempPattern)
@@ -671,9 +663,8 @@ func TestSweepStaleReportsContinuesPastUnremovable(t *testing.T) {
 	dir := t.TempDir()
 
 	// The unremovable entry sorts BEFORE the removable one (filepath.Glob
-	// returns sorted matches), so the loop must survive the os.Remove failure
-	// to reach and delete the removable file. A non-empty directory whose name
-	// matches the glob makes os.Remove fail with ENOTEMPTY.
+	// sorts matches), so the loop must survive the os.Remove failure to
+	// reach and delete the removable file (ENOTEMPTY on a non-empty dir).
 	blocked := filepath.Join(dir, "fclones_report_aaa.txt")
 	if err := os.Mkdir(blocked, 0o755); err != nil {
 		t.Fatalf("Mkdir: %v", err)
@@ -696,11 +687,10 @@ func TestSweepStaleReportsContinuesPastUnremovable(t *testing.T) {
 	}
 }
 
-// A report temp file the sweep cannot delete is the only sign an operator gets
-// that stale files are piling up in the shared /cache directory, so the
-// failure must be reported at warn level and name the file it could not
-// remove. A file that WAS removed is routine and stays at debug. This swaps
-// the process-global logger, so it does not run in parallel.
+// A report temp file the sweep cannot delete is the only sign an operator
+// gets that stale files are piling up; the failure must warn and name the
+// file. A removed file stays at debug. Swaps the process-global logger, so
+// this does not run in parallel.
 func TestSweepStaleReportsWarnsOnlyAboutWhatItCouldNotRemove(t *testing.T) {
 	dir := t.TempDir()
 

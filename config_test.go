@@ -62,7 +62,6 @@ func TestLoadConfig(t *testing.T) {
 
 func TestLoadConfigDefaults(t *testing.T) {
 	setCleanFclonesEnv(t)
-	// Override interval to empty to exercise the default path.
 	t.Setenv("SCAN_INTERVAL", "")
 
 	cfg, err := loadConfig()
@@ -105,8 +104,8 @@ func TestLoadConfigScheduleDisabled(t *testing.T) {
 }
 
 func TestLoadConfigRunOnce(t *testing.T) {
-	// A zero duration runs exactly one scan, then exits -- distinct from the
-	// off/disabled idle mode.
+	// Distinct from off/disabled idle mode: a zero duration runs one scan
+	// then exits.
 	for _, value := range []string{"0", "0s", "0h"} {
 		t.Run(value, func(t *testing.T) {
 			setCleanFclonesEnv(t)
@@ -124,9 +123,7 @@ func TestLoadConfigRunOnce(t *testing.T) {
 }
 
 func TestLoadConfigNegativeIntervalFallsBackToDefault(t *testing.T) {
-	// A negative duration is a likely typo; it must NOT disable scanning. It
-	// falls back to the default cadence in built-in mode so the container keeps
-	// reclaiming space rather than silently idling while reporting healthy.
+	// A negative duration is a likely typo; must not disable scanning.
 	for _, value := range []string{"-1h", "-30m", "-1s"} {
 		t.Run(value, func(t *testing.T) {
 			setCleanFclonesEnv(t)
@@ -147,8 +144,6 @@ func TestLoadConfigNegativeIntervalFallsBackToDefault(t *testing.T) {
 }
 
 func TestLoadConfigGarbageIntervalFallsBackToDefault(t *testing.T) {
-	// A non-sentinel unparseable value must NOT disable scheduling; it
-	// falls back to the default cadence so the container keeps scanning.
 	setCleanFclonesEnv(t)
 	t.Setenv("SCAN_INTERVAL", "not-a-duration")
 
@@ -181,10 +176,8 @@ func TestLoadConfigAllowUnsafe(t *testing.T) {
 
 func TestLoadConfigAllowUnsafeCaseInsensitive(t *testing.T) {
 	setCleanFclonesEnv(t)
-	// --transform is the real exec flag (fclones' README uses it for
-	// content-aware dedup), and its command is quoted so it stays ONE token: an
-	// unquoted command fails the positional gate, because clap would read the
-	// trailing words as input paths rather than as part of the command.
+	// --transform's command is quoted so it stays ONE token; unquoted, clap
+	// would read the trailing words as separate input paths.
 	t.Setenv("FCLONES_ACTION_ARGS", "--transform 'exiv2 -d a $IN'")
 	t.Setenv("ALLOW_UNSAFE_ARGS", "TRUE")
 
@@ -198,9 +191,8 @@ func TestLoadConfigAllowUnsafeCaseInsensitive(t *testing.T) {
 	}
 }
 
-// TestRejectDangerousArgs pins the denylist and its matching rule. Every flag
-// named here exists in the pinned fclones (`--help`-checked), so a case cannot
-// pass by asserting on a flag upstream never had.
+// TestRejectDangerousArgs pins the denylist and its matching rule. Every
+// flag named here exists in the pinned fclones (--help-checked).
 func TestRejectDangerousArgs(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -278,13 +270,9 @@ func TestVerifyDirReadOnly(t *testing.T) {
 
 func TestVerifyDirCreateProbeFileFails(t *testing.T) {
 	t.Parallel()
-	// Root-safe cover of writeProbe's os.Create error branch. The sibling
-	// TestVerifyDirReadOnly reaches it only via an EACCES denial, which
-	// os.Getuid()==0 skips -- and the suite runs as root in CI -- so under
-	// root the create-failure path is otherwise untested. A directory
+	// Root-safe cover of writeProbe's os.Create error branch: a directory
 	// pre-created at the probe's ".write_test" path makes os.Create fail
-	// with EISDIR for any UID (unlike a permission denial), covering the
-	// branch with no root skip.
+	// with EISDIR for any UID, covering the branch without a root skip.
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, ".write_test"), 0o755); err != nil {
 		t.Fatalf("setup: %v", err)
@@ -443,21 +431,17 @@ func TestLoadConfigScanTimeoutNonPositive(t *testing.T) {
 		if !strings.Contains(err.Error(), "invalid SCAN_TIMEOUT") {
 			t.Errorf("error = %q, want to contain 'invalid SCAN_TIMEOUT'", err)
 		}
-		// The value parsed, so there is no envx.ParseError to read it from; the
-		// duration itself is what the message names. Pins that it is the
-		// duration rather than a rune literal (%q on a time.Duration renders
-		// one, which is what a bare `scanTimeout` here would have produced).
+		// The value parsed, so the message names the duration itself, not a
+		// rune literal (%q on a time.Duration renders one).
 		if !strings.Contains(err.Error(), `"-1h0m0s"`) {
 			t.Errorf("error = %q, want it to quote the rejected duration -1h0m0s", err)
 		}
 	})
 }
 
-// TestLoadConfigInvalidScanTimeoutQuotesTheTrimmedValue pins what envx v1.6.0's
-// *ParseError bought here: the diagnostic names the value the PARSER saw, not a
-// second read of the environment. os.Getenv returns the value untrimmed, so the
-// old shape quoted " 5x " where the parse error beside it said "5x" — the two
-// halves of one message disagreeing about what was rejected.
+// TestLoadConfigInvalidScanTimeoutQuotesTheTrimmedValue pins that the
+// diagnostic names the value the parser saw (trimmed), not the untrimmed
+// os.Getenv read.
 func TestLoadConfigInvalidScanTimeoutQuotesTheTrimmedValue(t *testing.T) {
 	setCleanFclonesEnv(t)
 	t.Setenv("SCAN_TIMEOUT", "  5x\t")
@@ -530,12 +514,9 @@ func TestProperty_LoadConfigValidActions(t *testing.T) {
 
 func TestVerifyDirTimeoutOnCancelledContext(t *testing.T) {
 	t.Parallel()
-	// Block the probe so the timeout/cancel arm wins the select
-	// deterministically. With the real write probe and a pre-cancelled
-	// context BOTH select cases can be ready at once, which made this test
-	// flaky two ways: it non-deterministically returned nil (probe won the
-	// race), and the probe's MkdirAll could re-create the t.TempDir() subdir
-	// after the framework cleanup ran, failing it with "directory not empty".
+	// Blocks the probe so the timeout/cancel arm wins deterministically
+	// (with a real probe and a pre-cancelled context, either select case
+	// could win the race).
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	blockingProbe := func(string) error {
@@ -557,22 +538,16 @@ func TestVerifyDirTimeoutOnCancelledContext(t *testing.T) {
 
 func TestVerifyDirWithProbeBoundsHungProbeByTimeout(t *testing.T) {
 	t.Parallel()
-	// Runs in a synctest bubble so the bound is asserted EXACTLY rather than
-	// against a slack window. On a real clock the only honest assertion is a
-	// generous upper bound (the old one was 2s for a 50ms timeout), which a
-	// timeout inflated by an order of magnitude still satisfies. Inside the
-	// bubble time.Since reads the fake clock, so the elapsed time is the
-	// timeout to the nanosecond and any arithmetic drift fails.
+	// Runs in a synctest bubble so the bound is asserted exactly: inside the
+	// bubble time.Since reads the fake clock, so elapsed equals the timeout
+	// to the nanosecond.
 	//
-	// Bubble-safe: the probe goroutine parks on a channel receive (a durably
-	// blocking operation, so the clock can advance to the deadline) and the
-	// cleanup that releases it runs inside the bubble, immediately before
-	// synctest.Test returns.
+	// Bubble-safe: the probe goroutine parks on a channel receive (durably
+	// blocking, so the clock can advance) and the release runs inside the
+	// bubble, immediately before synctest.Test returns.
 	synctest.Test(t, func(t *testing.T) {
-		// A live (non-cancelled) parent context: the function's own timeout,
-		// not parent cancellation, must bound a probe that never returns (a
-		// hung filesystem). The probe is released only at cleanup so its
-		// goroutine does not outlive the test.
+		// A live parent context: the function's own timeout, not parent
+		// cancellation, must bound a hung probe.
 		release := make(chan struct{})
 		t.Cleanup(func() { close(release) })
 		hungProbe := func(string) error {
@@ -637,9 +612,8 @@ func TestSetupLoggerLevels(t *testing.T) {
 
 func TestVerifyDirParentNotADirectory(t *testing.T) {
 	t.Parallel()
-	// A regular file standing in for a parent path component makes the write
-	// probe's os.MkdirAll fail with ENOTDIR, exercising the mkdir-error branch --
-	// the symmetric counterpart to TestVerifyDirReadOnly's create-error path.
+	// A regular file standing in for a parent path component makes the
+	// write probe's os.MkdirAll fail with ENOTDIR.
 	parent := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(parent, []byte("x"), 0o644); err != nil {
 		t.Fatalf("setup: os.WriteFile: %v", err)
@@ -658,9 +632,9 @@ func TestVerifyDirParentNotADirectory(t *testing.T) {
 
 func TestLoadConfigWarnsOnEmptyScanPaths(t *testing.T) {
 	setCleanFclonesEnv(t)
-	// A whitespace-only value is non-empty (so getEnv returns it rather than
-	// the default scanDir) yet parses to zero tokens, hitting the
-	// "no scan targets" branch in loadConfig.
+	// Whitespace is non-empty (so getEnv returns it rather than the
+	// default) but parses to zero tokens, hitting the "no scan targets"
+	// branch.
 	t.Setenv("FCLONES_SCAN_PATHS", "   ")
 
 	orig := slog.Default()

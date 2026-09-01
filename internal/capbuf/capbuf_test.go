@@ -156,19 +156,18 @@ func TestBufferNotTruncatedBelowMax(t *testing.T) {
 	}
 }
 
-// TestBufferWriteFillsExactRemaining locks the exact-fill boundary: a
-// Write whose length equals the remaining room must store all of it, bringing
-// the buffer to exactly Max with nothing discarded.
+// TestBufferWriteFillsExactRemaining locks the exact-fill boundary: a Write
+// whose length equals the remaining room must store all of it.
 func TestBufferWriteFillsExactRemaining(t *testing.T) {
 	t.Parallel()
 	lb := &capbuf.Buffer{Max: 10}
 
-	// Partially fill so the remaining room is a non-trivial 7 bytes.
+	// Partial fill so remaining room is a non-trivial 7 bytes.
 	if n, err := lb.Write([]byte("abc")); err != nil || n != 3 {
 		t.Fatalf("setup Write(%q) = (%d, %v), want (3, nil)", "abc", n, err)
 	}
 
-	// Write exactly the remaining room (10 - 3 = 7) bytes.
+	// Exactly the remaining room (10 - 3 = 7 bytes).
 	n, err := lb.Write([]byte("defghij"))
 	if err != nil {
 		t.Fatalf("Write: %v", err)
@@ -185,9 +184,8 @@ func TestBufferWriteFillsExactRemaining(t *testing.T) {
 }
 
 // TestBufferWriteAfterMaxLoweredStoresNothing locks the negative-room
-// boundary: lowering Max below the current buffer length makes the available
-// room negative, which must clamp to zero so a further Write stores nothing
-// without panicking.
+// boundary: lowering Max below the current length must clamp to zero so a
+// further Write stores nothing without panicking.
 func TestBufferWriteAfterMaxLoweredStoresNothing(t *testing.T) {
 	t.Parallel()
 	lb := &capbuf.Buffer{Max: 10}
@@ -196,7 +194,6 @@ func TestBufferWriteAfterMaxLoweredStoresNothing(t *testing.T) {
 		t.Fatalf("setup Write = (%d, %v), want (10, nil)", n, err)
 	}
 
-	// Lower Max below the current length: Max - buf.Len() is now negative.
 	lb.Max = 4
 
 	n, err := lb.Write([]byte("more"))
@@ -280,14 +277,11 @@ func TestProperty_BufferStringIsStable(t *testing.T) {
 }
 
 // TestProperty_BufferRetainsInputPrefix is the content oracle the other
-// Buffer property lacks. Across an arbitrary sequence of writes the
-// buffer must retain exactly the first min(total, Max) bytes of the
-// concatenated input, because Write greedily fills the remaining room with the
-// earliest bytes and drops the rest. TestProperty_BufferInvariants
-// asserts only length, Total, and Truncated, so a content- or
-// accumulation-corrupting mutant -- one that stores the tail instead of the
-// head, or resets the buffer on each write -- keeps those invariants and
-// survives it; this pins the retained bytes themselves.
+// Buffer property lacks: across an arbitrary sequence of writes the buffer
+// must retain exactly the first min(total, Max) bytes of the concatenated
+// input. TestProperty_BufferInvariants asserts only length, Total, and
+// Truncated, so a content- or accumulation-corrupting mutant survives it;
+// this pins the retained bytes themselves.
 func TestProperty_BufferRetainsInputPrefix(t *testing.T) {
 	t.Parallel()
 	rapid.Check(t, func(rt *rapid.T) {

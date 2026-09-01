@@ -9,7 +9,7 @@ import (
 	"pgregory.net/rapid"
 )
 
-// assertArgs is a test helper that compares args.Parse output to expected values.
+// assertArgs compares args.Parse output to expected values.
 func assertArgs(t *testing.T, input string, want []string) {
 	t.Helper()
 	got, err := args.Parse(input)

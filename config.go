@@ -31,9 +31,8 @@ type config struct {
 	Interval     time.Duration
 	PhaseTimeout time.Duration
 
-	// Mode selects how the daemon schedules scans, derived from
-	// SCAN_INTERVAL (see parseInterval). Interval is consulted only in
-	// modeBuiltin.
+	// Mode is derived from SCAN_INTERVAL (see parseInterval); Interval is
+	// consulted only in modeBuiltin.
 	Mode runMode
 }
 
@@ -42,21 +41,15 @@ type config struct {
 type runMode int
 
 const (
-	// modeBuiltin runs a scan at startup, then every config.Interval. Selected
-	// by a positive SCAN_INTERVAL, or by the default cadence when the value
-	// is empty, unparseable, or negative.
+	// modeBuiltin runs a scan at startup, then every config.Interval.
 	modeBuiltin runMode = iota
-	// modeExternal idles until SIGTERM; scans are triggered out-of-band via the
-	// `scan` subcommand (e.g. Ofelia `docker exec`). Selected by
-	// SCAN_INTERVAL=off/disabled.
+	// modeExternal idles until SIGTERM; scans are triggered out-of-band via
+	// the `scan` subcommand.
 	modeExternal
-	// modeOnce runs exactly one scan+action then exits. Selected by a zero
-	// SCAN_INTERVAL (0/0s); the process exits non-zero if that scan fails.
+	// modeOnce runs exactly one scan+action then exits.
 	modeOnce
 )
 
-// Compile-time assertion: runMode implements fmt.Stringer (mirrors the action
-// and phaseOutcome assertions).
 var _ fmt.Stringer = runMode(0)
 
 // String returns the human-readable mode name for log lines.
@@ -100,42 +93,27 @@ func parseAction(s string) (action, error) {
 	return "", fmt.Errorf("invalid action %q (allowed: %s)", s, strings.Join(names, ", "))
 }
 
-// Compile-time assertion: action implements fmt.Stringer (mirrors the
-// phaseOutcome assertion in outcome.go).
 var _ fmt.Stringer = action("")
 
 // String returns the fclones subcommand name for the action.
 func (a action) String() string { return string(a) }
 
 const (
-	// Fixed container paths — configured via volume mounts, not env vars.
+	// Configured via volume mounts, not env vars.
 	scanDir  = "/scandir"
 	cacheDir = "/cache"
 
-	// lockFile guards against overlapping scans. flock(2) on this file
-	// serialises runs both in-process (the built-in ticker racing the
-	// startup scan) and cross-process (an external `scan` invocation racing
-	// a manual `docker exec` or the scheduled one). fclones shares the
-	// /cache directory across runs, so concurrent scans could corrupt it.
+	// lockFile serialises scans in-process and cross-process (a manual
+	// `docker exec` racing the scheduled run); fclones shares /cache across
+	// runs and concurrent scans could corrupt it.
 	lockFile = cacheDir + "/.fclones.lock"
 
-	// Memory caps. Each captured subprocess stream (fclones' stderr, and the
-	// action phase's stdout) is bounded so a chatty fclones cannot OOM the
-	// container; the duplicate-log detail is bounded against Loki's
-	// line-length limit. The scan report itself needs no cap: DecodeReport
-	// streams it group by group, retaining at most maxLoggedGroups.
+	// Bounds each captured subprocess stream so a chatty fclones cannot OOM
+	// the container.
 	streamCapBytes    = 1 << 20 // 1 MB
 	logDetailCapBytes = 64 * 1024
 
-	// defaultInterval is the fallback scan cadence when SCAN_INTERVAL
-	// is unset or unparseable. Three hours matches the historical
-	// default and is conservative enough to avoid disk thrash on large
-	// libraries while still catching new duplicates within a workday.
-	defaultInterval = 3 * time.Hour
-
-	// defaultScanTimeout is the per-phase deadline when SCAN_TIMEOUT
-	// is unset; see loadConfig for the zero (disable) and negative (reject)
-	// rules.
+	defaultInterval    = 3 * time.Hour
 	defaultScanTimeout = 12 * time.Hour
 )
 
@@ -153,11 +131,9 @@ func setupLogger() {
 // --- Environment ---
 
 // rejectedValue returns the exact string an envx parse failed on, or "" when
-// err is not an envx parse error. It carries the value off the error rather
-// than re-reading the environment, which matters beyond tidiness: os.Getenv
-// returns the value UNTRIMMED, so a second read could name " 5x " beside a
-// parse error about "5x". ParseError.Value is the string the parse actually
-// failed on.
+// err is not an envx parse error. Carries the value off the error rather
+// than re-reading the environment: os.Getenv returns it UNTRIMMED, which
+// could mismatch the parse error's value.
 func rejectedValue(err error) string {
 	if perr, ok := errors.AsType[*envx.ParseError](err); ok {
 		return perr.Value
@@ -165,14 +141,10 @@ func rejectedValue(err error) string {
 	return ""
 }
 
-// loadScanTimeout reads SCAN_TIMEOUT via envx.DurationStrict,
-// defaulting to defaultScanTimeout when unset. Zero (SCAN_TIMEOUT=0/0s)
-// disables the per-phase deadline: the phase then runs under the parent
-// context (see phaseContext) with no time limit. A malformed value is
-// rejected at startup, and so is a negative duration — that is almost
-// certainly a typo (e.g. "-1h" for "1h") and would otherwise build an
-// already-expired context that fails every scan, silently bricking the
-// container.
+// loadScanTimeout reads SCAN_TIMEOUT via envx.DurationStrict, defaulting to
+// defaultScanTimeout when unset. Zero disables the per-phase deadline. A
+// negative value is rejected as a likely typo rather than silently bricking
+// the container with an already-expired context.
 func loadScanTimeout() (time.Duration, error) {
 	scanTimeout, ok, err := envx.DurationStrict("SCAN_TIMEOUT")
 	if err != nil {
@@ -184,9 +156,6 @@ func loadScanTimeout() (time.Duration, error) {
 		return defaultScanTimeout, nil
 	}
 	if scanTimeout < 0 {
-		// No ParseError here: the value PARSED and is merely negative, so the
-		// duration itself is the honest thing to name, and it needs no second
-		// environment read either.
 		slog.Error("invalid SCAN_TIMEOUT",
 			"value", scanTimeout.String(), logKeyOutcome, "config_error", "error", "must be zero (no timeout) or a positive duration")
 		return 0, fmt.Errorf("invalid SCAN_TIMEOUT %q: must be zero (no timeout) or positive", scanTimeout.String())
@@ -209,9 +178,8 @@ func loadConfig() (config, error) {
 		return config{}, err
 	}
 
-	// A whitespace- or quote-only FCLONES_SCAN_PATHS parses to zero tokens, so fclones
-	// would run with no scan target. Warn at startup so the cause is obvious instead of
-	// surfacing later as a cryptic exec error.
+	// A whitespace/quote-only value parses to zero tokens; warn so a missing
+	// scan target is obvious at startup rather than a cryptic exec error.
 	if parsed, perr := args.Parse(scanPaths); perr == nil && len(parsed) == 0 {
 		slog.Warn("FCLONES_SCAN_PATHS resolved to no scan targets; fclones will have no path to scan",
 			"value", scanPaths)
@@ -222,8 +190,7 @@ func loadConfig() (config, error) {
 		return config{}, timeoutErr
 	}
 
-	// SCAN_INTERVAL sets the built-in scan cadence; see parseInterval for the
-	// sentinel ("off"/"disabled"/zero) and fallback rules.
+	// SCAN_INTERVAL sets the built-in cadence; see parseInterval for sentinels.
 	interval, mode := parseInterval(os.Getenv("SCAN_INTERVAL"))
 
 	return config{
@@ -238,13 +205,9 @@ func loadConfig() (config, error) {
 }
 
 // parseInterval interprets SCAN_INTERVAL into the built-in scan interval and
-// the run mode. It delegates to scheduler.ParseInterval with WithZeroAsOnce, so:
-// "off"/"disabled" select external (idle) mode; a zero duration ("0"/"0s")
-// selects run-once mode (one scan, then exit); a positive duration sets the
-// built-in cadence; and an empty, unparseable, or negative value falls back to
-// defaultInterval in built-in mode so the container keeps scanning (a negative
-// value is a likely typo and is warned about). The library's Schedule.Mode is
-// mapped onto the app's runMode.
+// run mode: "off"/"disabled" select external mode, zero selects run-once,
+// a positive duration sets the built-in cadence, and an empty, unparseable,
+// or negative value falls back to defaultInterval in built-in mode.
 func parseInterval(raw string) (interval time.Duration, mode runMode) {
 	s := scheduler.ParseInterval(raw, defaultInterval,
 		scheduler.WithZeroAsOnce(true), scheduler.WithName("SCAN_INTERVAL"))
@@ -266,31 +229,16 @@ const (
 	flagNoCopy    = "--no-copy"
 )
 
-// Audited against fclones v0.35.0; re-audit on FCLONES_VERSION bump.
-// The exact-match denylist is complete only while upstream fclones (clap v4)
-// (1) does NOT enable infer_long_args (else abbreviations like --trans expand
-// to --transform and bypass this list) and (2) gives no short alias to a
-// command-executing / in-place flag. Re-verify both in fclones config.rs/main.rs
-// on a version bump, in addition to diffing `--help` for new exec/in-place flags.
-//
-// A fourth entry, --command, was carried here until 2026-08 and blocked
-// nothing: fclones has no such flag in any release from v0.15.0 to v0.35.0
-// (the exec flag has always been --transform, whose clap value_name happens to
-// be "command"). Removed rather than kept as insurance, because a denylist
-// naming a flag that does not exist reads to a user of this image as a real
-// blocked capability. Every entry above was checked against `--help` output
-// from the pinned binary.
+// Dangerous fclones flags that execute arbitrary commands or modify files in
+// place. Audited against fclones v0.35.0; re-audit on FCLONES_VERSION bump
+// (the docker-fclones-scheduler steering doc names the exact-match caveats).
 var dangerousFlags = []string{flagTransform, flagInPlace, flagNoCopy}
 
-// wrapperOwnedFlags are fclones long flags the wrapper itself appends to the
-// scan invocation (buildScanArgs): --cache shares the hash cache across runs,
-// and --format is the JSON report contract DecodeReport is built against. A
-// user-supplied copy would duplicate or fight them, so both are rejected in
-// FCLONES_ARGS at startup regardless of ALLOW_UNSAFE_ARGS (this is a
-// functional contract, not a safety guardrail). The short form -f is handled
-// separately in rejectWrapperOwnedArgs: clap accepts `-f json`, `-f=json`,
-// and the attached `-fjson`, so ANY single-dash token starting with -f is the
-// format flag.
+// wrapperOwnedFlags are fclones flags the wrapper itself appends
+// (buildScanArgs): --cache shares the hash cache, --format is the JSON
+// report contract DecodeReport is built against. Rejected in FCLONES_ARGS
+// unconditionally (a contract, not a safety guardrail). -f is handled
+// separately below since clap accepts -f json/-f=json/-fjson.
 var wrapperOwnedFlags = []string{"--format", "--cache"}
 
 // rejectWrapperOwnedArgs blocks wrapper-owned fclones flags (see
@@ -320,15 +268,13 @@ func rejectWrapperOwnedArgs(raw string) error {
 }
 
 // validateArgEnvs runs every startup gate over the three env vars that carry
-// fclones arguments: quoting syntax, the dangerous-flag denylist, the
-// wrapper-owned flags, and positional tokens. Only the denylist is relaxed by
-// ALLOW_UNSAFE_ARGS; the other two are contracts rather than safety
-// guardrails, so they hold in both modes.
+// fclones arguments. Only the dangerous-flag denylist is relaxed by
+// ALLOW_UNSAFE_ARGS; the wrapper-owned and positional-token checks are
+// contracts, not safety guardrails, so they hold in both modes.
 func validateArgEnvs(argsStr, actionArgs, scanPaths string) error {
-	// ALLOW_UNSAFE_ARGS deliberately accepts ONLY the exact spelling
-	// "true" (case-insensitive), not envx.Bool's tolerant 1/yes/on set: the
-	// flag disables command-injection guardrails, so the accepted vocabulary
-	// stays as narrow as possible. Do not "clean up" to envx.Bool.
+	// ALLOW_UNSAFE_ARGS accepts only the exact spelling "true"
+	// (case-insensitive), not envx.Bool's tolerant 1/yes/on set, since it
+	// disables command-injection guardrails.
 	unsafeAllowed := strings.EqualFold(cmp.Or(envx.String("ALLOW_UNSAFE_ARGS"), "false"), "true")
 	if unsafeAllowed {
 		slog.Warn("unsafe flags allowed, command injection guardrails disabled",
@@ -340,8 +286,6 @@ func validateArgEnvs(argsStr, actionArgs, scanPaths string) error {
 		{scanPaths, "FCLONES_SCAN_PATHS"},
 	} {
 		if unsafeAllowed {
-			// Unsafe mode skips the dangerous-flag check but must still validate
-			// argument syntax so a quoting typo fails fast at startup.
 			if _, err := parseArgString(p.raw, p.env); err != nil {
 				return err
 			}
@@ -352,16 +296,10 @@ func validateArgEnvs(argsStr, actionArgs, scanPaths string) error {
 		}
 	}
 
-	// Wrapper-owned flags are rejected unconditionally -- even under
-	// ALLOW_UNSAFE_ARGS, which relaxes the safety guardrails, not the
-	// wrapper's own report/cache contract.
 	if err := rejectWrapperOwnedArgs(argsStr); err != nil {
 		return err
 	}
 
-	// Positional tokens are rejected unconditionally for the same reason:
-	// naming a scan path is FCLONES_SCAN_PATHS' job, so the two arg vars carry
-	// flags and their values only.
 	for _, p := range []struct{ raw, env string }{
 		{argsStr, "FCLONES_ARGS"},
 		{actionArgs, "FCLONES_ACTION_ARGS"},
@@ -374,26 +312,16 @@ func validateArgEnvs(argsStr, actionArgs, scanPaths string) error {
 }
 
 // rejectPositionalArgs blocks bare (non-flag) tokens in a flags-only env var.
-// fclones' repeatable options -- the pattern filters --name, --path,
-// --exclude, --keep-name, --keep-path, and every other clap Vec field in its
-// config -- take exactly ONE value per occurrence, so a second bare value is
-// not a second pattern: clap reads it as another positional input path.
-// FCLONES_ARGS="--name '*.mp4' '*.mkv'" therefore makes fclones resolve
-// "*.mkv" against its working directory and fail the run with
-// "Can't access '/app/*.mkv'"; upstream's own README example
-// (fclones group . --name '*.jpg' '*.png') has the same defect. A stray token
-// that DOES name a real directory is worse: it silently widens the scan, and
-// link/remove/dedupe then mutate files outside the configured scope. Scan
-// paths are FCLONES_SCAN_PATHS' job, so a positional here is always a
-// misconfiguration. Repeat the flag per value ("--name '*.mp4' --name
-// '*.mkv'") or write one glob ("--name '*.{mp4,mkv}'").
+// Every fclones repeatable option takes exactly one value per occurrence, so
+// a second bare token is read as another scan path rather than another
+// pattern (issue #509; see the docker-fclones-scheduler steering doc "fclones
+// flag arity" for the full mechanism and the upstream README example it
+// breaks). A stray token naming a real directory silently widens the scan,
+// and link/remove/dedupe then mutate files outside FCLONES_SCAN_PATHS.
 //
-// A bare token is accepted only directly after a flag, where clap reads it as
-// that flag's value ("--depth 3"). No fclones flag takes two space-separated
-// values -- its clap config sets no num_args and no value_delimiter anywhere
-// -- so this needs no per-flag arity table and no re-audit on a
-// FCLONES_VERSION bump. "--" is rejected too: it ends clap's option parsing,
-// so every token after it becomes a scan path.
+// A bare token is accepted only directly after a flag (its value). "--" is
+// rejected too: it ends clap's option parsing, so every token after it
+// becomes a scan path.
 func rejectPositionalArgs(raw, envVar string) error {
 	parsed, err := parseArgString(raw, envVar)
 	if err != nil {
@@ -473,10 +401,9 @@ func writeProbe(dir string) error {
 }
 
 // verifyDirWithProbe runs probe(dir) in a goroutine and returns its result,
-// or a timeout error if timeout elapses (or ctx is cancelled) first. The
-// probe is a parameter so tests can inject a blocking probe and exercise the
-// timeout branch deterministically; production passes writeProbe with a
-// non-cancellable context, so the select only races "probe done" vs timeout.
+// or a timeout error if timeout elapses (or ctx is cancelled) first. probe is
+// a parameter so tests can inject a blocking probe to exercise the timeout
+// branch deterministically.
 func verifyDirWithProbe(ctx context.Context, dir string, timeout time.Duration, probe func(string) error) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

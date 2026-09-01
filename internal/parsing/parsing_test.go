@@ -17,13 +17,9 @@ func reportDoc(statsJSON, groupsJSON string) string {
 		statsJSON + `},"groups":` + groupsJSON + `}`
 }
 
-// statsJSON renders the FULL upstream stats block with the given
-// group/redundant counts. The keys ReportStats does not map
-// (total_file_count, total_file_size, redundant_file_count,
-// missing_file_count, missing_file_size) are kept verbatim so every fixture
-// decodes a realistic upstream header and exercises the decoder's
-// unknown-field tolerance; only groupCount and redundantSize land in
-// ReportStats and are asserted.
+// statsJSON renders the full upstream stats block; keys ReportStats doesn't
+// map are kept verbatim so fixtures decode a realistic header and exercise
+// the decoder's unknown-field tolerance.
 func statsJSON(groupCount, redundantCount int, redundantSize int64) string {
 	var b strings.Builder
 	b.WriteString(`{"group_count":`)
@@ -283,7 +279,7 @@ func TestProperty_DecodeReportRoundTrip(t *testing.T) {
 			files := make([]string, 0, nFiles)
 			for j := range nFiles {
 				// Arbitrary path strings, including delimiter-laden ones: JSON
-				// escaping must round-trip them verbatim.
+				// escaping must round-trip verbatim.
 				files = append(files, rapid.StringMatching(`/[ -~]{0,30}`).Draw(rt, "path")+
 					jsonInt(i)+"_"+jsonInt(j))
 			}
@@ -548,22 +544,16 @@ func TestProperty_ParseActionSummaryIsDeterministic(t *testing.T) {
 }
 
 // TestParseActionSummary_exactlySevenFields guards the `len(fields) >= 7`
-// boundary in ParseActionSummary. The metric-extraction block reads fields[1]
-// (file count) and fields[5..6] (reclaimed size), so it requires at least seven
-// whitespace-separated tokens. Mutating `>= 7` to `> 7` (CONDITIONALS_BOUNDARY)
-// drops the metrics for a line with exactly seven fields. Every other test uses
-// the eight-field "...reclaimed X Y space" form, so only this trailing-"space"-
-// free line exercises the boundary.
+// boundary: the metric-extraction block reads fields[1] and fields[5..6], so
+// it requires at least seven tokens. Mutating `>= 7` to `> 7` drops the
+// metrics for a line with exactly seven fields (no trailing "space").
 func TestParseActionSummary_exactlySevenFields(t *testing.T) {
 	t.Parallel()
 
-	// given a "Processed" line with exactly seven fields (no trailing "space")
 	stdout := "Processed 5 files and reclaimed 512 B\n"
 
-	// when the action summary is parsed
 	got := parsing.ParseActionSummary(stdout)
 
-	// then both metrics are extracted (real code); `> 7` would leave them at 0
 	if got.Files != 5 {
 		t.Errorf("ParseActionSummary(%q).Files = %d, want 5", stdout, got.Files)
 	}
@@ -572,19 +562,16 @@ func TestParseActionSummary_exactlySevenFields(t *testing.T) {
 	}
 }
 
+// TestParseActionSummary_estimatedExactlyNineFields pins the exact-length
+// dedupe "up to" line: the reclaimed number and unit are the last two
+// tokens, so len(fields) equals numIdx+2 on the estimated path.
 func TestParseActionSummary_estimatedExactlyNineFields(t *testing.T) {
 	t.Parallel()
 
-	// given a dedupe "up to" line with exactly nine fields: the reclaimed
-	// number and unit are the last two tokens (no trailing "space"), so
-	// len(fields) equals numIdx+2 on the estimated path
 	const stdout = "Processed 73 files and reclaimed up to 512 MB"
 
-	// when the action summary is parsed
 	got := parsing.ParseActionSummary(stdout)
 
-	// then the exact-length line is let through and the upper-bound size is
-	// parsed; a wider length guard would drop the reclaimed total to zero
 	if got.Files != 73 {
 		t.Errorf("ParseActionSummary(%q).Files = %d, want 73", stdout, got.Files)
 	}
@@ -777,24 +764,17 @@ func TestParseHumanBytes_overflowBoundary(t *testing.T) {
 	}
 }
 
-// TestParseActionSummary_shortReclaimLineNoPanic pins the
-// `len(fields) < 7` early return in reclaimedMetrics, reached via
-// ParseActionSummary. A line containing both "Processed" and
-// "reclaimed" but with fewer than seven fields enters the
-// metric-extraction block, so reclaimedMetrics is invoked and must
-// return zero metrics WITHOUT indexing fields[5]/fields[6] out of
-// range. Removing or widening the guard panics on this input.
+// TestParseActionSummary_shortReclaimLineNoPanic pins the `len(fields) < 7`
+// early return in reclaimedMetrics: a line containing both "Processed" and
+// "reclaimed" but fewer than seven fields must yield zero metrics without
+// indexing out of range.
 func TestParseActionSummary_shortReclaimLineNoPanic(t *testing.T) {
 	t.Parallel()
 
-	// given a line with both keywords but only four fields
 	const stdout = "Processed 5 reclaimed something"
 
-	// when the action summary is parsed
 	got := parsing.ParseActionSummary(stdout)
 
-	// then the short-field guard yields zero metrics (no panic)
-	// and the matched line is still recorded verbatim
 	if got.Files != 0 {
 		t.Errorf("ParseActionSummary(%q).Files = %d, want 0", stdout, got.Files)
 	}

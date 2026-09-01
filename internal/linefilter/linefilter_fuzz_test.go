@@ -11,13 +11,13 @@ import (
 func FuzzWriter(f *testing.F) {
 	f.Add("info: Started grouping\nkeep me\n")
 	f.Add("no newline at all")
-	f.Add(strings.Repeat("a", linefilter.MaxLineBytes+1)) // > MaxLineBytes: covers the no-newline flood-flush path
+	f.Add(strings.Repeat("a", linefilter.MaxLineBytes+1)) // no-newline flood-flush path
 	f.Add("")
 	f.Add("\n\n\n")
 	f.Add("info: Scanned 5\npartial line")
-	f.Add("cannot read file /scan/\x1b[31mevil\x1b[0m: denied\n") // ESC escapes to \xNN; output exceeds input
-	f.Add("cannot read file /scan/a\x00\x7fb: denied\n")          // NUL + DEL escape
-	f.Add("\x1b")                                                 // lone control byte, no newline: sanitized on Flush
+	f.Add("cannot read file /scan/\x1b[31mevil\x1b[0m: denied\n")
+	f.Add("cannot read file /scan/a\x00\x7fb: denied\n")
+	f.Add("\x1b")
 	f.Fuzz(func(t *testing.T, input string) {
 		var sink bytes.Buffer
 		fw := linefilter.New(&sink)
@@ -35,36 +35,24 @@ func FuzzWriter(f *testing.F) {
 
 		out := sink.Bytes()
 
-		// Bounded expansion: Writer drops whole lines and rewrites each C0/DEL
-		// control byte (and any invalid-UTF-8 byte) to a 4-byte \xNN escape via
-		// sanitizeControlBytes, so output can exceed input, but never by more than 4x.
-		// The old drop-only bound (len(out) > len(input)) held only before the
-		// sanitizer landed; a control byte in a scanned path trips it under the
-		// coverage-guided fuzz run even though the deterministic seed corpus passed.
+		// Bounded expansion: each C0/DEL/invalid-UTF-8 byte rewrites to a 4-byte
+		// \xNN escape, so output can exceed input but never by more than 4x.
 		if len(out) > 4*len(input) {
 			t.Fatalf("filtered output %d bytes exceeds 4x input %d bytes for %q", len(out), len(input), input)
 		}
 
-		// Sanitization efficacy (CWE-117): no forbidden control byte (C0 except
-		// '\n'/'\t', or DEL) may survive into the log sink, however it was framed in
-		// the raw scanned-path text fclones renders.
+		// CWE-117: no forbidden control byte (C0 except '\n'/'\t', or DEL) may
+		// survive into the log sink.
 		for _, b := range out {
 			if (b < 0x20 && b != '\n' && b != '\t') || b == 0x7f {
 				t.Fatalf("forbidden control byte %#02x survived into output %q for input %q", b, out, input)
 			}
 		}
 
-		// Filter efficacy: every COMPLETE (newline-terminated) line emitted must be a
-		// non-filtered line. An independent oracle (NOT shouldFilterLine's own code)
-		// mirrors the positional policy so a wrong edit to either side is caught: a
-		// noise marker is dropped only inside the message body of a genuine
-		// "fclones: <level>:" line whose level matches the marker (info-progress
-		// markers at info, the FIEMAP notice at warn). The FIEMAP marker also carries
-		// a prefix anchor ("File system "): the body must BEGIN with fclones' own
-		// framing for the canonical notice, so a genuine same-level warn about an
-		// attacker-named path that merely echoes the phrase survives. A
-		// filter-disabled mutant of emit() makes a filtered line survive here even
-		// though the byte-bound passes.
+		// Independent oracle (not shouldFilterLine's own code): a noise marker is
+		// dropped only inside the message body of a genuine "fclones: <level>:"
+		// line whose level matches the marker. The FIEMAP marker also requires a
+		// prefix anchor, so a same-level warn merely echoing the phrase survives.
 		type marker struct{ substr, prefix string }
 		noiseByLevel := map[string][]marker{
 			"info": {{substr: "Started grouping"}, {substr: "Started deduplicating"}, {substr: "Scanned "}, {substr: "Found "}},
@@ -94,7 +82,7 @@ func FuzzWriter(f *testing.F) {
 		}
 		for _, line := range strings.SplitAfter(string(out), "\n") {
 			if !strings.HasSuffix(line, "\n") {
-				continue // trailing fragment is the unflushed/partial tail, not a complete line
+				continue // partial tail, not a complete line
 			}
 			if filtered(line) {
 				t.Fatalf("emitted complete line %q would be filtered for input %q", line, input)

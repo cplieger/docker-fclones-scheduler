@@ -10,52 +10,36 @@ import (
 	"github.com/cplieger/scheduler/v4/trigger"
 )
 
-// --- Daemon: the single owner of scan execution ---
-//
-// In the two long-running modes, PID 1 owns every run. Triggers only submit
-// requests: the built-in ticker (built-in mode) and the unix-socket clients
-// (`scan` subcommand, both modes) all feed one FIFO queue served by one
-// executor goroutine. That single-ownership is the design: in-process mutual
-// exclusion is the executor loop, shutdown cancels the in-flight run's
-// context so fclones drains under the existing SIGTERM-then-grace machinery,
-// and every run's log lines land on the container log stream because the run
-// executes in the daemon — in external mode too, which the previous
-// exec-child design could not offer. The /cache flock inside runFclonesJob
-// remains as the cross-container guard (a manual `docker run` sharing the
-// same /cache volume), demoted from correctness mechanism to belt and
-// braces. The queue, socket server, and wire protocol are the scheduler
-// library's trigger broker (`scheduler/v2/trigger`); this file wires it and
-// owns the policy — executor semantics and log wording.
+// In the two long-running modes, PID 1 owns every run: the built-in ticker
+// and the unix-socket clients (`scan` subcommand) feed one FIFO queue served
+// by one executor goroutine, so in-process mutual exclusion is the executor
+// loop itself. The /cache flock inside runFclonesJob remains as the
+// cross-container guard (a manual `docker run` sharing the same volume).
+// The queue, socket server, and wire protocol are the scheduler library's
+// trigger broker; this file wires it and owns the log wording.
 
 // socketPath is the daemon's trigger socket. /tmp is per-container tmpfs, so
-// the path never collides across containers and a stale file can only be our
-// own previous life's.
+// a stale file can only be our own previous life's.
 const socketPath = "/tmp/fclones-wrapper.sock"
 
-// queueCapacity bounds pending requests in the trigger broker's FIFO. The
-// realistic trigger set is one periodic trigger (Ofelia) plus a manual exec,
-// so 16 is generous headroom; a client hitting a full queue is rejected
-// immediately with a clear reason (honest backpressure) rather than queued
-// unboundedly.
+// queueCapacity bounds pending requests; a full queue rejects immediately
+// with a clear reason rather than queueing unboundedly.
 const queueCapacity = 16
 
 // daemon carries the executor's dependencies.
 type daemon struct {
 	queue *trigger.Queue[struct{}]
 	// hc is the single writer of the health marker; every run outcome
-	// funnels through it (drain latch, interrupted-clean carve-out,
-	// lock-skip no-signal).
+	// funnels through it.
 	hc     *healthController
 	cfg    *config
 	newCmd scheduler.CommandRunner
 }
 
-// runDaemon runs the two long-running modes (built-in and external): it
-// binds the trigger socket, wires the health controller, starts the
-// executor, and — in built-in mode — drives the interval ticker. The config
-// is env-derived and immutable for the container's life, so unlike the
-// sibling schedulers' file configs there is nothing to reload per run.
-// Returning an error exits non-zero.
+// runDaemon runs the two long-running modes (built-in and external): binds
+// the trigger socket, wires the health controller, starts the executor, and
+// — in built-in mode — drives the interval ticker. Returning an error exits
+// non-zero.
 func runDaemon(ctx context.Context, cfg *config, hc *healthController, newCmd scheduler.CommandRunner) error {
 	ln, err := trigger.Listen(socketPath)
 	if err != nil {
@@ -65,9 +49,8 @@ func runDaemon(ctx context.Context, cfg *config, hc *healthController, newCmd sc
 	}
 	defer func() { _ = os.Remove(socketPath) }()
 
-	// Built-in mode starts unhealthy until the first run proves the setup
-	// (the startup run flips it); external mode starts healthy — idle,
-	// nothing has failed — and each triggered run updates it.
+	// Built-in mode starts unhealthy until the first run proves the setup;
+	// external mode starts healthy (idle, nothing has failed).
 	hc.markInitial(cfg.Mode == modeExternal)
 
 	d := &daemon{
@@ -83,10 +66,8 @@ func runDaemon(ctx context.Context, cfg *config, hc *healthController, newCmd sc
 		trigger.Execute(ctx, d.queue, d.run)
 	}()
 
-	// The broker owns the wire (decode, event relay, handler draining); the
-	// hook only supplies this app's log vocabulary. A scan takes no
-	// arguments, so there is nothing app-specific to say on rejection — the
-	// library's payload-free warning matches the previous wording.
+	// The broker owns the wire; the hook only supplies this app's log
+	// wording. A scan takes no arguments, so nothing app-specific to say.
 	srv := &trigger.Server[struct{}]{
 		Queue: d.queue,
 		OnAccepted: func(struct{}) {
@@ -104,16 +85,12 @@ func runDaemon(ctx context.Context, cfg *config, hc *healthController, newCmd sc
 
 	<-ctx.Done()
 	slog.Info("shutting down", "cause", context.Cause(ctx))
-	// Latch unhealthy immediately so observers see the drain before the
-	// in-flight run resolves (it is being SIGTERM'd via ctx and drains under
-	// the runner's grace window; the latch also blocks a late healthy write).
+	// Latch unhealthy before the in-flight run resolves so observers see the
+	// drain, and to block a late healthy write.
 	d.hc.beginDrain()
 
-	// Stop admission (socket + queue), then wait: the executor delivers the
-	// interrupted in-flight run's result and cancellation results to
-	// everything still queued; the ticker returns once its waiting tick
-	// request resolves; the handlers return once every accepted request has
-	// its final event on the wire.
+	// Stop admission, then wait for the executor, ticker and handlers to
+	// finish delivering results to everything already accepted.
 	_ = ln.Close()
 	d.queue.Close()
 	<-executorDone
@@ -123,12 +100,9 @@ func runDaemon(ctx context.Context, cfg *config, hc *healthController, newCmd sc
 	return nil
 }
 
-// startTicker runs the built-in interval scheduler: a startup run that fires
-// immediately for freshness on deploy, then one run per interval, each
-// submitted to the queue like any other trigger and waited on (RunLoop is
-// sequential, so ticks can never pile up behind a long run). Disabled
-// (closed channel returned) in external mode. The library re-checks ctx
-// before each fire, so no fresh tick is submitted after shutdown begins.
+// startTicker runs the built-in interval scheduler: a startup run fires
+// immediately, then one run per interval, each submitted to the queue and
+// waited on. Disabled (closed channel returned) in external mode.
 func startTicker(ctx context.Context, d *daemon, interval time.Duration, enabled bool) <-chan struct{} {
 	done := make(chan struct{})
 	if !enabled {
@@ -149,12 +123,9 @@ func startTicker(ctx context.Context, d *daemon, interval time.Duration, enabled
 	return done
 }
 
-// tick submits one scheduled run and waits for its result (the executor
-// writes the health marker; the queue guarantees exactly one result per
-// accepted request, including a cancellation result at shutdown, so this
-// wait always resolves). A rejected submission — the queue full of external
-// requests, or shutdown racing the tick — is logged and skipped: the next
-// interval provides freshness.
+// tick submits one scheduled run and waits for its result. A rejected
+// submission (queue full, or shutdown racing the tick) is logged and
+// skipped: the next interval provides freshness.
 func (d *daemon) tick(trig string) {
 	j := trigger.NewJob(trig, struct{}{})
 	if err := d.queue.Submit(j); err != nil {
@@ -165,19 +136,11 @@ func (d *daemon) tick(trig string) {
 }
 
 // run performs one request: run the scan+action job, route the outcome
-// through the health controller, and return the result. The job lifecycle
-// around it belongs to trigger.Execute — the daemon's single executor loop —
-// which checks the shutdown ctx before each start (queued requests behind a
-// stop are cancelled with an explicit result, never run) and guarantees
-// exactly one delivered result per accepted request, even if this callback
-// panics.
-//
-// The run executes under the shutdown-cancellable ctx on purpose: SIGTERM
-// interrupts an in-flight fclones phase (SIGTERM-then-grace via the command
-// runner), and jobHealthSignal's interrupted-run carve-out keeps that drain
-// from registering as a failure. A cross-container lock skip (ran=false, no
-// error) performed no scan: it writes no marker and reports ok with a
-// reason, preserving the documented overlap tolerance for external triggers.
+// through the health controller, and return the result. Runs under the
+// shutdown-cancellable ctx on purpose: SIGTERM interrupts an in-flight
+// fclones phase, and jobHealthSignal's interrupted-run carve-out keeps that
+// drain from registering as a failure. A cross-container lock skip
+// (ran=false, no error) performed no scan and writes no marker.
 func (d *daemon) run(ctx context.Context, trig string, _ struct{}) trigger.Outcome {
 	start := time.Now()
 

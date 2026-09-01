@@ -8,14 +8,9 @@ import (
 	"github.com/cplieger/runesafe/v2"
 )
 
-// shouldFilterLine is unexported (no production caller outside this package),
-// so its tests live here in the internal (package linefilter) test file rather
-// than the external linefilter_test package. The external tests cover the public
-// surface (Writer / capbuf.Buffer); these pin the
-// noise-filter predicate directly. FuzzShouldFilterLine deliberately
-// re-declares the noise pattern lists as an independent level-keyed oracle (not
-// the production infoProgressPatterns/warnNoisePatterns vars), so a wrong edit to
-// either side is caught.
+// shouldFilterLine is unexported, so its tests live in this internal test
+// file. FuzzShouldFilterLine re-declares the noise pattern lists as an
+// independent oracle, so a wrong edit to either side is caught.
 
 func TestShouldFilterLine(t *testing.T) {
 	t.Parallel()
@@ -33,40 +28,24 @@ func TestShouldFilterLine(t *testing.T) {
 		{"[2026-04-26 11:00:03.072] fclones: error: cache corruption detected", false},
 		{"[2026-04-26 11:00:03.072] fclones: warn: cannot read file /scandir/Scanned 5 backups.txt", false},
 		{"[2026-04-26 11:00:03.072] fclones: error: failed on /scandir/Found duplicates/x", false},
-		// FIEMAP phrase echoed in an attacker-controlled scanned filename inside a
-		// genuine error line must NOT be suppressed (h-f1: the FIEMAP marker is a
-		// warn-level body marker, so a real error diagnostic that merely names such
-		// a file at a different level still reaches the logs).
+		// FIEMAP phrase echoed in an attacker-controlled filename inside a
+		// genuine error line must NOT be suppressed (warn-level marker, wrong level).
 		{"[2026-04-26 11:00:03.072] fclones: error: cannot read /scandir/doesn't support FIEMAP ioctl API.txt", false},
-		// An info progress marker ("Found ") echoed in an error filename body must
-		// likewise survive: progress markers are info-level, so they cannot suppress
-		// a genuine error line that happens to name such a file.
+		// Same for an info marker echoed in an error-level line.
 		{"[2026-04-26 11:00:03.072] fclones: error: cannot read /scandir/Found duplicates.txt", false},
-		// SAME-LEVEL guard (l-f3): a genuine warn ABOUT an attacker-named scanned
-		// path whose body merely echoes the FIEMAP phrase must NOT be suppressed.
-		// fclones frames the canonical notice as "File system <fs> ... doesn't
-		// support FIEMAP ioctl API" and frames path read-errors as "cannot read
-		// file ...", so the prefix anchor ("File system ") distinguishes them: this
-		// body begins with "cannot read file", not "File system ", so it survives.
+		// A genuine warn ABOUT an attacker-named path that merely echoes the
+		// FIEMAP phrase (framed "cannot read file", not "File system") must
+		// survive: the prefix anchor distinguishes them.
 		{"[2026-04-26 11:00:03.072] fclones: warn: cannot read file /scandir/x doesn't support FIEMAP ioctl API: permission denied", false},
 		{"Scanned 100 file entries", false},
 		{"[2026-04-26 11:00:03.072] fclones: error: Started grouping cache rebuild failed", false},
 		{`time=... level=INFO msg="scan complete" scan_id=abc`, false},
 		{"", false},
-		// A warn-only marker (the FIEMAP notice) appearing as the GENUINE body of
-		// an info: line must NOT be suppressed: the marker is registered only at
-		// warn level, so level-keyed matching leaves it alone at info level. Pins
-		// the e210e9d guarantee against a mutant that drops the level key and
-		// matches every marker set regardless of level.
+		// A warn-only marker as the genuine body of an info: line must survive:
+		// markers are level-keyed.
 		{"[2026-04-26 11:00:03.072] fclones:  info: doesn't support FIEMAP ioctl API today", false},
-		// Symmetrically, an info progress marker ("Started grouping") as the
-		// genuine body of a warn: line must NOT be suppressed: progress markers are
-		// registered only at info level.
 		{"[2026-04-26 11:00:03.072] fclones:  warn: Started grouping the cache", false},
-		// fclones: prefix present but the remainder has no second colon (no level
-		// separator). shouldFilterLine returns false at the second strings.Cut
-		// guard; this pins linefilter.go's malformed-level branch, which the well-formed
-		// table cases and the (prefix-free) fuzz seeds never reach deterministically.
+		// fclones: prefix present but no second colon (malformed level).
 		{"[2026-04-26 11:00:03.072] fclones: warnnocolon doesn't support FIEMAP ioctl API", false},
 	}
 	for _, tt := range tests {
@@ -85,32 +64,20 @@ func FuzzShouldFilterLine(f *testing.F) {
 	f.Add("doesn't support FIEMAP ioctl API")
 	f.Add("normal output line")
 	f.Add("")
-	// Genuine drops at each registered level (exercise the drop path itself).
-	// The warn seed uses fclones' canonical "File system " framing so it satisfies
-	// the FIEMAP marker's prefix anchor and actually drops.
+	// Genuine drops at each registered level; the warn seed uses fclones'
+	// canonical "File system " framing to satisfy the prefix anchor.
 	f.Add("[ts] fclones:  info: Started grouping")
 	f.Add("[ts] fclones: warn: File system zfs on device data/media doesn't support FIEMAP ioctl API. harmless.")
-	// Same-level guard: a genuine warn ABOUT an attacker-named path that merely
-	// echoes the FIEMAP phrase ("cannot read file ..." framing, not "File system ")
-	// must NOT drop (oracle computes want=false against the prefix anchor).
+	// Same-level guard: a warn about an attacker-named path echoing the
+	// FIEMAP phrase without "File system " framing must not drop.
 	f.Add("[ts] fclones: warn: cannot read file /scandir/x doesn't support FIEMAP ioctl API: denied")
-	// Cross-level false-suppression guarantee: a marker echoed in a filename at a
-	// different level, and a marker as the genuine body at the wrong level, must
-	// both survive (oracle computes want=false for these).
+	// Cross-level: a marker echoed at the wrong level must survive.
 	f.Add("[ts] fclones: error: cannot read /scandir/doesn't support FIEMAP ioctl API.txt")
 	f.Add("[ts] fclones:  info: doesn't support FIEMAP ioctl API today")
 	// fclones: prefix but no second colon (malformed level): not filtered.
 	f.Add("[ts] fclones: warnnocolon doesn't support FIEMAP ioctl API")
 	f.Fuzz(func(t *testing.T, input string) {
-		// Independent oracle mirroring shouldFilterLine's positional policy:
-		// a noise marker is dropped only when it appears in the message body of a
-		// genuine "fclones: <level>:" line whose level matches the marker's level
-		// (info-progress markers at info, the FIEMAP notice at warn). The FIEMAP
-		// marker also carries a prefix anchor ("File system "): the body must BEGIN
-		// with fclones' own framing for the canonical notice, so a marker echoed in
-		// a scanned filename inside a genuine same-level warn about an attacker-named
-		// path is NOT filtered. A marker planted anywhere else (echoed at a different
-		// level, or ahead of the fclones prefix) must NOT be filtered.
+		// Independent oracle mirroring shouldFilterLine's positional policy.
 		type marker struct{ substr, prefix string }
 		noiseByLevel := map[string][]marker{
 			"info": {{substr: "Started grouping"}, {substr: "Started deduplicating"}, {substr: "Scanned "}, {substr: "Found "}},
@@ -139,19 +106,12 @@ func FuzzShouldFilterLine(f *testing.F) {
 	})
 }
 
-// TestSanitizeControlBytesEscapesUnsafeRunes pins the well-formed-rune half of
-// the escape class, which is runesafe.IsUnsafeNonASCII's: the C1 control block
-// U+0080..U+009F even in its 2-byte UTF-8 encoding (terminal escape
-// introducers), the Unicode bidi controls (Trojan-Source reordering), and
-// U+2028/U+2029 (record forgery in Unicode-line-terminator-splitting
-// consumers) -- each a CWE-117 vector on an attacker-influenced scanned
-// filename. The boundaries are exact: the nearest sibling codepoint outside
-// each class (NBSP U+00A0 past the C1 block, U+202F past the U+202A-202E bidi
-// run, U+2065 in the gap before the isolates, U+2030 past U+2029) and ordinary
-// non-ASCII (accented Latin, CJK) are forwarded verbatim. Calls
-// sanitizeControlBytes directly (byte-in / byte-out) so both code paths are
-// exercised: an input made only of an unsafe rune would otherwise take the
-// no-alloc fast path.
+// TestSanitizeControlBytesEscapesUnsafeRunes pins the well-formed-rune half
+// of the escape class (runesafe.IsUnsafeNonASCII): the C1 control block, the
+// Unicode bidi controls, and U+2028/U+2029 — each a CWE-117 vector on an
+// attacker-influenced scanned filename. Boundaries are exact: the nearest
+// sibling codepoint outside each class is forwarded verbatim. Calls
+// sanitizeControlBytes directly so both the fast and slow paths are exercised.
 func TestSanitizeControlBytesEscapesUnsafeRunes(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -253,14 +213,9 @@ func TestSanitizeControlBytesEscapesUnsafeRunes(t *testing.T) {
 	}
 }
 
-// FuzzSanitizeControlBytes pins the properties of the unexported sanitizer
-// directly (Writer as a whole is not idempotent because of line
-// framing, so idempotency can only be asserted on the function itself). The
-// seed corpus runs deterministically every PR; the properties are asserted
-// against the post-UTF-8-awareness behavior (a standalone C1 / invalid byte is
-// escaped; valid multi-byte runes pass through verbatim EXCEPT the runes
-// runesafe.IsUnsafeNonASCII refuses -- C1 controls, bidi controls, and
-// U+2028/U+2029 -- whose UTF-8 bytes are escaped).
+// FuzzSanitizeControlBytes pins the sanitizer's properties directly (Writer
+// as a whole is not idempotent because of line framing). Seeds run
+// deterministically every PR.
 func FuzzSanitizeControlBytes(f *testing.F) {
 	f.Add("clean printable text /scan/file.txt")
 	f.Add("esc \x1b[31mred\x1b[0m reset")
@@ -276,47 +231,32 @@ func FuzzSanitizeControlBytes(f *testing.F) {
 	f.Fuzz(func(t *testing.T, input string) {
 		out := sanitizeControlBytes([]byte(input))
 
-		// Efficacy (CWE-117 log injection): no forbidden control byte -- any C0 byte
-		// other than '\n'/'\t', or DEL -- survives into the sanitized output.
+		// Efficacy (CWE-117): no forbidden control byte survives.
 		for _, b := range out {
 			if (b < 0x20 && b != '\n' && b != '\t') || b == 0x7f {
 				t.Fatalf("forbidden control byte %#02x survived in %q for input %q", b, out, input)
 			}
 		}
 
-		// Well-formedness: the sanitized line is valid UTF-8. Escaping exists so
-		// a byte no consumer can decode reaches the log sink as printable ASCII
-		// instead, so an undecodable byte surviving into the output is a hole in
-		// the escape class -- and it is invisible to the control-byte check
-		// above, which only looks below 0x20.
+		// Well-formedness: the sanitized line is valid UTF-8.
 		if !utf8.Valid(out) {
 			t.Fatalf("sanitize(%q) = %q, which is not valid UTF-8", input, out)
 		}
 
-		// Idempotency (required of any sanitizer): the escaped form is valid UTF-8
-		// containing only printable ASCII escapes plus preserved '\n'/'\t' and valid
-		// runes, so a second pass takes the fast path and changes nothing.
+		// Idempotency: a second pass takes the fast path and changes nothing.
 		if again := sanitizeControlBytes(out); string(again) != string(out) {
 			t.Fatalf("not idempotent: sanitize(%q) = %q, second pass = %q", input, out, again)
 		}
 
-		// Bounded transform: escaping is the only growth (1 byte -> 4 bytes) and
-		// nothing is dropped, so output never shrinks and never exceeds 4x the input.
+		// Bounded transform: escaping (1 byte -> 4 bytes) is the only growth.
 		if len(out) < len(input) || len(out) > 4*len(input) {
 			t.Fatalf("output length %d outside [%d, %d] for input %q", len(out), len(input), 4*len(input), input)
 		}
 
-		// Identity fast path: input already valid UTF-8 with nothing to escape is
-		// returned verbatim. The verbatim condition is UTF-8-aware, so a standalone
-		// C1 / invalid byte (>=0x80 but not part of a valid rune) is NOT clean even
-		// though it is neither a C0 control nor DEL -- it is escaped instead. A
-		// well-formed rune in runesafe's unsafe non-ASCII classes (C1 controls,
-		// bidi controls, U+2028/U+2029) is likewise NOT clean: each drives
-		// terminal escapes or reorders/forges the rendered line, so the identity
-		// guarantee holds only for lines free of them. The exclusion is computed
-		// here via an independent rune scan against runesafe.IsUnsafeNonASCII
-		// (not the production byte checks), so a discrepancy between the two is
-		// caught rather than assumed away.
+		// Identity fast path: clean input (valid UTF-8, no forbidden control
+		// byte, no unsafe rune) is returned verbatim. Computed via an
+		// independent scan against runesafe.IsUnsafeNonASCII, not the
+		// production byte checks, so a discrepancy is caught rather than assumed.
 		clean := utf8.Valid([]byte(input))
 		if clean {
 			for _, b := range []byte(input) {
