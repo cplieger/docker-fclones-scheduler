@@ -162,7 +162,13 @@ func startTicker(ctx context.Context, d *daemon, interval time.Duration, enabled
 		}
 		scheduler.RunLoop(ctx, func(context.Context) {
 			d.tick(triggerInterval)
-		}, scheduler.LoopOptions{Interval: interval, FireOnStart: false})
+		}, scheduler.LoopOptions{
+			Interval:    interval,
+			FireOnStart: false,
+			// Phase the first tick from the recorded previous scan, so a
+			// restart neither adds a scan nor delays the cadence.
+			FirstDelay: d.stamp.Remaining(interval, time.Now(), scheduler.CountFailed),
+		})
 	}()
 	return done
 }

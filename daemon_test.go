@@ -28,7 +28,7 @@ import (
 func TestStartTickerDisabledInExternalMode(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		d := &daemon{queue: trigger.NewQueue[struct{}](queueCapacity)}
+		d := &daemon{queue: trigger.NewQueue[struct{}](queueCapacity), stamp: scheduler.NewStamp(filepath.Join(t.TempDir(), "last-run"))}
 
 		done := startTicker(t.Context(), d, time.Millisecond, false, false)
 
@@ -84,7 +84,7 @@ func startRecordingExecutor(t *testing.T, d *daemon) *triggerLog {
 func TestStartTickerFiresStartupScanWhenDue(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		d := &daemon{queue: trigger.NewQueue[struct{}](queueCapacity)}
+		d := &daemon{queue: trigger.NewQueue[struct{}](queueCapacity), stamp: scheduler.NewStamp(filepath.Join(t.TempDir(), "last-run"))}
 		rec := startRecordingExecutor(t, d)
 
 		startTicker(t.Context(), d, time.Hour, true, true)
@@ -108,7 +108,7 @@ func TestStartTickerFiresStartupScanWhenDue(t *testing.T) {
 func TestStartTickerSkipsStartupScanWhenNotDue(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		d := &daemon{queue: trigger.NewQueue[struct{}](queueCapacity)}
+		d := &daemon{queue: trigger.NewQueue[struct{}](queueCapacity), stamp: scheduler.NewStamp(filepath.Join(t.TempDir(), "last-run"))}
 		rec := startRecordingExecutor(t, d)
 
 		startTicker(t.Context(), d, time.Hour, true, false)
