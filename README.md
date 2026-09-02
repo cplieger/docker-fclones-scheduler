@@ -68,7 +68,7 @@ The container runs in one of three modes, selected by `SCAN_INTERVAL`.
 
 Set `SCAN_INTERVAL` to a positive Go duration (`1h`, `30m`, `12h`, …). The container runs a scan at startup and then every interval. This is the zero-dependency default; nothing else is required. An unset, unparseable, or negative value falls back to the `3h` default cadence in this mode (a negative value is treated as a typo and logged as a warning).
 
-Each scheduled scan records its completion time and outcome in a file on `/cache`. At startup the container reads that record and skips the startup scan when the last scan completed less than one `SCAN_INTERVAL` ago, so a container recreate minutes after a completed scan does not repeat hours of hashing. A failed scan also holds its slot: a restart does not repeat it, and the next interval tick (at most one `SCAN_INTERVAL` after boot) is the retry, because a failed multi-hour scan is as expensive to repeat as a successful one. Only the daemon's own scheduled scans update the record; triggered scans (`wrapper scan`) and run-once mode do not. Without a persistent `/cache` volume the record does not survive a recreate and every start runs the startup scan.
+Each scheduled scan records its completion time and outcome in a file on `/cache`. At startup the container reads that record and skips the startup scan when the last scan completed less than one `SCAN_INTERVAL` ago, so a container recreate minutes after a completed scan does not repeat hours of hashing. The record also carries the schedule's phase: the next scan lands one `SCAN_INTERVAL` after the previous one, not one interval after boot, so a restart neither adds a scan nor delays the cadence. A failed scan also holds its slot: a restart does not repeat it, and the next interval tick is the retry, because a failed multi-hour scan is as expensive to repeat as a successful one. Only the daemon's own scheduled scans update the record; triggered scans (`wrapper scan`) and run-once mode do not. Without a persistent `/cache` volume the record does not survive a recreate and every start runs the startup scan.
 
 ### External scheduler
 
@@ -187,36 +187,34 @@ groups:
       # wedged scheduler that logs nothing at all trips neither. This one fires
       # on silence instead.
       #
-      # 31h, and the size comes from the RUNTIME budget rather than the
+      # 28h, and the size comes from the RUNTIME budget rather than the
       # interval. SCAN_TIMEOUT defaults to 12h PER PHASE, and `scan complete` is
       # logged after the scan phase but before the action phase, so the gap
-      # between two heartbeats legitimately spans up to 12h of action, then up
-      # to two intervals, then up to 12h of the next scan. The two intervals
-      # come from the conditional startup scan: a restart shortly before a due
-      # tick skips the startup scan (the last-scan record on /cache is still
-      # fresh) and waits a full interval for the first tick, deferring the next
-      # scan by up to one extra SCAN_INTERVAL. Recompute this if you change
-      # SCAN_TIMEOUT or SCAN_INTERVAL: 2x the phase timeout plus 2x the
-      # interval, the same budget as the healthcheck's freshness deadline. With
+      # between two heartbeats legitimately spans up to 12h of action, then the
+      # interval, then up to 12h of the next scan. The schedule keeps its phase
+      # across restarts (the last-scan record on /cache carries it), so a
+      # restart adds nothing to that budget. Recompute this if you change
+      # SCAN_TIMEOUT or SCAN_INTERVAL: 2x the phase timeout plus the interval,
+      # plus margin. With
       # SCAN_TIMEOUT=0 the phases are unbounded and no finite window is sound,
       # the same caveat the healthcheck's freshness deadline already carries.
       #
       # In external mode (SCAN_INTERVAL=off) there is no startup scan and no
-      # skip: size the window as 2x the phase timeout plus your external
+      # record: size the window as 2x the phase timeout plus your external
       # scheduler's cadence. In run-once mode (SCAN_INTERVAL=0) drop this rule:
       # a container that exits on purpose is silent by design.
       - alert: FclonesScanStalled
         expr: |
-          absent_over_time({container="fclones"} |= "scan complete" [31h])
+          absent_over_time({container="fclones"} |= "scan complete" [28h])
         for: 15m
         labels:
           severity: warning
         annotations:
-          summary: "no fclones scan-completion heartbeat in 31h"
+          summary: "no fclones scan-completion heartbeat in 28h"
           description: >
             The wrapper logs a `scan complete` line at the end of every scan
             phase, including one that found no duplicates, and none has arrived
-            in 31h. The usual cause is a wedged daemon, a scan stuck past its
+            in 28h. The usual cause is a wedged daemon, a scan stuck past its
             phase timeout, or nothing triggering runs in external mode. An
             absence rule cannot tell that apart from a container that never
             started or was renamed, or a log pipeline that stopped shipping this
