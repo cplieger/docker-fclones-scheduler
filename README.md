@@ -68,6 +68,8 @@ The container runs in one of three modes, selected by `SCAN_INTERVAL`.
 
 Set `SCAN_INTERVAL` to a positive Go duration (`1h`, `30m`, `12h`, …). The container runs a scan at startup and then every interval. This is the zero-dependency default; nothing else is required. An unset, unparseable, or negative value falls back to the `3h` default cadence in this mode (a negative value is treated as a typo and logged as a warning).
 
+Each scheduled scan records its completion time and outcome in a file on `/cache`. At startup the container reads that record and skips the startup scan when the last scan completed less than one `SCAN_INTERVAL` ago, so a container recreate minutes after a completed scan does not repeat hours of hashing. A failed scan also holds its slot: a restart does not repeat it, and the next interval tick (at most one `SCAN_INTERVAL` after boot) is the retry, because a failed multi-hour scan is as expensive to repeat as a successful one. Only the daemon's own scheduled scans update the record; triggered scans (`wrapper scan`) and run-once mode do not. Without a persistent `/cache` volume the record does not survive a recreate and every start runs the startup scan.
+
 ### External scheduler
 
 Set `SCAN_INTERVAL=off` (alias: `disabled`). The container stays running but idle, and you trigger each scan out-of-band by exec'ing the `scan` subcommand:
@@ -127,7 +129,7 @@ Set `SCAN_INTERVAL=0` (or `0s`). The container runs exactly one scan and dedup a
 
 | Variable | Description | Default | Required |
 | --- | --- | --- | --- |
-| `SCAN_INTERVAL` | Built-in scan interval as a Go duration (e.g. `1h`, `30m`, `12h`); the first scan runs at startup. Set to `off` (or `disabled`) to idle and trigger scans externally, or to `0` (or `0s`) to run a single scan and exit (see [Scheduling modes](#scheduling-modes)). Falls back to `3h` on an unset, unparseable, or negative value. | `3h` | No |
+| `SCAN_INTERVAL` | Built-in scan interval as a Go duration (e.g. `1h`, `30m`, `12h`); a scan runs at startup unless the last scan recorded on `/cache` is younger than the interval (see [Scheduling modes](#scheduling-modes)). Set to `off` (or `disabled`) to idle and trigger scans externally, or to `0` (or `0s`) to run a single scan and exit. Falls back to `3h` on an unset, unparseable, or negative value. | `3h` | No |
 | `FCLONES_SCAN_PATHS` | Paths inside the container to scan for duplicates. Must match the volume mounts. Multiple paths can be space-separated (e.g. `/media /photos`), each requiring a corresponding volume mount. | `/scandir` | No |
 | `FCLONES_ARGS` | Extra arguments passed to the `fclones group` scan phase. Flags and their values only; a bare token is rejected at startup (see [Passing extra fclones arguments](#passing-extra-fclones-arguments)). The wrapper owns `--cache` and the report format (`-f json`); passing `--cache`, `-f`, or `--format` here is rejected at startup. | `(none)` | No |
 | `FCLONES_ACTION` | Dedup action after scan: `group` (report only), `link` (hardlink), `remove` (delete), or `dedupe` (reflink/copy-on-write) | `group` | No |
@@ -167,7 +169,7 @@ defect, so a config copied from there needs the repeated flag too.
 | Mount | Description |
 | --- | --- |
 | `/scandir` | Directory to scan for duplicate files. Must match the paths in `FCLONES_SCAN_PATHS` (space-separated for multiple mounts). The `group` action needs read access only; **`link`/`remove`/`dedupe` modify files here, so `/scandir` must be writable by the `user:` UID** (not a `:ro` mount) for those actions. |
-| `/cache` | fclones cache and state directory. **Must be writable by the UID set in `user:`** (the example uses `1000:1000`). The wrapper write-probes `/cache` at startup; if it is read-only or owned by another UID the container logs `cache directory verification failed uid=<n>` and exits (crash-looping under `restart: unless-stopped`). |
+| `/cache` | fclones cache and state directory; also holds the last-scan record that lets a restarted container skip a startup scan it already ran. **Must be writable by the UID set in `user:`** (the example uses `1000:1000`). The wrapper write-probes `/cache` at startup; if it is read-only or owned by another UID the container logs `cache directory verification failed uid=<n>` and exits (crash-looping under `restart: unless-stopped`). |
 
 ## Alerting
 
@@ -185,31 +187,36 @@ groups:
       # wedged scheduler that logs nothing at all trips neither. This one fires
       # on silence instead.
       #
-      # 28h, not 8h, and the size comes from the RUNTIME budget rather than the
+      # 31h, and the size comes from the RUNTIME budget rather than the
       # interval. SCAN_TIMEOUT defaults to 12h PER PHASE, and `scan complete` is
       # logged after the scan phase but before the action phase, so the gap
-      # between two heartbeats legitimately spans up to 12h of action, then the
-      # interval, then up to 12h of the next scan. An 8h window fires during
-      # ordinary work on a large filesystem. Recompute this if you change
-      # SCAN_TIMEOUT: roughly 2x the phase timeout plus your interval. With
+      # between two heartbeats legitimately spans up to 12h of action, then up
+      # to two intervals, then up to 12h of the next scan. The two intervals
+      # come from the conditional startup scan: a restart shortly before a due
+      # tick skips the startup scan (the last-scan record on /cache is still
+      # fresh) and waits a full interval for the first tick, deferring the next
+      # scan by up to one extra SCAN_INTERVAL. Recompute this if you change
+      # SCAN_TIMEOUT or SCAN_INTERVAL: 2x the phase timeout plus 2x the
+      # interval, the same budget as the healthcheck's freshness deadline. With
       # SCAN_TIMEOUT=0 the phases are unbounded and no finite window is sound,
       # the same caveat the healthcheck's freshness deadline already carries.
       #
-      # In external mode (SCAN_INTERVAL=off) substitute your external
-      # scheduler's cadence for the interval. In run-once mode (SCAN_INTERVAL=0)
-      # drop this rule: a container that exits on purpose is silent by design.
+      # In external mode (SCAN_INTERVAL=off) there is no startup scan and no
+      # skip: size the window as 2x the phase timeout plus your external
+      # scheduler's cadence. In run-once mode (SCAN_INTERVAL=0) drop this rule:
+      # a container that exits on purpose is silent by design.
       - alert: FclonesScanStalled
         expr: |
-          absent_over_time({container="fclones"} |= "scan complete" [28h])
+          absent_over_time({container="fclones"} |= "scan complete" [31h])
         for: 15m
         labels:
           severity: warning
         annotations:
-          summary: "no fclones scan-completion heartbeat in 28h"
+          summary: "no fclones scan-completion heartbeat in 31h"
           description: >
             The wrapper logs a `scan complete` line at the end of every scan
             phase, including one that found no duplicates, and none has arrived
-            in 28h. The usual cause is a wedged daemon, a scan stuck past its
+            in 31h. The usual cause is a wedged daemon, a scan stuck past its
             phase timeout, or nothing triggering runs in external mode. An
             absence rule cannot tell that apart from a container that never
             started or was renamed, or a log pipeline that stopped shipping this
@@ -272,7 +279,7 @@ on your scheduler's own job outcome for extra failure coverage.
 
 The built-in healthcheck (`/app/wrapper health`) checks a marker file the daemon maintains after each run. The container becomes unhealthy when fclones exits non-zero (e.g. scan path missing, permission denied, corrupted cache), the action phase fails (e.g. hardlink across filesystems), the report cannot be decoded, or startup verification fails (e.g. `/cache` is full or read-only). It recovers automatically on the next successful scan; no restart is required.
 
-In built-in mode the container begins unhealthy, transitions to healthy after the first successful scan completes, and arms a freshness deadline of `2 x SCAN_INTERVAL + 2 x SCAN_TIMEOUT`: a marker that old means the interval loop is wedged, so the probe reports unhealthy and Docker restarts the container. The deadline is disabled automatically when `SCAN_TIMEOUT=0`, since the worst-case run duration is then unbounded. In external mode the container starts healthy (idle, nothing has failed), each triggered run updates the marker, and no deadline applies.
+In built-in mode the boot state follows the last-scan record on `/cache`: with a successful scan younger than `SCAN_INTERVAL` the container starts healthy and skips the startup scan; with no record or a stale one it starts unhealthy, runs the startup scan, and turns healthy when that scan succeeds. After a failed scan and a restart the container also skips the startup scan but starts unhealthy, and it stays unhealthy until the next scheduled scan succeeds (the first tick is at most one `SCAN_INTERVAL` after boot); repeating an expensive failed scan at every restart would redo the same hours of work, so the ticker owns the retry. Built-in mode also arms a freshness deadline of `2 x SCAN_INTERVAL + 2 x SCAN_TIMEOUT`: a marker that old means the interval loop is wedged, so the probe reports unhealthy and Docker restarts the container. The deadline is disabled automatically when `SCAN_TIMEOUT=0`, since the worst-case run duration is then unbounded. In external mode the container starts healthy (idle, nothing has failed), each triggered run updates the marker, and no deadline applies.
 
 The image bakes a 15s `start_period`, which suits small libraries and external mode. If your first built-in scan takes minutes, raise `start_period` in your own compose file so the container isn't reported unhealthy, and doesn't fire spurious alerts, during that initial scan:
 

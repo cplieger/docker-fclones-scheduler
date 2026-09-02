@@ -108,6 +108,12 @@ const (
 	// runs and concurrent scans could corrupt it.
 	lockFile = cacheDir + "/.fclones.lock"
 
+	// stampFile records when the last scheduled scan completed and whether it
+	// succeeded. It lives on /cache so it survives a container recreate,
+	// letting built-in mode skip the startup scan when a recent scan already
+	// answered it; on a non-persistent /cache it degrades to always firing.
+	stampFile = cacheDir + "/.docker-fclones-scheduler-last-run"
+
 	// Bounds each captured subprocess stream so a chatty fclones cannot OOM
 	// the container.
 	streamCapBytes    = 1 << 20 // 1 MB
