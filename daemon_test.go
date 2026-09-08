@@ -248,10 +248,7 @@ func TestDaemonRecordOutcome(t *testing.T) {
 // run's real outcome, and the absent record merely reads as due at the next
 // boot. Swaps the process-global logger, so no t.Parallel.
 func TestDaemonRecordOutcomeStampWriteFailureWarns(t *testing.T) {
-	orig := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(orig) })
-	var logs strings.Builder
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	logs := captureLogs(t, slog.LevelInfo)
 
 	dir := t.TempDir()
 	marker := health.NewMarker(filepath.Join(dir, "healthy"))
