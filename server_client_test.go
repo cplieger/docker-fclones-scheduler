@@ -120,10 +120,7 @@ func TestFinishResult_LogsTheOutcomeReason(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			orig := slog.Default()
-			t.Cleanup(func() { slog.SetDefault(orig) })
-			var logs strings.Builder
-			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+			logs := captureLogs(t, slog.LevelInfo)
 
 			if got := finishResult(tc.ev); got != tc.wantCode {
 				t.Errorf("finishResult(%+v) = %d, want %d", tc.ev, got, tc.wantCode)
@@ -140,10 +137,7 @@ func TestFinishResult_LogsTheOutcomeReason(t *testing.T) {
 // all, so `reason` present in Loki always means the daemon had something to
 // say about the outcome.
 func TestFinishResult_SilentSuccessLogsNoReasonAttr(t *testing.T) {
-	orig := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(orig) })
-	var logs strings.Builder
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	logs := captureLogs(t, slog.LevelInfo)
 
 	ev := trigger.Event{OK: true, DurationMs: 3}
 	if got := finishResult(ev); got != 0 {

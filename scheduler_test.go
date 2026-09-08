@@ -708,10 +708,7 @@ func TestSweepStaleReportsWarnsOnlyAboutWhatItCouldNotRemove(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	orig := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(orig) })
-	var logs strings.Builder
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	logs := captureLogs(t, slog.LevelWarn)
 
 	sweepStaleReports(dir)
 

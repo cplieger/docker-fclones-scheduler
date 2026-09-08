@@ -575,8 +575,7 @@ func TestVerifyDirWithProbeBoundsHungProbeByTimeout(t *testing.T) {
 // --- Tests: setupLogger ---
 
 func TestSetupLoggerLevels(t *testing.T) {
-	origDefault := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(origDefault) })
+	restoreLogger(t)
 	ctx := t.Context()
 
 	tests := []struct {
@@ -637,10 +636,7 @@ func TestLoadConfigWarnsOnEmptyScanPaths(t *testing.T) {
 	// branch.
 	t.Setenv("FCLONES_SCAN_PATHS", "   ")
 
-	orig := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(orig) })
-	var logs strings.Builder
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	logs := captureLogs(t, slog.LevelWarn)
 
 	if _, err := loadConfig(); err != nil {
 		t.Fatalf("loadConfig with whitespace FCLONES_SCAN_PATHS: unexpected error: %v", err)
@@ -711,9 +707,6 @@ func TestRunModeStringPanicsOnUnknown(t *testing.T) {
 }
 
 func TestLoadConfigTagsConfigErrorOutcome(t *testing.T) {
-	orig := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(orig) })
-
 	tests := []struct {
 		name   string
 		envVar string
@@ -735,8 +728,7 @@ func TestLoadConfigTagsConfigErrorOutcome(t *testing.T) {
 			}
 			t.Setenv(tt.envVar, tt.value)
 
-			var logs strings.Builder
-			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelError})))
+			logs := captureLogs(t, slog.LevelError)
 
 			if _, err := loadConfig(); err == nil {
 				t.Fatalf("loadConfig(%s=%q) error = nil, want a config error", tt.envVar, tt.value)
