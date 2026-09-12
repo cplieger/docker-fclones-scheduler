@@ -168,7 +168,7 @@ defect, so a config copied from there needs the repeated flag too.
 
 | Mount | Description |
 | --- | --- |
-| `/scandir` | Directory to scan for duplicate files. Must match the paths in `FCLONES_SCAN_PATHS` (space-separated for multiple mounts). The `group` action needs read access only; **`link`/`remove`/`dedupe` modify files here, so `/scandir` must be writable by the `user:` UID** (not a `:ro` mount) for those actions. |
+| `/scandir` | Directory to scan for duplicate files. Must match the paths in `FCLONES_SCAN_PATHS` (space-separated for multiple mounts). The `group` action needs read access only; **`link`/`remove`/`dedupe` modify files here, so `/scandir` must be writable by the `user:` UID** (not a `:ro` mount) for those actions. fclones opens each duplicate for write and only warns when that fails, so a run that finds duplicates and deduplicates none of them is reported as a failed run rather than a silent no-op. |
 | `/cache` | fclones cache and state directory; also holds the last-scan record that lets a restarted container skip a startup scan it already ran. **Must be writable by the UID set in `user:`** (the example uses `1000:1000`). The wrapper write-probes `/cache` at startup; if it is read-only or owned by another UID the container logs `cache directory verification failed uid=<n>` and exits (crash-looping under `restart: unless-stopped`). |
 
 ## Alerting
@@ -240,6 +240,25 @@ groups:
             pairs / 64 KB), viewable in Loki: {container="fclones"} |= "duplicate
             file" (filter by the run's scan_id). Success notification, no action
             required.
+      - alert: FclonesActionReclaimedNothing
+        expr: |
+          sum(count_over_time({container="fclones"} |= "action reclaimed nothing" [2h])) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "fclones deduplicated none of the duplicates it found"
+          description: >
+            A `link`, `remove` or `dedupe` run found duplicate files and
+            processed zero of them, so no space was reclaimed. fclones opens
+            each duplicate for write before acting on it and only warns when
+            that fails, then exits 0. The usual causes are a scan tree that is
+            not writable by the container's UID, or, for `dedupe`, a filesystem
+            with no reflink support. The wrapper fails the run and the container
+            turns unhealthy, recovering on the next run that reclaims
+            something. A `--dry-run` in FCLONES_ACTION_ARGS does not trigger
+            this rule; fclones reports "Would process" for it, which reads as
+            format drift instead.
       - alert: FclonesFormatDrift
         expr: |
           sum(count_over_time({container="fclones"} |= "possible fclones format drift" [2h])) > 0
@@ -263,8 +282,8 @@ groups:
 Thresholds and the `severity` labels are starting points. Adjust the
 `container` selector (or `job` / `service`, depending on your log collector) to
 your deployment; if you run `remove` or `dedupe` instead of `link`, change
-`action="link"` in the first rule to match your `FCLONES_ACTION`. Route by
-whatever labels your Alertmanager uses.
+`action="link"` in `FclonesLinkEstablished` to match your `FCLONES_ACTION`.
+Route by whatever labels your Alertmanager uses.
 
 These rules work in **both scheduling modes**: every run executes in the
 daemon, so its logs always land under the app's own container name. Under
@@ -275,7 +294,7 @@ on your scheduler's own job outcome for extra failure coverage.
 
 ## Healthcheck
 
-The built-in healthcheck (`/app/wrapper health`) checks a marker file the daemon maintains after each run. The container becomes unhealthy when fclones exits non-zero (e.g. scan path missing, permission denied, corrupted cache), the action phase fails (e.g. hardlink across filesystems), the report cannot be decoded, or startup verification fails (e.g. `/cache` is full or read-only). It recovers automatically on the next successful scan; no restart is required.
+The built-in healthcheck (`/app/wrapper health`) checks a marker file the daemon maintains after each run. The container becomes unhealthy when fclones exits non-zero (e.g. scan path missing, permission denied, corrupted cache), the action phase fails (e.g. hardlink across filesystems), a `link`/`remove`/`dedupe` action finds duplicates and deduplicates none of them, the report cannot be decoded, or startup verification fails (e.g. `/cache` is full or read-only). It recovers automatically on the next successful scan; no restart is required.
 
 In built-in mode the boot state follows the last-scan record on `/cache`: with a successful scan younger than `SCAN_INTERVAL` the container starts healthy and skips the startup scan; with no record or a stale one it starts unhealthy, runs the startup scan, and turns healthy when that scan succeeds. After a failed scan and a restart the container also skips the startup scan but starts unhealthy, and it stays unhealthy until the next scheduled scan succeeds (the first tick is at most one `SCAN_INTERVAL` after boot); repeating an expensive failed scan at every restart would redo the same hours of work, so the ticker owns the retry. Built-in mode also arms a freshness deadline of `2 x SCAN_INTERVAL + 2 x SCAN_TIMEOUT`: a marker that old means the interval loop is wedged, so the probe reports unhealthy and Docker restarts the container. The deadline is disabled automatically when `SCAN_TIMEOUT=0`, since the worst-case run duration is then unbounded. In external mode the container starts healthy (idle, nothing has failed), each triggered run updates the marker, and no deadline applies.
 

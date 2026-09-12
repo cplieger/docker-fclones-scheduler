@@ -429,10 +429,25 @@ func resolveActionSummary(log *slog.Logger, act action, stderrOut, stdoutOut str
 	return summary
 }
 
+// actionAccomplishedNothing reports whether a finished mutating action left
+// every duplicate in place. runFclonesAction is reached only when the scan
+// found duplicate groups, so a RECOGNIZED summary reporting zero processed
+// files means fclones exited 0 having done nothing -- the shape a write
+// permission problem anywhere in the scan tree produces, since fclones opens
+// each duplicate for write and only warns when that fails.
+//
+// An unrecognized summary is not evidence either way, so it stays with
+// resolveActionSummary's drift warning. That also keeps a `--dry-run` action
+// out of this: fclones reports "Would process N files and reclaim X space",
+// which ParseActionSummary does not match (measured on v0.35.0).
+func actionAccomplishedNothing(summary parsing.ActionSummary) bool {
+	return summary.Matched && summary.Files == 0
+}
+
 // runFclonesAction executes the post-scan action (remove, link, dedupe) on
 // the report file. It returns nil on success (including the group-only case
 // with no action to run, and shutdown mid-action) and a non-nil error when
-// the action times out or exits non-zero.
+// the action times out, exits non-zero, or completes having deduped nothing.
 func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *slog.Logger, newCmd scheduler.CommandRunner) error {
 	actionCmdArgs, err := buildActionArgs(cfg)
 	if err != nil {
@@ -494,6 +509,21 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 			"stderr_total_bytes", actionStderr.Total(),
 			"stderr_truncated", actionStderr.Truncated(),
 			"cap_bytes", streamCapBytes)
+	}
+
+	if actionAccomplishedNothing(summary) {
+		// fclones exits 0 after failing every operation it attempted, so
+		// nothing else can fail this run: without this the container reports
+		// healthy while reclaiming nothing on every pass.
+		log.Error("action reclaimed nothing; failing the run",
+			"reason", "action_no_op", logKeyOutcome, "action_no_op",
+			"action", cfg.Action,
+			logKeyDurationS, int(duration.Round(time.Second).Seconds()),
+			"files_deduped", summary.Files,
+			"bytes_reclaimed", summary.ReclaimedBytes,
+			"result", linefilter.EscapeUnsafe(summary.RawLine))
+		return fmt.Errorf("%s action reclaimed nothing over the duplicates the scan found: %s",
+			cfg.Action, linefilter.EscapeUnsafe(summary.RawLine))
 	}
 
 	attrs := []any{
