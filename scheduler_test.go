@@ -17,6 +17,7 @@ import (
 
 	"github.com/cplieger/docker-fclones-scheduler/internal/capbuf"
 	"github.com/cplieger/docker-fclones-scheduler/internal/parsing"
+	"github.com/cplieger/scheduler/v4"
 	"pgregory.net/rapid"
 )
 
@@ -861,4 +862,87 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 			t.Errorf("classifyAndLogOutcome(action) log = %q, want the extra action=link attr", out)
 		}
 	})
+}
+
+// --- Tests: runFclonesAction summary verdict ---
+
+// summaryRunner returns a CommandRunner whose child prints line on stderr and
+// exits 0, standing in for an fclones action phase that reports the given
+// summary. fclones prints its summary on stderr, which is where
+// resolveActionSummary looks first.
+func summaryRunner(line string) scheduler.CommandRunner {
+	return func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", `printf '%s\n' "$1" >&2`, "summaryRunner", line)
+	}
+}
+
+// TestRunFclonesActionZeroDedupedFailsTheRun pins the verdict on a mutating
+// action that exits 0: a recognized summary reporting zero processed files is
+// a failed run (fclones logs exactly that when it cannot open a duplicate for
+// write), while an unrecognized one stays a drift warning -- which is what a
+// `--dry-run` action produces, since fclones then reports "Would process".
+func TestRunFclonesActionZeroDedupedFailsTheRun(t *testing.T) {
+	tests := []struct {
+		name     string
+		act      action
+		summary  string
+		wantLine string
+		wantErr  bool
+	}{
+		{
+			name:     "recognized zero summary fails the run",
+			act:      actionLink,
+			summary:  "[2026-01-01 00:00:00.000] fclones:  info: Processed 0 files and reclaimed 0 B space",
+			wantLine: `msg="action reclaimed nothing; failing the run"`,
+			wantErr:  true,
+		},
+		{
+			name:     "an estimated zero fails the run too",
+			act:      actionDedupe,
+			summary:  "[2026-01-01 00:00:00.000] fclones:  info: Processed 0 files and reclaimed up to 0 B space",
+			wantLine: `msg="action reclaimed nothing; failing the run"`,
+			wantErr:  true,
+		},
+		{
+			name:     "recognized non-zero summary completes",
+			act:      actionLink,
+			summary:  "[2026-01-01 00:00:00.000] fclones:  info: Processed 1 files and reclaimed 38 B space",
+			wantLine: `msg="action complete"`,
+		},
+		{
+			name:     "dry-run wording stays a drift warning",
+			act:      actionLink,
+			summary:  "[2026-01-01 00:00:00.000] fclones:  info: Would process 1 files and reclaim 38 B space",
+			wantLine: `msg="action summary not recognized, possible fclones format drift"`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			report := filepath.Join(t.TempDir(), "report.txt")
+			if err := os.WriteFile(report, []byte("{}\n"), 0o600); err != nil {
+				t.Fatalf("Setup: write report: %v", err)
+			}
+			var buf bytes.Buffer
+			log := slog.New(slog.NewTextHandler(&buf, nil))
+			cfg := &config{Action: test.act, PhaseTimeout: time.Minute}
+
+			err := runFclonesAction(t.Context(), cfg, report, log, summaryRunner(test.summary))
+
+			if (err != nil) != test.wantErr {
+				t.Fatalf("runFclonesAction(%q) error = %v, want error: %v", test.summary, err, test.wantErr)
+			}
+			out := buf.String()
+			if !strings.Contains(out, test.wantLine) {
+				t.Errorf("runFclonesAction(%q) log = %q, want it to contain %s", test.summary, out, test.wantLine)
+			}
+			if test.wantErr && !strings.Contains(out, "outcome=action_no_op") {
+				t.Errorf("runFclonesAction(%q) log = %q, want the outcome=action_no_op attr an alert rule keys on", test.summary, out)
+			}
+			if !test.wantErr && strings.Contains(out, "action reclaimed nothing") {
+				t.Errorf("runFclonesAction(%q) log = %q, want no no-op verdict", test.summary, out)
+			}
+		})
+	}
 }
