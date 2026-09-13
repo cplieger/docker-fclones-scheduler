@@ -37,7 +37,8 @@ func probeOptions() []health.ProbeOption {
 	if timeout <= 0 {
 		return nil
 	}
-	return []health.ProbeOption{health.WithMaxAge(2*s.Interval + 2*timeout)}
+	lease := health.Lease{Interval: s.Interval, Cycles: 2, Timeout: timeout, Attempts: 2}
+	return []health.ProbeOption{health.WithMaxAge(lease.Duration())}
 }
 
 // jobHealthSignal translates a finished job into a marker decision. A

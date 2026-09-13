@@ -3,7 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/cplieger/health"
 )
 
 func TestJobHealthSignal(t *testing.T) {
@@ -50,6 +54,15 @@ func TestProbeOptions(t *testing.T) {
 		setEnv(t, "1h", "")
 		if got := probeOptions(); len(got) != 1 {
 			t.Errorf("probeOptions(built-in) returned %d options, want 1 (WithMaxAge armed)", len(got))
+		}
+	})
+
+	t.Run("deadline spans two intervals and two phase timeouts", func(t *testing.T) {
+		setEnv(t, "1h", "30m")
+		absent := filepath.Join(t.TempDir(), "no-marker")
+		got := health.Inspect(absent, probeOptions()...).MaxAge
+		if want := 3 * time.Hour; got != want {
+			t.Errorf("probeOptions(SCAN_INTERVAL=1h, SCAN_TIMEOUT=30m) armed max-age %v, want %v", got, want)
 		}
 	})
 
