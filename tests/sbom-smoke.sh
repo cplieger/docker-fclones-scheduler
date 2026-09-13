@@ -8,7 +8,8 @@
 # here fails the image build. Asserts the fragment that makes the Rust-built
 # fclones payload visible to the signed release SBOM (see the Dockerfile
 # comment) ships correct: exists, JSON-object-shaped, names fclones, and
-# carries the ARG-derived version + purl — a hardcoded version would drift
+# carries the ARG-derived version + purl, and the purl carries the provenance
+# of the fetch this arch's build performed — a hardcoded version would drift
 # silently on the next Renovate bump, which is exactly the failure mode the
 # fragment exists to prevent. Pins the final-stage COPY directive too, so
 # "present in the builder" cannot drift apart from "shipped in the image".
@@ -64,11 +65,45 @@ else
   }
   # The purl must carry the same version: scanners match on the purl, so a
   # drifted purl would silently break advisory matching even with a correct
-  # version field.
-  grep -qF "\"purl\": \"pkg:cargo/fclones@${expected}\"" "$SBOM" || {
-    err "FAIL: embedded SBOM fragment purl is not pkg:cargo/fclones@${expected}"
-    fail=1
-  }
+  # version field. Asserted as a prefix, because the qualifiers that follow the
+  # version differ per arch (below).
+  purl=$(sed -n 's/.*"purl": "\([^"]*\)".*/\1/p' "$SBOM")
+  case "$purl" in
+    "pkg:cargo/fclones@${expected}?"*) ;;
+    *)
+      err "FAIL: embedded SBOM fragment purl is not pkg:cargo/fclones@${expected} with provenance qualifiers (got: ${purl:-none})"
+      fail=1
+      ;;
+  esac
+  # The purl must also carry the provenance of the fetch the build ACTUALLY
+  # performed, since the fragment is the only record of this component in the
+  # signed SBOM. The two arches fetch differently and this stage builds on
+  # whichever arch the runner is, so both shapes are accepted: amd64 downloads a
+  # release asset and sha256-verifies it (download_url + checksum), arm64 clones
+  # the repo at the tag and verifies a commit (vcs_url, and NO checksum, because
+  # a git commit is not a content digest of a fetched artifact). Neither shape
+  # may claim a crates.io download despite the pkg:cargo type: `cargo build
+  # --locked` pulls fclones' dependencies from crates.io, never fclones itself.
+  case "$purl" in
+    *"?download_url=https://github.com/pkolaczk/fclones/releases/download/${FCLONES_EXPECTED_VERSION}/"*"&checksum=sha256:"[0-9a-f]*)
+      log "sbom fragment purl provenance: amd64 release asset + verified sha256"
+      ;;
+    *"?vcs_url=git%2Bhttps://github.com/pkolaczk/fclones.git%40"[0-9a-f]*)
+      case "$purl" in
+        *checksum=*)
+          err "FAIL: embedded SBOM fragment purl claims a checksum for the arm64 git clone; a commit pin is not a content digest"
+          fail=1
+          ;;
+        *)
+          log "sbom fragment purl provenance: arm64 git clone at verified commit"
+          ;;
+      esac
+      ;;
+    *)
+      err "FAIL: embedded SBOM fragment purl carries no provenance for the fetch this build performed (want download_url + checksum on amd64, vcs_url on arm64; got: ${purl:-none})"
+      fail=1
+      ;;
+  esac
 fi
 
 [ "$fail" -eq 0 ] && log "sbom fragment smoke: ok"

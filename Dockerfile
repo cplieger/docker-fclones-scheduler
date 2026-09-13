@@ -36,11 +36,16 @@ ARG FCLONES_SHA256_AMD64=9eae0466e5b78871cf25822e503ee9efbfa28dc36cc167060c4a492
 # every version bump:
 #   git ls-remote https://github.com/pkolaczk/fclones.git "refs/tags/<version>^{}"
 ARG FCLONES_COMMIT=a74f90d293e05856d19a4c0ac2b29b46ef16cf23
+# SC2034 is a false positive here: hadolint's shellcheck does not read the
+# heredoc body below, which is the only consumer of $provenance (measured on
+# hadolint 2.15.1 with a 3-line Dockerfile).
+# hadolint ignore=SC2034
 RUN VERSION="${FCLONES_VERSION#v}" && \
     ARCH=$(dpkg --print-architecture) && \
     if [ "$ARCH" = "amd64" ]; then \
-      curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 -o /tmp/fclones.tar.gz \
-        "https://github.com/pkolaczk/fclones/releases/download/${FCLONES_VERSION}/fclones-${VERSION}-linux-musl-x86_64.tar.gz" && \
+      url="https://github.com/pkolaczk/fclones/releases/download/${FCLONES_VERSION}/fclones-${VERSION}-linux-musl-x86_64.tar.gz" && \
+      provenance="download_url=${url}&checksum=sha256:${FCLONES_SHA256_AMD64}" && \
+      curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 -o /tmp/fclones.tar.gz "$url" && \
       { printf '%s  /tmp/fclones.tar.gz\n' "${FCLONES_SHA256_AMD64}" | sha256sum -c - || { \
         echo "fclones amd64 sha256 pin mismatch: fclones-${VERSION}-linux-musl-x86_64.tar.gz does not match FCLONES_SHA256_AMD64=${FCLONES_SHA256_AMD64}; recompute the sha256 of the new release asset and update ARG FCLONES_SHA256_AMD64 (and FCLONES_COMMIT) for the new version -- see CONTRIBUTING.md" >&2; \
         exit 1; \
@@ -48,6 +53,7 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
       tar xz --strip-components=3 -C /usr/src/fclones -f /tmp/fclones.tar.gz && \
       rm -f /tmp/fclones.tar.gz; \
     elif [ "$ARCH" = "arm64" ]; then \
+      provenance="vcs_url=git%2Bhttps://github.com/pkolaczk/fclones.git%40${FCLONES_COMMIT}" && \
       git clone --branch "${FCLONES_VERSION}" --depth 1 https://github.com/pkolaczk/fclones.git . && \
       { [ "$(git rev-parse HEAD)" = "${FCLONES_COMMIT}" ] || { \
           echo "fclones arm64 commit pin mismatch: ${FCLONES_VERSION} dereferences to $(git rev-parse HEAD) but FCLONES_COMMIT=${FCLONES_COMMIT}; update ARG FCLONES_COMMIT (and FCLONES_SHA256_AMD64) for the new version -- see CONTRIBUTING.md" >&2; \
@@ -58,32 +64,39 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
     else \
       echo "unsupported build architecture: ${ARCH} (expected amd64 or arm64); no integrity pin defined" >&2; \
       exit 1; \
-    fi
-
-# ---------------------------------------------------------------------------
-# Embedded SBOM fragment. The final image is distroless static (no OS package
-# DB) and fclones is a plain Rust release build (not cargo-auditable), so
-# Syft sees the Go wrapper via its embedded buildinfo but /usr/bin/fclones is
-# invisible to the signed release SBOM and to vulnerability scanners.
-# Generate a CycloneDX fragment from the same Renovate-tracked
-# FCLONES_VERSION ARG the build pins — a Renovate bump keeps the SBOM correct
-# with zero extra maintenance — and ship it in the final image (see the COPY
-# there) where Syft's sbom-cataloger picks it up. The cataloger is enabled
-# centrally by the release pipeline (cplieger/ci); no per-repo .syft.yaml is
-# needed.
-# purl: pkg:cargo/fclones — fclones IS the crates.io-published crate of the
-# same name (bin name `fclones`, published by upstream pkolaczk), and the
-# cargo purl type keys scanners into the RustSec/GHSA crates ecosystem, the
-# strongest advisory matching available for a Rust payload; a pkg:github
-# purl would carry forge provenance but match almost no advisory data. The
-# version is identical on both provenance paths — amd64 ships the upstream
-# prebuilt musl release tarball, arm64 builds the same release from source
-# at the pinned FCLONES_COMMIT — so this one component covers both.
-# cpe: omitted — the NVD CPE dictionary carries no fclones entry as of
-# 2026-07-22 (keyword search: 0 products); do not invent one. Add the field
-# if NVD ever assigns fclones a CPE.
-# ---------------------------------------------------------------------------
-RUN cat > /usr/src/fclones-scheduler.cdx.json <<EOF
+    fi && \
+    # Embedded SBOM fragment. The final image is distroless static (no OS package
+    # DB) and fclones is a plain Rust release build (not cargo-auditable), so
+    # Syft sees the Go wrapper via its embedded buildinfo but /usr/bin/fclones is
+    # invisible to the signed release SBOM and to vulnerability scanners.
+    # Generate a CycloneDX fragment from the same Renovate-tracked
+    # FCLONES_VERSION ARG the build pins — a Renovate bump keeps the SBOM correct
+    # with zero extra maintenance — and ship it in the final image (see the COPY
+    # there) where Syft's sbom-cataloger picks it up. The cataloger is enabled
+    # centrally by the release pipeline (cplieger/ci); no per-repo .syft.yaml is
+    # needed. Emitted from this RUN, not a later one, so the purl's provenance
+    # qualifiers are the values this same shell fetched and verified.
+    # purl: pkg:cargo/fclones — fclones IS the crates.io-published crate of the
+    # same name (bin name `fclones`, published by upstream pkolaczk), and the
+    # cargo purl type keys scanners into the RustSec/GHSA crates ecosystem, the
+    # strongest advisory matching available for a Rust payload; a pkg:github
+    # purl would carry forge provenance but match almost no advisory data. The
+    # version is identical on both provenance paths — amd64 ships the upstream
+    # prebuilt musl release tarball, arm64 builds the same release from source
+    # at the pinned FCLONES_COMMIT — so this one component covers both.
+    # ${provenance}: the type-agnostic purl qualifiers that tie the purl to the
+    # bytes, and the two arches do not fetch the same way. amd64 carries
+    # download_url of the release asset it downloaded plus checksum=sha256 of
+    # the pin it verified. arm64 carries vcs_url of the tagged clone at the
+    # commit it verified, and deliberately no checksum: a git commit is not a
+    # content digest of a fetched artifact, so a checksum there would be a false
+    # claim. Neither arch fetches from crates.io despite the purl type, and
+    # nothing added here may say it does -- `cargo build --locked` pulls
+    # fclones' DEPENDENCIES from crates.io and never the fclones crate itself.
+    # cpe: omitted — the NVD CPE dictionary carries no fclones entry as of
+    # 2026-07-22 (keyword search: 0 products); do not invent one. Add the field
+    # if NVD ever assigns fclones a CPE.
+    cat > /usr/src/fclones-scheduler.cdx.json <<EOF
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
@@ -94,7 +107,7 @@ RUN cat > /usr/src/fclones-scheduler.cdx.json <<EOF
       "type": "application",
       "name": "fclones",
       "version": "${FCLONES_VERSION#v}",
-      "purl": "pkg:cargo/fclones@${FCLONES_VERSION#v}"
+      "purl": "pkg:cargo/fclones@${FCLONES_VERSION#v}?${provenance}"
     }
   ]
 }
