@@ -137,9 +137,17 @@ intact when touching `config.go` or `scheduler.go`:
   key/value pairs: `slog.Info("scan complete", "groups", n)`, never a
   formatted string.
 - `main()` orchestration and the `exec.Command` calls to the `fclones` binary
-  are intentionally not unit-tested (process-level I/O, validated by container
-  logs and alerting). New logic in `internal/` or in config/arg parsing is
-  expected to come with tests.
+  are intentionally not unit-tested (process-level I/O). The image smoke test
+  (`tests/image-smoke.conf`, run by CI through the synced
+  `tests/image-smoke.sh`) covers the exec end to end: it boots the assembled
+  image in external mode, triggers a real `link` run through `wrapper scan`
+  against a generated fixture (one duplicate pair plus one unique file, no
+  network) and checks on the host that the pair now shares an inode, runs a
+  second scan that must report a real zero, and then overwrites
+  `/usr/bin/fclones` in the container with an unexecutable file and asserts
+  that the next run is reported as failed by the `scan` exit code, by the
+  daemon's `scan failed` log line and by `wrapper health`. New logic in
+  `internal/` or in config/arg parsing is expected to come with tests.
 - Tests are property-based ([rapid](https://github.com/flyingmutant/rapid)) and
   table-driven, and live beside the code (`*_test.go`, `*_fuzz_test.go`).
   Property tests assert parsing never panics on arbitrary input and that
@@ -179,10 +187,11 @@ go test -run '^$' -fuzz FuzzParse -fuzztime 30s ./internal/args
 ```
 
 To build the multi-stage image (Rust builder for `fclones`, Go builder, then
-distroless):
+distroless) and run the smoke test against it:
 
 ```sh
 docker build -t fclones-scheduler .
+sh tests/image-smoke.sh fclones-scheduler
 ```
 
 ## Commits and PRs
