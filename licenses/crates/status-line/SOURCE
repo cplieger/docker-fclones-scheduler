@@ -1,0 +1,7 @@
+crate: status-line 0.2.0
+license: MIT (Cargo.toml)
+repository: https://github.com/pkolaczk/status-line
+note: No license text is available to ship. The published crate carries none, and the
+repository has no tags and none anywhere in its tree at commit
+e882db76176acfe5d1d85e7585aa0783e80eca31; its README states MIT only as a badge. The
+line above is upstream's own declaration; no text has been substituted for it.

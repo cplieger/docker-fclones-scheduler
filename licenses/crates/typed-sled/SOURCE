@@ -1,0 +1,7 @@
+crate: typed-sled 0.2.3
+license: MIT (Cargo.toml)
+repository: https://github.com/chronicl/typed-sled
+note: No license text is available to ship. The published crate carries none, and the
+repository has no tags and none anywhere in its tree at commit
+6378b459078dde9f41eaf3ea0104f838c37250a7. The line above is upstream's own declaration;
+no text has been substituted for it.

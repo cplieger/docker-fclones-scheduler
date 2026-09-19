@@ -1,7 +1,9 @@
 # Docker build context excludes. Docker does NOT honor .gitignore, so without
 # this file the entire repo directory is uploaded to the daemon on every build --
 # including the gitignored Kiro artifact tree (.code-review can be multiple GB).
-# The go-builder stage only needs go.mod/go.sum, the non-test *.go sources, and internal/.
+# The go-builder stage needs go.mod/go.sum, the non-test *.go sources, internal/, the
+# license files the image ships under /usr/share/licenses, and the collectors that build
+# that tree.
 
 # Kiro skill artifacts (gitignored, but Docker still ships them)
 **/.code-review/
@@ -18,7 +20,9 @@
 
 # Docs and tooling config not consumed by the build
 *.md
-LICENSE
+!THIRD_PARTY_NOTICES.md
+!licenses/
+!licenses/**
 compose.yaml
 cliff.toml
 renovate.json

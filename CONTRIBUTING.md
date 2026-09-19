@@ -102,27 +102,43 @@ intact when touching `config.go` or `scheduler.go`:
   repeatable option at one value per occurrence (clap's default for a `Vec`
   field, and fclones' config sets no `num_args` or `value_delimiter`); a bump
   that makes a filter greedy would turn the gate into a false rejection.
-- When the `FCLONES_VERSION` Renovate PR bumps the version, four coupled
+- When the `FCLONES_VERSION` Renovate PR bumps the version, six coupled
   artifacts must move in lockstep (each fail-closes the build if stale, so a
-  broken build after a bump usually means one was missed). The first is
-  automated; the other three still need a human on every bump:
+  broken build after a bump usually means one was missed). The first two are
+  automated; the other four still need a human on every bump:
   1. `ARG FCLONES_SHA256_AMD64` (Dockerfile): recomputed in the bump PR itself
      by the repin `postUpgradeTasks` script, which reads the `# repin:` marker
      above the ARG for the release-asset URL. Only touch it by hand if the PR
      body reports an artifact problem for that task.
-  2. `ARG FCLONES_COMMIT` (Dockerfile): set to the commit the new
+  2. `ARG FCLONES_LICENSE_SHA256` (Dockerfile): the sha256 of fclones' own
+     `LICENSE` at the new tag, which amd64 ships under
+     `/usr/share/licenses/fclones/`. Recomputed by the same repin task from its
+     own `# repin:` marker, so it needs a human only when that task reports a
+     problem. It changes only when upstream edits the license text.
+  3. `ARG FCLONES_COMMIT` (Dockerfile): set to the commit the new
      `FCLONES_VERSION` tag dereferences to (`git rev-parse <tag>`); tags are
      mutable, so the arm64 source build pins the commit.
-  3. The `Audited against fclones <version>;` comment in `config.go`: diff
+  4. The `Audited against fclones <version>;` comment in `config.go`: diff
      `fclones group --help` and `fclones <action> --help` for any new flag
      that executes an external command or mutates files in-place, extend
      `dangerousFlags` accordingly, and bump the audit comment to the new
      version (the go-builder grep gate refuses to build until it matches).
-  4. The `internal/parsing` decoders: re-verify the JSON report schema at
+  5. The `internal/parsing` decoders: re-verify the JSON report schema at
      the new tag (`fclones/src/report.rs`: the `header`/`groups` shape,
      `ReportHeader.stats` remaining `Option<FileStats>`, `FileGroup`'s
      `file_len`/`files` fields) and the text action-summary wording
      (`Processed … reclaimed …`; see Conventions and gotchas).
+  6. `licenses/crates/`, the committed license text of every crate fclones
+     links: run `sh scripts/vendor-crate-licenses.sh` and commit what it
+     writes. amd64 ships upstream's prebuilt binary, so that build has no
+     crate sources for `scripts/collect-cargo-licenses.sh` to walk and the
+     committed tree is what it ships; the arm64 source build collects its own
+     and refuses to build when the two sets disagree. A crate whose publisher
+     ships no license file at all fails the script closed with its declared
+     license and repository: fetch the text from that repository at that
+     version by hand into `licenses/crates/<crate>/` with a `SOURCE` file
+     recording where it came from, and where upstream publishes none, say so
+     in `SOURCE` and add no text.
 - Memory is bounded on purpose: per-stream capture (`streamCapBytes`,
   bounding fclones' stderr and the action phase's stdout) and the
   duplicate-log detail (`logDetailCapBytes`). The scan report needs no cap:

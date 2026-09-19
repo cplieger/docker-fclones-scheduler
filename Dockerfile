@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     gcc-aarch64-linux-gnu \
     libc6-dev-arm64-cross \
+    jq \
     && rm -rf /var/lib/apt/lists/*
 RUN rustup target add aarch64-unknown-linux-musl
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
@@ -36,6 +37,14 @@ ARG FCLONES_SHA256_AMD64=9eae0466e5b78871cf25822e503ee9efbfa28dc36cc167060c4a492
 # every version bump:
 #   git ls-remote https://github.com/pkolaczk/fclones.git "refs/tags/<version>^{}"
 ARG FCLONES_COMMIT=a74f90d293e05856d19a4c0ac2b29b46ef16cf23
+# The release tarball holds the binary and nothing else, so amd64 fetches the license
+# text at the pinned tag; arm64 takes it from the clone the commit pin verifies.
+# repin: dep=pkolaczk/fclones url=https://raw.githubusercontent.com/pkolaczk/fclones/{version}/LICENSE
+ARG FCLONES_LICENSE_SHA256=fa876876689ee8c7ad01e3d332f53502bece80de772d4239dced8f3398014000
+COPY scripts/collect-cargo-licenses.sh /usr/local/bin/
+# The committed crate license set. amd64 ships it as-is (a prebuilt binary leaves no
+# crate sources to collect from); arm64 collects its own and diffs the two.
+COPY licenses/crates/ /licenses/crates/
 # SC2034 is a false positive here: hadolint's shellcheck does not read the
 # heredoc body below, which is the only consumer of $provenance (measured on
 # hadolint 2.15.1 with a 3-line Dockerfile).
@@ -51,7 +60,14 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
         exit 1; \
       }; } && \
       tar xz --strip-components=3 -C /usr/src/fclones -f /tmp/fclones.tar.gz && \
-      rm -f /tmp/fclones.tar.gz; \
+      rm -f /tmp/fclones.tar.gz && \
+      curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 5 -o /tmp/fclones-LICENSE "https://raw.githubusercontent.com/pkolaczk/fclones/${FCLONES_VERSION}/LICENSE" && \
+      { printf '%s  /tmp/fclones-LICENSE\n' "${FCLONES_LICENSE_SHA256}" | sha256sum -c - || { \
+        echo "fclones LICENSE sha256 pin mismatch: ${FCLONES_VERSION}/LICENSE does not match FCLONES_LICENSE_SHA256=${FCLONES_LICENSE_SHA256}; recompute the sha256 of the license text at the new tag and update ARG FCLONES_LICENSE_SHA256 -- see CONTRIBUTING.md" >&2; \
+        exit 1; \
+      }; } && \
+      install -D -m 644 /tmp/fclones-LICENSE /out/usr/share/licenses/fclones/LICENSE && \
+      for crate in /licenses/crates/*/; do cp -R "$crate" /out/usr/share/licenses/; done; \
     elif [ "$ARCH" = "arm64" ]; then \
       provenance="vcs_url=git%2Bhttps://github.com/pkolaczk/fclones.git%40${FCLONES_COMMIT}" && \
       git clone --branch "${FCLONES_VERSION}" --depth 1 https://github.com/pkolaczk/fclones.git . && \
@@ -60,7 +76,15 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
           exit 1; \
         }; } && \
       cargo build --locked --release --target aarch64-unknown-linux-musl && \
-      mv target/aarch64-unknown-linux-musl/release/fclones /usr/src/fclones/fclones; \
+      mv target/aarch64-unknown-linux-musl/release/fclones /usr/src/fclones/fclones && \
+      install -D -m 644 LICENSE /out/usr/share/licenses/fclones/LICENSE && \
+      sh /usr/local/bin/collect-cargo-licenses.sh --out /out/usr/share/licenses --fallback /licenses/crates && \
+      cut -d' ' -f1 /licenses/crates/MANIFEST | sort -u >/tmp/manifest-crates && \
+      find /out/usr/share/licenses -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | grep -vx fclones | sort -u >/tmp/collected-crates && \
+      { diff -u /tmp/manifest-crates /tmp/collected-crates || { \
+        echo "the crates this build collected differ from licenses/crates/MANIFEST (- manifest, + collected); run scripts/vendor-crate-licenses.sh and commit the result" >&2; \
+        exit 1; \
+      }; }; \
     else \
       echo "unsupported build architecture: ${ARCH} (expected amd64 or arm64); no integrity pin defined" >&2; \
       exit 1; \
@@ -135,6 +159,10 @@ RUN grep -qF "Audited against fclones ${FCLONES_VERSION};" config.go || { \
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /wrapper .
+COPY LICENSE NOTICE ./
+COPY scripts/collect-licenses.sh scripts/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    sh scripts/collect-licenses.sh --name docker-fclones-scheduler .
 
 # ---------------------------------------------------------------------------
 # SBOM test stage — asserts the embedded CycloneDX fragment ships correct
@@ -160,6 +188,8 @@ FROM gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55
 WORKDIR /app
 COPY --chmod=755 --from=fclones-builder /usr/src/fclones/fclones /usr/bin/fclones
 COPY --chmod=755 --from=go-builder /wrapper /app/wrapper
+COPY --from=fclones-builder /out/usr/share/licenses /usr/share/licenses
+COPY --from=go-builder /out/usr/share/licenses /usr/share/licenses
 # CycloneDX SBOM fragment for the Rust-built fclones payload (generated in
 # the fclones-builder stage from the Renovate-tracked version ARG). Placed
 # where the release pipeline's Syft sbom-cataloger inventories it, so SBOMs

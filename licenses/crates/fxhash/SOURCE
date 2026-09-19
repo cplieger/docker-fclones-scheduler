@@ -1,0 +1,7 @@
+crate: fxhash 0.2.1
+license: Apache-2.0/MIT (Cargo.toml)
+repository: https://github.com/cbreeden/fxhash
+note: No license text is available to ship. The published crate carries none, and the
+repository has no tags and none anywhere in its tree at commit
+a03cbf42dde010250adef75908f109be197d982b. The line above is upstream's own declaration;
+no text has been substituted for it.
