@@ -1,0 +1,7 @@
+crate: ansi-escapes 0.1.1
+license: MIT (Cargo.toml)
+repository: https://github.com/LinusU/rust-ansi-escapes
+note: No license text is available to ship. The published crate carries none, and the
+repository carries none at tag v0.1.1 or anywhere in its tree at commit
+80b694540e39a6eb87cbe44d9a1263d8374c7ab9. The line above is upstream's own declaration;
+no text has been substituted for it.

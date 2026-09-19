@@ -1,0 +1,7 @@
+crate: winapi-i686-pc-windows-gnu 0.4.0
+license: MIT/Apache-2.0 (Cargo.toml)
+source: https://raw.githubusercontent.com/retep998/winapi-rs/5b1829956ef645f3c2f8236ba18bb198ca4c2468/i686/LICENSE-APACHE
+source: https://raw.githubusercontent.com/retep998/winapi-rs/5b1829956ef645f3c2f8236ba18bb198ca4c2468/i686/LICENSE-MIT
+note: The published crate carries no license file even though its own Cargo.toml include
+list names both; the texts come from the crate's directory in the repository. Upstream
+tags only the parent winapi crate, so the commit above is the 0.3 branch head.

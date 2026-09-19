@@ -1,0 +1,7 @@
+crate: priority-queue 1.3.2
+license: LGPL-3.0 OR MPL-2.0 (Cargo.toml)
+source: https://static.crates.io/crates/priority-queue/priority-queue-1.3.2.crate
+files: LGPL-3.0-or-later.txt, MPL-2.0.txt
+note: Upstream publishes both texts at the crate root under SPDX names, which the
+LICENSE*/LICENCE*/COPYING*/NOTICE* match does not reach, so they are taken from the
+published crate itself rather than from the repository, whose only tags start at 2.0.0.

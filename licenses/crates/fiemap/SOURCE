@@ -1,0 +1,6 @@
+crate: fiemap 0.1.1
+license: BSD-2-Clause (Cargo.toml)
+source: https://raw.githubusercontent.com/lilydjwg/fiemap-rs/96d5176e4f2a1ac143936a06156e29e0eddc6891/fiemap/LICENSE
+note: The published crate carries no license file. Upstream publishes no tag, so the
+text comes from the commit above. The repository root's LICENSE is a symlink to the
+crate subdirectory's copy, which is the file fetched here.
