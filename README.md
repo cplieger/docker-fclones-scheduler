@@ -85,7 +85,7 @@ Settings are environment variables, read once at start, so recreate the containe
 
 The image opens no ports. An outside scheduler starts a scan with `docker exec fclones /app/wrapper scan`, through a local socket that only the container's own user can open. The container runs as the user that `user:` names, on a distroless base with no shell. Without a `user:` line it runs as UID 65532. `FCLONES_ACTION` must be one of the four actions.
 
-The fclones options that run a command or change a file in place are refused unless `ALLOW_UNSAFE_ARGS` is `true`. Leave it `false` unless you need one of them, such as `--transform`. Options reach fclones as a list, with no shell to expand them. [Security](docs/security.md) has a hardened compose example and what the image contains.
+The fclones options that run a command or change a file in place are refused unless `ALLOW_UNSAFE_ARGS` is `true`. Leave it `false` unless you need one of them, such as `--transform`. Options reach fclones as a list, with no shell to expand them. [Security](docs/hardening.md) has a hardened compose example and what the image contains.
 
 ## Troubleshooting
 
@@ -105,7 +105,7 @@ docker-fclones-scheduler writes logfmt lines with UTC times to its container log
 - [Configuration](docs/configuration.md) covers the scheduling modes, extra fclones options and a slow first scan.
 - [How it works](docs/how-it-works.md) explains the schedule, the two phases of a run and the health rules.
 - [Monitoring and alerts](docs/monitoring.md) lists the log lines and the alert rules.
-- [Security](docs/security.md) has the hardened compose example and what the image contains.
+- [Security](docs/hardening.md) has the hardened compose example and what the image contains.
 
 ## Credits
 
