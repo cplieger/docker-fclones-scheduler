@@ -1,31 +1,13 @@
 # Recommended LogQL alert rules for docker-fclones-scheduler, for Loki's ruler.
-# Ship the container's logs to Loki and load this file into Loki's ruler.
-# Grafana Alloy's Docker log discovery ships them with no extra configuration.
-# Firing alerts go through your Alertmanager like any Prometheus alert.
 # Thresholds and severity labels are starting points. Change the container
 # selector to the label your log collector sets, such as job or service.
-# The rules work with the built-in schedule and with an outside trigger,
-# because every scan runs in the container's own process and logs there.
+# Setup, window sizing and per-alert notes are in docs/monitoring.md.
 groups:
   - name: fclones
     rules:
-      # A deadman. The other rules fire on a line the container logged, so a
-      # stuck schedule that logs nothing trips none of them. This one fires on
-      # silence instead.
-      #
-      # The 28h window comes from the run time, not from the interval.
-      # SCAN_TIMEOUT defaults to 12h for each of the two phases, and the
-      # container logs "scan complete" after the scan phase and before the
-      # action phase. So two of these lines can sit up to 12h of action, plus
-      # the interval, plus 12h of the next scan apart. A restart adds nothing,
-      # because the last-scan record on /cache keeps the schedule in step.
-      # If you change SCAN_TIMEOUT or SCAN_INTERVAL, set the window to two
-      # phase timeouts plus the interval, plus a margin. With SCAN_TIMEOUT=0
-      # the phases have no limit and no window is safe.
-      #
-      # With SCAN_INTERVAL=off, size the window as two phase timeouts plus
-      # the cadence of your outside scheduler. With SCAN_INTERVAL=0, drop this
-      # rule, because a container that exits after one scan is silent on purpose.
+      # A deadman. It fires on silence, so it catches a stuck schedule that
+      # logs nothing. The 28h window fits the default SCAN_TIMEOUT and
+      # SCAN_INTERVAL. docs/monitoring.md shows how to resize it.
       - alert: FclonesScanStalled
         expr: |
           absent_over_time({container="fclones"} |= "scan complete" [28h])
@@ -33,17 +15,12 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "no fclones scan-completion heartbeat in 28h"
+          summary: "No fclones scan has completed in 28h"
           description: >
-            The container logs a `scan complete` line at the end of every scan
-            phase, including one that found no duplicates, and none has arrived
-            in 28h. The usual cause is a stuck schedule, a scan running past its
-            phase timeout, or nothing triggering scans with SCAN_INTERVAL=off.
-            This rule cannot tell that apart from a container that never
-            started or was renamed, or a log pipeline that stopped shipping this
-            stream, so rule those out first. The healthcheck covers the same
-            failure with the built-in schedule, but only where something acts
-            on an unhealthy container.
+            No `scan complete` line has arrived in 28h. Check for a stuck
+            schedule, a scan past its phase timeout, or no outside trigger with
+            SCAN_INTERVAL=off. Also check that the container runs and its logs
+            reach Loki.
       - alert: FclonesLinkEstablished
         expr: |
           sum by (files_deduped, reclaimed_human) (
@@ -55,14 +32,12 @@ groups:
         labels:
           severity: info
         annotations:
-          summary: "fclones linked {{ $labels.files_deduped }} duplicate files (reclaimed {{ $labels.reclaimed_human }})"
+          summary: "fclones linked {{ $labels.files_deduped }} duplicate files and reclaimed {{ $labels.reclaimed_human }}"
           description: >
             fclones replaced {{ $labels.files_deduped }} duplicate files with
-            hardlinks and freed {{ $labels.reclaimed_human }}. The linked paths
-            are in the same scan's `duplicate file` log lines, up to 500 pairs
-            or 64 KB per scan. Find them in Loki with
-            {container="fclones"} |= "duplicate file" and filter by the scan's
-            scan_id. This is a success notice and needs no action.
+            hardlinks and freed {{ $labels.reclaimed_human }}. The scan's
+            `duplicate file` log lines list the linked paths. This is a success
+            notice and needs no action.
       - alert: FclonesActionReclaimedNothing
         expr: |
           sum(count_over_time({container="fclones"} |= "action reclaimed nothing" [2h])) > 0
@@ -72,15 +47,10 @@ groups:
         annotations:
           summary: "fclones deduplicated none of the duplicates it found"
           description: >
-            A link, remove or dedupe run found duplicate files and processed
-            none of them, so no space was freed. fclones opens each duplicate
-            for writing before it acts on it, only warns when that fails, and
-            then exits 0. The usual causes are a scanned folder the container's
-            user cannot write to, or, for dedupe, a filesystem with no reflink
-            support. The container fails the run and turns unhealthy, and it
-            recovers on the next run that frees space. A --dry-run in
-            FCLONES_ACTION_ARGS does not trigger this rule. fclones then
-            reports "Would process", which reads as format drift instead.
+            A link, remove or dedupe run found duplicates and freed no space.
+            Check that the container's user can write to the scanned folders.
+            For dedupe, check that the filesystem supports reflinks. The
+            container stays unhealthy until a run frees space.
       - alert: FclonesFormatDrift
         expr: |
           sum(count_over_time({container="fclones"} |= "possible fclones format drift" [2h])) > 0
@@ -88,14 +58,9 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "fclones output-format drift detected (action stats may be unreliable)"
+          summary: "fclones output-format drift detected, so action stats may be unreliable"
           description: >
-            The container logged "possible fclones format drift". It did not
-            recognize the summary line of the action phase, so files_deduped
-            and bytes_reclaimed on the "action complete" line may read zero
-            even though work happened. The action still runs and the run still
-            succeeds, so a job-failure or restart alert would not catch this.
-            The scan report is covered separately. It is read strictly, and an
-            unreadable report fails the run with outcome=decode_error. Check
-            the fclones version against the summary formats the container
-            recognizes.
+            The container did not recognize the summary line of the fclones
+            action, so files_deduped and bytes_reclaimed may read zero after
+            real work. The run still succeeds. Check the fclones version against
+            the summary formats the container recognizes.
