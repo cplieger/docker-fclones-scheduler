@@ -113,7 +113,7 @@ This project packages [fclones](https://github.com/pkolaczk/fclones) (MIT) into 
 
 ## Contributing
 
-Issues and pull requests are welcome. Please open an issue first for larger changes, and see [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Disclaimer
 
