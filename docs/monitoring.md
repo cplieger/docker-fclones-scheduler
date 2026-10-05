@@ -34,8 +34,20 @@ Ship the container's logs to Loki, and load the rules in [`alerts/logql.yaml`](.
 | `FclonesActionReclaimedNothing` | a `link`, `remove` or `dedupe` run found duplicates and processed none of them | warning |
 | `FclonesFormatDrift` | the container did not recognize the summary of the fclones action | warning |
 
-The 28h window of `FclonesScanStalled` fits the default `SCAN_TIMEOUT` of 12h for each of the two phases plus the default `SCAN_INTERVAL` of 3h, with 1h to spare. Set it to two phase timeouts plus your interval, plus a margin. With `SCAN_INTERVAL=off`, use two phase timeouts plus the cadence of your scheduler. With `SCAN_INTERVAL=0`, drop the rule, because a container that exits after one scan is silent on purpose. With an outside scheduler you can also alert on your scheduler's own job result, because the `scan` command exits with the scan's result.
-
-If you run `remove` or `dedupe` instead of `link`, change `action="link"` in `FclonesLinkEstablished` to match your `FCLONES_ACTION`.
-
 Thresholds and the `severity` labels are starting points. Change the `container` selector to the label your log collector sets, such as `job` or `service`. Route by whatever labels your Alertmanager uses.
+
+### Notes on each alert
+
+`FclonesScanStalled` fires on silence. The other rules fire on a line the container logged, so a stuck schedule that logs nothing trips none of them. The container logs `scan complete` after the scan phase and before the action phase. Two of these lines can therefore sit up to 12h of action, plus the interval, plus 12h of the next scan apart.
+
+The 28h window of `FclonesScanStalled` fits the default `SCAN_TIMEOUT` of 12h for each of the two phases plus the default `SCAN_INTERVAL` of 3h, with 1h to spare. Set it to two phase timeouts plus your interval, plus a margin.
+
+With `SCAN_TIMEOUT=0`, the phases have no limit and no window is safe. With `SCAN_INTERVAL=off`, use two phase timeouts plus the cadence of your scheduler. With `SCAN_INTERVAL=0`, drop the rule, because a container that exits after one scan is silent on purpose. A restart adds nothing to the gap, because the last-scan record on `/cache` keeps the schedule in step. With an outside scheduler you can also alert on your scheduler's own job result, because the `scan` command exits with the scan's result.
+
+`FclonesScanStalled` cannot tell a stuck schedule apart from a container that never started or was renamed, or a log pipeline that stopped shipping this stream. Rule those out first. The healthcheck covers the same failure with the built-in schedule, but only where something acts on an unhealthy container.
+
+`FclonesLinkEstablished` is a success notice. The linked paths are in the same scan's `duplicate file` lines. Find them in Loki with `{container="fclones"} |= "duplicate file"` and filter by the scan's `scan_id`. If you run `remove` or `dedupe` instead of `link`, change `action="link"` in the rule to match your `FCLONES_ACTION`.
+
+`FclonesActionReclaimedNothing` exists because fclones opens each duplicate for writing before it acts on it, only warns when that fails, and then exits 0. The usual causes are a scanned folder the container's user cannot write to, or, for `dedupe`, a filesystem with no reflink support. The container fails the run and turns unhealthy, and it recovers on the next run that frees space. A `--dry-run` in `FCLONES_ACTION_ARGS` does not trigger this rule. fclones then reports "Would process", which reads as format drift instead.
+
+`FclonesFormatDrift` matters because the action still runs and the run still succeeds, so a job-failure or restart alert would not catch it. Only `files_deduped` and `bytes_reclaimed` on the `action complete` line may be wrong. The scan report is covered separately. It is read strictly, and an unreadable report fails the run with `outcome=decode_error`.
