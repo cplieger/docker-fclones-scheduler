@@ -25,7 +25,7 @@ With an outside scheduler, the `wrapper scan` command writes only its own short 
 
 ## Alerting
 
-Ship the container's logs to Loki, and load the rules in [`alerts/logql.yaml`](../alerts/logql.yaml) into [Loki's ruler](https://grafana.com/docs/loki/latest/alert/). Grafana Alloy's Docker log discovery ships the logs with no extra configuration. Firing alerts go through your Alertmanager like any Prometheus alert. The rules work with the built-in schedule and with an outside scheduler, because every scan runs in the container's main process and logs there.
+Load the rules in [`alerts/logql.yaml`](../alerts/logql.yaml) into Loki's ruler, as [Loading an app's alert rules](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#loading-an-apps-alert-rules) shows. The rules work with the built-in schedule and with an outside scheduler, because every scan runs in the container's main process and logs there.
 
 | Alert | Fires when | Severity |
 | --- | --- | --- |
