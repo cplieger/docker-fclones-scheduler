@@ -236,8 +236,7 @@ const (
 )
 
 // Dangerous fclones flags that execute arbitrary commands or modify files in
-// place. Audited against fclones v0.35.0; re-audit on FCLONES_VERSION bump
-// (the docker-fclones-scheduler steering doc names the exact-match caveats).
+// place. Audited against fclones v0.35.0; re-audit on FCLONES_VERSION bump.
 var dangerousFlags = []string{flagTransform, flagInPlace, flagNoCopy}
 
 // wrapperOwnedFlags are fclones flags the wrapper itself appends
@@ -318,16 +317,11 @@ func validateArgEnvs(argsStr, actionArgs, scanPaths string) error {
 }
 
 // rejectPositionalArgs blocks bare (non-flag) tokens in a flags-only env var.
-// Every fclones repeatable option takes exactly one value per occurrence, so
-// a second bare token is read as another scan path rather than another
-// pattern (issue #509; see the docker-fclones-scheduler steering doc "fclones
-// flag arity" for the full mechanism and the upstream README example it
-// breaks). A stray token naming a real directory silently widens the scan,
-// and link/remove/dedupe then mutate files outside FCLONES_SCAN_PATHS.
-//
-// A bare token is accepted only directly after a flag (its value). "--" is
-// rejected too: it ends clap's option parsing, so every token after it
-// becomes a scan path.
+// Every fclones repeatable option takes one value per occurrence, so a second
+// bare token is read as another scan path (issue #509): a stray directory
+// silently widens the scan, and link/remove/dedupe then mutate files outside
+// FCLONES_SCAN_PATHS. A bare token is accepted only as a flag's value. "--" is
+// rejected too, because clap reads every token after it as a scan path.
 func rejectPositionalArgs(raw, envVar string) error {
 	parsed, err := parseArgString(raw, envVar)
 	if err != nil {
