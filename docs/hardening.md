@@ -39,7 +39,7 @@ The `/tmp` tmpfs holds the trigger socket, the health file and the home folder t
 | Distroless static, nonroot | [Distroless](https://github.com/GoogleContainerTools/distroless) |
 | fclones | [GitHub](https://github.com/pkolaczk/fclones) |
 
-[Renovate](https://github.com/renovatebot/renovate) keeps these up to date. Base images are pinned by digest, and the fclones download is pinned too, by the tarball's sha256 on `amd64` and by commit on `arm64`, where the image builds fclones from source. Each image carries a signed SBOM and provenance attestations. [Reading the software bill of materials](https://github.com/cplieger/docs/blob/main/docs/images.md#reading-the-software-bill-of-materials) and [Checking with the GitHub CLI](https://github.com/cplieger/docs/blob/main/docs/images.md#checking-with-the-github-cli) show how to check the SBOM.
+[Renovate](https://github.com/renovatebot/renovate) keeps these up to date. Base images are pinned by digest, and the fclones download is pinned too, by the tarball's sha256 on `amd64` and by commit on `arm64`, where the image builds fclones from source. Each image carries a signed SBOM and the build provenance Docker records. [Reading the software bill of materials](https://github.com/cplieger/docs/blob/main/docs/images.md#reading-the-software-bill-of-materials) and [Checking with the GitHub CLI](https://github.com/cplieger/docs/blob/main/docs/images.md#checking-with-the-github-cli) show how to check the SBOM.
 
 ## Accepted scanner findings
 
