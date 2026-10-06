@@ -1,14 +1,11 @@
 #!/bin/sh
-# Copy every resolved crate's license files into the /usr/share/licenses tree of
-# attribution.md section 4, for the Rust payload built from source in this image.
+# Copy every resolved crate's license files into the /usr/share/licenses tree,
+# for the Rust payload built from source in this image.
 # usage: collect-cargo-licenses.sh [--out DIR] [--fallback DIR], run from the cargo workspace root
 # after `cargo build`, so every crate is already unpacked in the registry cache.
-# Repo-owned, unlike its Go sibling scripts/collect-licenses.sh: fclones is the only
-# cargo build among the cplieger images, so there is nothing to share it with.
 # A crate with no license file at its root takes the committed copy under
-# --fallback DIR/<crate>/ (the by-hand texts scripts/vendor-crate-licenses.sh cannot
-# fetch); with none there either it fails the build rather than being skipped, because
-# a missing text is a section 4(a) breach and the fix is a human decision.
+# --fallback DIR/<crate>/, the texts scripts/vendor-crate-licenses.sh cannot fetch.
+# With none there either the build fails, because the fix is a human decision.
 set -eu
 
 OUT=/out/usr/share/licenses

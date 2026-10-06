@@ -44,7 +44,7 @@ services:
       SCAN_INTERVAL: "1h"  # or 30m, 12h. "off" waits for an outside trigger and "0" scans once
       FCLONES_SCAN_PATHS: "/scandir"  # must match a volume target below
       FCLONES_ARGS: "--rf-over 1"  # report files that have more than one copy
-      FCLONES_ACTION: "link"  # group (report only), link (hardlink), remove (delete) or dedupe (reflink)
+      FCLONES_ACTION: "link"  # group only reports, link replaces copies with hardlinks, remove deletes them, dedupe uses reflinks
       FCLONES_ACTION_ARGS: "--priority bottom"  # keep the first copy fclones lists, replace the others
 
     volumes:
