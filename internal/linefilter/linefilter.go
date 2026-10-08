@@ -61,8 +61,8 @@ var warnNoisePatterns = []noiseMarker{
 // noisePatternsByLevel maps an fclones log level to the body markers dropped
 // at that level. Matched only against the message body of a line whose level
 // field equals the key, never the raw line, so an attacker-controlled
-// filename cannot suppress the line reporting it. Re-audit on a
-// FCLONES_VERSION bump.
+// filename cannot suppress the line reporting it. Re-audit on an fclones
+// bump.
 var noisePatternsByLevel = map[string][]noiseMarker{
 	"info": infoProgressPatterns,
 	"warn": warnNoisePatterns,

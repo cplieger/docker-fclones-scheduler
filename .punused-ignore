@@ -21,3 +21,10 @@ method (action).String
 # surfaced it. Same class as bep/punused#3 above: interface/dynamic dispatch
 # invisible to the reference scan.
 method (*Buffer).Write
+
+#
+# internal/fclonesflags holds the committed fclones option list the image
+# build's flag gate compares against. Its one exported symbol is read by the
+# root package's test that pins dangerousFlags and wrapperOwnedFlags to real
+# fclones options; no production code needs the list, so EU1001 is its design.
+function Snapshot is used in test only

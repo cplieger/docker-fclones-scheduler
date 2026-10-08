@@ -1,10 +1,11 @@
 # check=error=true
 
-# FCLONES_VERSION is the single source of truth for the pinned fclones release.
-# Declared as a global ARG (before the first FROM) so every build stage consumes
-# it with a bare `ARG FCLONES_VERSION`; Renovate bumps this one line.
-# renovate: datasource=github-tags depName=pkolaczk/fclones
-ARG FCLONES_VERSION=v0.35.0
+# The pinned fclones release tag and the commit it dereferences to. Global
+# ARGs, so each stage consumes them with a bare ARG; Renovate moves the pair
+# together, and the marker must stay directly above the two lines.
+# renovate: datasource=github-tags depName=pkolaczk/fclones digest=commit
+ARG FCLONES_REF=v0.35.0
+ARG FCLONES_COMMIT=a74f90d293e05856d19a4c0ac2b29b46ef16cf23
 
 FROM rust:1.99-trixie@sha256:6ff07edce8775d0f64be7aba9197229407301bddf2054d62c27b541a6238a181 AS fclones-builder
 
@@ -24,19 +25,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN rustup target add aarch64-unknown-linux-musl
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
     CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc
-# Consume the global FCLONES_VERSION (declared before the first FROM with its
-# renovate datasource comment) in this stage.
-ARG FCLONES_VERSION
-# Integrity pins -- a stale pin fail-closes the build. The amd64 sha256 is
-# recomputed in the version-bump PR itself by the repin postUpgradeTask, which
-# reads the marker below for the release-asset URL.
+ARG FCLONES_REF
+ARG FCLONES_COMMIT
+# Integrity pins -- a stale pin fail-closes the build. The repin postUpgradeTask
+# recomputes each sha256 in the version-bump PR from the URL in its marker.
 # repin: dep=pkolaczk/fclones url=https://github.com/pkolaczk/fclones/releases/download/{version}/fclones-{version_nov}-linux-musl-x86_64.tar.gz
 ARG FCLONES_SHA256_AMD64=9eae0466e5b78871cf25822e503ee9efbfa28dc36cc167060c4a4920306389ac
-# arm64: commit that the FCLONES_VERSION tag dereferences to (git tags are
-# mutable; pin the commit). No script moves this one -- recompute it by hand on
-# every version bump:
-#   git ls-remote https://github.com/pkolaczk/fclones.git "refs/tags/<version>^{}"
-ARG FCLONES_COMMIT=a74f90d293e05856d19a4c0ac2b29b46ef16cf23
 # The release tarball holds the binary and nothing else, so amd64 fetches the license
 # text at the pinned tag; arm64 takes it from the clone the commit pin verifies.
 # repin: dep=pkolaczk/fclones url=https://raw.githubusercontent.com/pkolaczk/fclones/{version}/LICENSE
@@ -49,30 +43,30 @@ COPY licenses/crates/ /licenses/crates/
 # heredoc body below, which is the only consumer of $provenance (measured on
 # hadolint 2.15.1 with a 3-line Dockerfile).
 # hadolint ignore=SC2034
-RUN VERSION="${FCLONES_VERSION#v}" && \
+RUN VERSION="${FCLONES_REF#v}" && \
     ARCH=$(dpkg --print-architecture) && \
     if [ "$ARCH" = "amd64" ]; then \
-      url="https://github.com/pkolaczk/fclones/releases/download/${FCLONES_VERSION}/fclones-${VERSION}-linux-musl-x86_64.tar.gz" && \
+      url="https://github.com/pkolaczk/fclones/releases/download/${FCLONES_REF}/fclones-${VERSION}-linux-musl-x86_64.tar.gz" && \
       provenance="download_url=${url}&checksum=sha256:${FCLONES_SHA256_AMD64}" && \
       curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 5 -o /tmp/fclones.tar.gz "$url" && \
       { printf '%s  /tmp/fclones.tar.gz\n' "${FCLONES_SHA256_AMD64}" | sha256sum -c - || { \
-        echo "fclones amd64 sha256 pin mismatch: fclones-${VERSION}-linux-musl-x86_64.tar.gz does not match FCLONES_SHA256_AMD64=${FCLONES_SHA256_AMD64}; recompute the sha256 of the new release asset and update ARG FCLONES_SHA256_AMD64 (and FCLONES_COMMIT) for the new version -- see CONTRIBUTING.md" >&2; \
+        echo "fclones amd64 sha256 pin mismatch: fclones-${VERSION}-linux-musl-x86_64.tar.gz does not match FCLONES_SHA256_AMD64=${FCLONES_SHA256_AMD64}; a Renovate bump recomputes it from its repin marker, a hand bump must recompute it -- see CONTRIBUTING.md" >&2; \
         exit 1; \
       }; } && \
       tar xz --strip-components=3 -C /usr/src/fclones -f /tmp/fclones.tar.gz && \
       rm -f /tmp/fclones.tar.gz && \
-      curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 5 -o /tmp/fclones-LICENSE "https://raw.githubusercontent.com/pkolaczk/fclones/${FCLONES_VERSION}/LICENSE" && \
+      curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 5 -o /tmp/fclones-LICENSE "https://raw.githubusercontent.com/pkolaczk/fclones/${FCLONES_REF}/LICENSE" && \
       { printf '%s  /tmp/fclones-LICENSE\n' "${FCLONES_LICENSE_SHA256}" | sha256sum -c - || { \
-        echo "fclones LICENSE sha256 pin mismatch: ${FCLONES_VERSION}/LICENSE does not match FCLONES_LICENSE_SHA256=${FCLONES_LICENSE_SHA256}; recompute the sha256 of the license text at the new tag and update ARG FCLONES_LICENSE_SHA256 -- see CONTRIBUTING.md" >&2; \
+        echo "fclones LICENSE sha256 pin mismatch: ${FCLONES_REF}/LICENSE does not match FCLONES_LICENSE_SHA256=${FCLONES_LICENSE_SHA256}; a Renovate bump recomputes it from its repin marker, a hand bump must recompute it -- see CONTRIBUTING.md" >&2; \
         exit 1; \
       }; } && \
       install -D -m 644 /tmp/fclones-LICENSE /out/usr/share/licenses/fclones/LICENSE && \
       for crate in /licenses/crates/*/; do cp -R "$crate" /out/usr/share/licenses/; done; \
     elif [ "$ARCH" = "arm64" ]; then \
       provenance="vcs_url=git%2Bhttps://github.com/pkolaczk/fclones.git%40${FCLONES_COMMIT}" && \
-      git clone --branch "${FCLONES_VERSION}" --depth 1 https://github.com/pkolaczk/fclones.git . && \
+      git clone --branch "${FCLONES_REF}" --depth 1 https://github.com/pkolaczk/fclones.git . && \
       { [ "$(git rev-parse HEAD)" = "${FCLONES_COMMIT}" ] || { \
-          echo "fclones arm64 commit pin mismatch: ${FCLONES_VERSION} dereferences to $(git rev-parse HEAD) but FCLONES_COMMIT=${FCLONES_COMMIT}; update ARG FCLONES_COMMIT (and FCLONES_SHA256_AMD64) for the new version -- see CONTRIBUTING.md" >&2; \
+          echo "fclones arm64 commit pin mismatch: ${FCLONES_REF} dereferences to $(git rev-parse HEAD) but FCLONES_COMMIT=${FCLONES_COMMIT}; the tag moved upstream or the pair was edited apart, and both must name one commit (git ls-remote https://github.com/pkolaczk/fclones.git refs/tags/${FCLONES_REF}^{}) -- see CONTRIBUTING.md" >&2; \
           exit 1; \
         }; } && \
       cargo build --locked --release --target aarch64-unknown-linux-musl && \
@@ -89,37 +83,14 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
       echo "unsupported build architecture: ${ARCH} (expected amd64 or arm64); no integrity pin defined" >&2; \
       exit 1; \
     fi && \
-    # Embedded SBOM fragment. The final image is distroless static (no OS package
-    # DB) and fclones is a plain Rust release build (not cargo-auditable), so
-    # Syft sees the Go wrapper via its embedded buildinfo but /usr/bin/fclones is
-    # invisible to the signed release SBOM and to vulnerability scanners.
-    # Generate a CycloneDX fragment from the same Renovate-tracked
-    # FCLONES_VERSION ARG the build pins — a Renovate bump keeps the SBOM correct
-    # with zero extra maintenance — and ship it in the final image (see the COPY
-    # there) where Syft's sbom-cataloger picks it up. The cataloger is enabled
-    # centrally by the release pipeline (cplieger/ci); no per-repo .syft.yaml is
-    # needed. Emitted from this RUN, not a later one, so the purl's provenance
-    # qualifiers are the values this same shell fetched and verified.
-    # purl: pkg:cargo/fclones — fclones IS the crates.io-published crate of the
-    # same name (bin name `fclones`, published by upstream pkolaczk), and the
-    # cargo purl type keys scanners into the RustSec/GHSA crates ecosystem, the
-    # strongest advisory matching available for a Rust payload; a pkg:github
-    # purl would carry forge provenance but match almost no advisory data. The
-    # version is identical on both provenance paths — amd64 ships the upstream
-    # prebuilt musl release tarball, arm64 builds the same release from source
-    # at the pinned FCLONES_COMMIT — so this one component covers both.
-    # ${provenance}: the type-agnostic purl qualifiers that tie the purl to the
-    # bytes, and the two arches do not fetch the same way. amd64 carries
-    # download_url of the release asset it downloaded plus checksum=sha256 of
-    # the pin it verified. arm64 carries vcs_url of the tagged clone at the
-    # commit it verified, and deliberately no checksum: a git commit is not a
-    # content digest of a fetched artifact, so a checksum there would be a false
-    # claim. Neither arch fetches from crates.io despite the purl type, and
-    # nothing added here may say it does -- `cargo build --locked` pulls
-    # fclones' DEPENDENCIES from crates.io and never the fclones crate itself.
-    # cpe: omitted — the NVD CPE dictionary carries no fclones entry as of
-    # 2026-07-22 (keyword search: 0 products); do not invent one. Add the field
-    # if NVD ever assigns fclones a CPE.
+    # SBOM fragment: Syft cannot see a plain Rust release binary in a distroless
+    # image, so this CycloneDX file makes fclones visible to the signed release
+    # SBOM and to scanners (the release pipeline enables Syft's sbom-cataloger).
+    # pkg:cargo keys advisory matching to the RustSec/GHSA crates ecosystem;
+    # neither arch fetches fclones from crates.io. ${provenance} names the fetch
+    # this shell verified: amd64 the release asset and its sha256, arm64 the
+    # clone at its commit and no checksum, since a commit is not a content
+    # digest. No cpe: NVD has no fclones entry (checked 2026-07-22).
     cat > /usr/src/fclones-scheduler.cdx.json <<EOF
 {
   "bomFormat": "CycloneDX",
@@ -127,11 +98,11 @@ RUN VERSION="${FCLONES_VERSION#v}" && \
   "version": 1,
   "components": [
     {
-      "bom-ref": "pkg:cargo/fclones@${FCLONES_VERSION#v}",
+      "bom-ref": "pkg:cargo/fclones@${FCLONES_REF#v}",
       "type": "application",
       "name": "fclones",
-      "version": "${FCLONES_VERSION#v}",
-      "purl": "pkg:cargo/fclones@${FCLONES_VERSION#v}?${provenance}"
+      "version": "${FCLONES_REF#v}",
+      "purl": "pkg:cargo/fclones@${FCLONES_REF#v}?${provenance}"
     }
   ]
 }
@@ -146,16 +117,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 COPY *.go ./
 COPY internal/ internal/
-# Fail the build if config.go's dangerous-flag denylist audit comment does not
-# match the pinned fclones version. The amd64 sha256 and arm64 commit pins
-# already fail-close the build on a stale version; this extends the same
-# fail-closed coupling to the security re-audit, so a FCLONES_VERSION bump
-# cannot silently ship an un-re-audited denylist.
-ARG FCLONES_VERSION
-RUN grep -qF "Audited against fclones ${FCLONES_VERSION};" config.go || { \
-      echo "config.go dangerous-flag audit comment does not match FCLONES_VERSION=${FCLONES_VERSION}; re-audit dangerousFlags and bump the 'Audited against fclones <version>;' comment in config.go (see CONTRIBUTING.md)" >&2; \
-      exit 1; \
-    }
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /wrapper .
@@ -163,6 +124,15 @@ COPY LICENSE NOTICE ./
 COPY scripts/collect-licenses.sh scripts/
 RUN --mount=type=cache,target=/go/pkg/mod \
     sh scripts/collect-licenses.sh --name docker-fclones-scheduler .
+
+# Option snapshot gate: fails when this fclones adds or removes an option
+# against internal/fclonesflags/flags.txt, naming each one. The final stage
+# copies the fclones binary from here, so the gate is on every arch's build.
+FROM go-builder AS flags-test
+COPY --from=fclones-builder /usr/src/fclones/fclones /usr/local/bin/fclones
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    FCLONES_BIN=/usr/local/bin/fclones go test -count=1 -run '^TestBinaryMatchesSnapshot$' ./internal/fclonesflags
 
 # ---------------------------------------------------------------------------
 # SBOM test stage — asserts the embedded CycloneDX fragment ships correct
@@ -173,12 +143,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # centralized `ci / validate` docker build gate.
 # ---------------------------------------------------------------------------
 FROM fclones-builder AS sbom-test
-ARG FCLONES_VERSION
+ARG FCLONES_REF
 COPY Dockerfile /tmp/Dockerfile
 COPY tests/sbom-smoke.sh /tmp/tests/sbom-smoke.sh
-# ${FCLONES_VERSION:?} fails the build if the ARG wiring ever breaks, so the
+# ${FCLONES_REF:?} fails the build if the ARG wiring ever breaks, so the
 # smoke test's exact-version assertion can never be skipped in-image.
-RUN FCLONES_EXPECTED_VERSION="${FCLONES_VERSION:?}" \
+RUN FCLONES_EXPECTED_VERSION="${FCLONES_REF:?}" \
     DOCKERFILE=/tmp/Dockerfile \
     SBOM_FRAGMENT=/usr/src/fclones-scheduler.cdx.json \
     sh /tmp/tests/sbom-smoke.sh
@@ -186,7 +156,7 @@ RUN FCLONES_EXPECTED_VERSION="${FCLONES_VERSION:?}" \
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 
 WORKDIR /app
-COPY --chmod=755 --from=fclones-builder /usr/src/fclones/fclones /usr/bin/fclones
+COPY --chmod=755 --from=flags-test /usr/local/bin/fclones /usr/bin/fclones
 COPY --chmod=755 --from=go-builder /wrapper /app/wrapper
 COPY --from=fclones-builder /out/usr/share/licenses /usr/share/licenses
 COPY --from=go-builder /out/usr/share/licenses /usr/share/licenses

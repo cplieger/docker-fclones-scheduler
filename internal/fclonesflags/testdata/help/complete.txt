@@ -1,0 +1,10 @@
+Print shell completion script to stdout
+
+Usage: fclones complete <SHELL>
+
+Arguments:
+  <SHELL>  Shell for which the completion script is generated [possible values: bash, elvish, fish,
+           powershell, zsh]
+
+Options:
+  -h, --help  Print help
