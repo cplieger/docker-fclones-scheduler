@@ -3,7 +3,7 @@ module github.com/cplieger/docker-fclones-scheduler
 go 1.27.2
 
 require (
-	github.com/cplieger/envx/v2 v2.0.5
+	github.com/cplieger/envx/v2 v2.0.7
 	github.com/cplieger/health v1.8.2
 	github.com/cplieger/jsoncap/v2 v2.0.3
 	github.com/cplieger/runesafe/v2 v2.1.1
