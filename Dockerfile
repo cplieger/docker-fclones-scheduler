@@ -53,7 +53,7 @@ RUN VERSION="${FCLONES_REF#v}" && \
         echo "fclones amd64 sha256 pin mismatch: fclones-${VERSION}-linux-musl-x86_64.tar.gz does not match FCLONES_SHA256_AMD64=${FCLONES_SHA256_AMD64}; a Renovate bump recomputes it from its repin marker, a hand bump must recompute it -- see CONTRIBUTING.md" >&2; \
         exit 1; \
       }; } && \
-      tar xz --strip-components=3 -C /usr/src/fclones -f /tmp/fclones.tar.gz && \
+      tar xz --strip-components=3 -C /usr/local/bin -f /tmp/fclones.tar.gz && \
       rm -f /tmp/fclones.tar.gz && \
       curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 5 -o /tmp/fclones-LICENSE "https://raw.githubusercontent.com/pkolaczk/fclones/${FCLONES_REF}/LICENSE" && \
       { printf '%s  /tmp/fclones-LICENSE\n' "${FCLONES_LICENSE_SHA256}" | sha256sum -c - || { \
@@ -70,7 +70,7 @@ RUN VERSION="${FCLONES_REF#v}" && \
           exit 1; \
         }; } && \
       cargo build --locked --release --target aarch64-unknown-linux-musl && \
-      mv target/aarch64-unknown-linux-musl/release/fclones /usr/src/fclones/fclones && \
+      mv target/aarch64-unknown-linux-musl/release/fclones /usr/local/bin/fclones && \
       install -D -m 644 LICENSE /out/usr/share/licenses/fclones/LICENSE && \
       sh /usr/local/bin/collect-cargo-licenses.sh --out /out/usr/share/licenses --fallback /licenses/crates && \
       cut -d' ' -f1 /licenses/crates/MANIFEST | sort -u >/tmp/manifest-crates && \
@@ -129,7 +129,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # against internal/fclonesflags/flags.txt, naming each one. The final stage
 # copies the fclones binary from here, so the gate is on every arch's build.
 FROM go-builder AS flags-test
-COPY --from=fclones-builder /usr/src/fclones/fclones /usr/local/bin/fclones
+COPY --from=fclones-builder /usr/local/bin/fclones /usr/local/bin/fclones
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     FCLONES_BIN=/usr/local/bin/fclones go test -count=1 -run '^TestBinaryMatchesSnapshot$' ./internal/fclonesflags
