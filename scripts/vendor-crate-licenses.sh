@@ -3,7 +3,7 @@
 # /usr/share/licenses on amd64 too: that build takes upstream's prebuilt binary and so has
 # no cargo registry for the arm64 sibling scripts/collect-cargo-licenses.sh to walk.
 # usage: vendor-crate-licenses.sh [--dockerfile FILE] [--out DIR], run from the repo root.
-# Re-run it on every FCLONES_VERSION bump and commit the result: the arm64 source build
+# Re-run it on every fclones bump and commit the result: the arm64 source build
 # diffs what it collects against the MANIFEST written here and refuses to build when the
 # two disagree. Deliberately uses no cargo: neither this container nor the amd64 build
 # stage has one.
@@ -30,9 +30,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-version=$(awk -F= '$1 == "ARG FCLONES_VERSION" { print $2; exit }' "$DOCKERFILE")
+version=$(awk -F= '$1 == "ARG FCLONES_REF" { print $2; exit }' "$DOCKERFILE")
 if [ -z "$version" ]; then
-  printf 'vendor-crate-licenses: no "ARG FCLONES_VERSION=" line in %s\n' "$DOCKERFILE" >&2
+  printf 'vendor-crate-licenses: no "ARG FCLONES_REF=" line in %s\n' "$DOCKERFILE" >&2
   exit 1
 fi
 
@@ -129,7 +129,10 @@ while read -r name ver src; do
       *) continue ;;
     esac
     mkdir -p "$stage/$name"
-    cp -f "$f" "$stage/$name/$base"
+    # Some upstream license files are CRLF. A local git commit normalises them through
+    # .gitattributes but a commit made through the GitHub API stores the bytes as given,
+    # so write LF here and the tree is the same however it is committed.
+    tr -d '\r' <"$f" >"$stage/$name/$base"
     copied=$((copied + 1))
   done
   if [ "$copied" -eq 0 ]; then

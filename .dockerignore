@@ -30,6 +30,7 @@ renovate.json
 .gremlins.yaml
 
 # Test sources aren't compiled by `go build`; excluding them keeps a test-only
-# edit from invalidating the COPY -> go build cache layer. (Revisit if an
-# in-build `go test` stage is ever added.)
+# edit from invalidating the COPY -> go build cache layer. The flags-test stage
+# runs the one test file kept below.
 **/*_test.go
+!internal/fclonesflags/fclonesflags_test.go

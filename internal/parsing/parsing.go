@@ -85,7 +85,7 @@ type DuplicateGroup struct {
 // tolerated. The keeper is files[0] (fclones' own keep-first semantics).
 //
 // Wire shape verified against pinned upstream fclones v0.35.0; stable since
-// fclones 0.18. Re-verify on every FCLONES_VERSION bump.
+// fclones 0.18. Re-verify on every fclones bump.
 func DecodeReport(r io.Reader, keepGroups int) (Report, error) {
 	d := jsoncap.NewDecoder(r, 0)
 	rd := reportDecoder{keepGroups: keepGroups}
@@ -279,7 +279,7 @@ func ParseActionSummary(stdout string) ActionSummary {
 
 // byteUnitMultipliers maps an upper-cased size unit to its byte multiplier.
 // fclones renders decimal SI units (KB..EB) — the same system HumanBytes
-// emits. Re-verify on FCLONES_VERSION bumps; an unrecognized unit parses to
+// emits. Re-verify on fclones bumps; an unrecognized unit parses to
 // 0, which the action-summary drift warning then surfaces.
 var byteUnitMultipliers = map[string]int64{
 	"B":  1,

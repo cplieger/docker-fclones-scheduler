@@ -235,8 +235,10 @@ const (
 	flagNoCopy    = "--no-copy"
 )
 
-// Dangerous fclones flags that execute arbitrary commands or modify files in
-// place. Audited against fclones v0.35.0; re-audit on FCLONES_VERSION bump.
+// dangerousFlags run arbitrary commands or modify files in place, so they are
+// refused unless ALLOW_UNSAFE_ARGS=true. Each must be an option the pinned
+// fclones has (internal/fclonesflags/flags.txt, which the image build compares
+// with the binary); a test pins that.
 var dangerousFlags = []string{flagTransform, flagInPlace, flagNoCopy}
 
 // wrapperOwnedFlags are fclones flags the wrapper itself appends

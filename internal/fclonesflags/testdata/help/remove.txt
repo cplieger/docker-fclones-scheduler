@@ -1,0 +1,92 @@
+Remove redundant files.
+
+The list of groups earlier produced by `fclones group` should be submitted on the standard input.
+
+Usage: fclones remove [OPTIONS]
+
+Options:
+      --dry-run
+          Don't perform any changes on the file-system, but writes a log of file operations to the
+          standard output
+
+  -o, --output <path>
+          Write the `dry_run` report to a file instead of the standard output
+
+  -m, --modified-before <timestamp>
+          Deduplicate only the files that were modified before the given time.
+
+          If any of the files in a group was modified later, the whole group is skipped.
+
+  -n, --rf-over <COUNT>
+          Keep at least n replicas untouched.
+
+          If not given, it is assumed to be the same as the `--rf-over` value in the earlier
+          `fclones group` run.
+
+      --name <PATTERN>
+          Restrict the set of files that can be removed or replaced by links to files with the name
+          matching any given patterns
+
+      --path <PATTERN>
+          Restrict the set of files that can be removed or replaced by links to files with the path
+          matching any given patterns
+
+      --priority <PRIORITY>
+          Set the priority for files to be removed or replaced by links
+
+          Possible values:
+          - top:                        Give higher priority to the files listed higher in the input
+            file
+          - bottom:                     Give higher priority to the files listed lower in the input
+            file
+          - newest:                     Give higher priority to the files with the most recent
+            creation time
+          - oldest:                     Give higher priority to the files with the least recent
+            creation time
+          - most-recently-modified:     Give higher priority to the files with the most recent
+            modification time
+          - least-recently-modified:    Give higher priority to the files with the least recent
+            modification time
+          - most-recently-accessed:     Give higher priority to the files with the most recent
+            access time
+          - least-recently-accessed:    Give higher priority to the files with the least recent
+            access time
+          - most-recent-status-change:  Give higher priority to the files with the most recent
+            status change
+          - least-recent-status-change: Give higher priority to the files with the least recent
+            status change
+          - most-nested:                Give higher priority to the files nested deeper in the
+            directory tree
+          - least-nested:               Give higher priority to the files nested shallower in the
+            directory tree
+
+      --keep-name <PATTERN>
+          Keep files with names matching any given patterns untouched
+
+      --keep-path <PATTERN>
+          Keep files with paths matching any given patterns untouched
+
+      --isolate <PATH>
+          Specify a list of path prefixes. If non-empty, all duplicates having the same path prefix
+          (root) are treated as one. This also means that the files sharing the same root can be
+          either all dropped or all retained.
+
+          By default, it is set to the input paths given as arguments to the earlier `fclones group`
+          command, if `--isolate` option was present.
+
+  -H, --match-links
+          Treat files reachable from multiple paths through links as duplicates
+
+      --no-lock
+          Don't lock files before performing an action on them
+
+      --no-check-size
+          Allow the size of a file to be different than the size recorded during grouping.
+
+          By default, files are checked for size to prevent accidentally removing a file that was
+          modified since grouping. However, if `--transform` was used when grouping, the data sizes
+          recorded in the `fclones group` report likely don't match the on-disk sizes of the files.
+          Therefore, this flag is set automatically if `--transform` was used.
+
+  -h, --help
+          Print help (see a summary with '-h')
