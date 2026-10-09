@@ -3,10 +3,10 @@
 # /usr/share/licenses on amd64 too: that build takes upstream's prebuilt binary and so has
 # no cargo registry for the arm64 sibling scripts/collect-cargo-licenses.sh to walk.
 # usage: vendor-crate-licenses.sh [--dockerfile FILE] [--out DIR], run from the repo root.
-# Re-run it on every fclones bump and commit the result: the arm64 source build
-# diffs what it collects against the MANIFEST written here and refuses to build when the
-# two disagree. Deliberately uses no cargo: neither this container nor the amd64 build
-# stage has one.
+# Re-run it on every fclones bump: a Renovate bump runs it in the same commit, and a hand
+# bump runs it and commits the result. The arm64 source build diffs what it collects
+# against the MANIFEST written here and refuses to build when the two disagree.
+# Deliberately uses no cargo: neither this container nor the amd64 build stage has one.
 set -eu
 
 DOCKERFILE=Dockerfile
