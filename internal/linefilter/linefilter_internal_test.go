@@ -5,7 +5,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/cplieger/runesafe/v2"
+	"github.com/cplieger/runesafe/v3"
 )
 
 // shouldFilterLine is unexported, so its tests live in this internal test
