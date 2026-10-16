@@ -7,7 +7,7 @@
 ARG FCLONES_REF=v0.35.0
 ARG FCLONES_COMMIT=a74f90d293e05856d19a4c0ac2b29b46ef16cf23
 
-FROM rust:1.99-trixie@sha256:07c8d259d421462f6dedbf70106f848564f40f07529b97726fa8150e4140b68f AS fclones-builder
+FROM rust:1.99-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS fclones-builder
 
 WORKDIR /usr/src/fclones
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
