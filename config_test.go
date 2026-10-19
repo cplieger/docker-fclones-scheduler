@@ -10,6 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/cplieger/slogx/capture"
 	"pgregory.net/rapid"
 )
 
@@ -575,7 +576,7 @@ func TestVerifyDirWithProbeBoundsHungProbeByTimeout(t *testing.T) {
 // --- Tests: setupLogger ---
 
 func TestSetupLoggerLevels(t *testing.T) {
-	restoreLogger(t)
+	capture.SwapDefault(t, slog.Default())
 	ctx := t.Context()
 
 	tests := []struct {
