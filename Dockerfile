@@ -7,7 +7,7 @@
 ARG FCLONES_REF=v0.35.0
 ARG FCLONES_COMMIT=a74f90d293e05856d19a4c0ac2b29b46ef16cf23
 
-FROM rust:1.99-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS fclones-builder
+FROM rust:1.99-trixie@sha256:a5ab4292e80567dc92f642e2a7d63773ebd695b82b56e8f06dc8d6ecc5600b76 AS fclones-builder
 
 WORKDIR /usr/src/fclones
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -153,7 +153,7 @@ RUN FCLONES_EXPECTED_VERSION="${FCLONES_REF:?}" \
     SBOM_FRAGMENT=/usr/src/fclones-scheduler.cdx.json \
     sh /tmp/tests/sbom-smoke.sh
 
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:d62067879de890a1def9da0e7766b7d20810a5e5555cef8506b752437d7a3e88
 
 WORKDIR /app
 COPY --chmod=755 --from=flags-test /usr/local/bin/fclones /usr/bin/fclones
