@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/cplieger/health"
+	"github.com/cplieger/go/health"
 )
 
 // --- Main ---

@@ -6,9 +6,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/cplieger/health"
-	"github.com/cplieger/scheduler/v4"
-	"github.com/cplieger/scheduler/v4/trigger"
+	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/scheduler/trigger"
 )
 
 // In the two long-running modes, PID 1 owns every run: the built-in ticker

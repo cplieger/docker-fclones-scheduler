@@ -5,7 +5,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/cplieger/runesafe/v3"
+	"github.com/cplieger/go/textsafe"
 )
 
 // shouldFilterLine is unexported, so its tests live in this internal test
@@ -107,7 +107,7 @@ func FuzzShouldFilterLine(f *testing.F) {
 }
 
 // TestSanitizeControlBytesEscapesUnsafeRunes pins the well-formed-rune half
-// of the escape class (runesafe.IsUnsafeNonASCII): the C1 control block, the
+// of the escape class (textsafe.IsUnsafeNonASCII): the C1 control block, the
 // Unicode bidi controls, and U+2028/U+2029 — each a CWE-117 vector on an
 // attacker-influenced scanned filename. Boundaries are exact: the nearest
 // sibling codepoint outside each class is forwarded verbatim. Calls
@@ -255,7 +255,7 @@ func FuzzSanitizeControlBytes(f *testing.F) {
 
 		// Identity fast path: clean input (valid UTF-8, no forbidden control
 		// byte, no unsafe rune) is returned verbatim. Computed via an
-		// independent scan against runesafe.IsUnsafeNonASCII, not the
+		// independent scan against textsafe.IsUnsafeNonASCII, not the
 		// production byte checks, so a discrepancy is caught rather than assumed.
 		clean := utf8.Valid([]byte(input))
 		if clean {
@@ -268,7 +268,7 @@ func FuzzSanitizeControlBytes(f *testing.F) {
 		}
 		if clean {
 			for _, r := range input {
-				if runesafe.IsUnsafeNonASCII(r) {
+				if textsafe.IsUnsafeNonASCII(r) {
 					clean = false
 					break
 				}

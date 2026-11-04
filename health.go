@@ -4,9 +4,9 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/cplieger/envx/v2"
-	"github.com/cplieger/health"
-	"github.com/cplieger/scheduler/v4"
+	"github.com/cplieger/go/envx"
+	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/scheduler"
 )
 
 // healthMarkerPath is where the health marker file lives; Docker's
