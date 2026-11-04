@@ -12,9 +12,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/cplieger/health"
-	"github.com/cplieger/scheduler/v4"
-	"github.com/cplieger/scheduler/v4/trigger"
+	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/scheduler/trigger"
 )
 
 // TestStartTickerDisabledInExternalMode pins that external mode runs no
@@ -203,7 +203,7 @@ func TestDaemonRecordOutcome(t *testing.T) {
 		},
 		{
 			name: "external trigger updates health but never the stamp",
-			trig: trigger.TriggerExternal, ran: true,
+			trig: trigger.External, ran: true,
 			wantHealthy: true,
 		},
 		{

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/cplieger/runesafe/v3"
+	"github.com/cplieger/go/textsafe"
 )
 
 // MaxLineBytes bounds the partial-line buffer so a no-newline byte flood
@@ -114,7 +114,7 @@ func isC0OrDEL(b byte) bool {
 }
 
 // containsUnsafeRune reports whether p (assumed valid UTF-8 by its caller)
-// holds any rune runesafe.IsUnsafeNonASCII refuses (the Unicode bidi controls
+// holds any rune textsafe.IsUnsafeNonASCII refuses (the Unicode bidi controls
 // and U+2028/U+2029 are well-formed UTF-8 with nothing else to catch them —
 // deferring to the shared predicate is what keeps that gap from reopening).
 func containsUnsafeRune(p []byte) bool {
@@ -123,7 +123,7 @@ func containsUnsafeRune(p []byte) bool {
 	// whose purpose is bounding memory.
 	for i := 0; i < len(p); {
 		r, size := utf8.DecodeRune(p[i:])
-		if runesafe.IsUnsafeNonASCII(r) {
+		if textsafe.IsUnsafeNonASCII(r) {
 			return true
 		}
 		i += size
@@ -139,7 +139,7 @@ func escHexByte(dst []byte, b byte) []byte {
 
 // escapeControlBytes is the allocating slow path of sanitizeControlBytes: it
 // rewrites each C0/DEL byte, each invalid-UTF-8 byte, and the bytes of each
-// rune runesafe.IsUnsafeNonASCII refuses to a visible "\xNN" escape, while
+// rune textsafe.IsUnsafeNonASCII refuses to a visible "\xNN" escape, while
 // forwarding every other valid rune verbatim.
 func escapeControlBytes(line []byte) []byte {
 	out := make([]byte, 0, len(line))
@@ -155,11 +155,11 @@ func escapeControlBytes(line []byte) []byte {
 			i++
 			continue
 		}
-		// A standalone/invalid byte, or a rune runesafe.IsUnsafeNonASCII
+		// A standalone/invalid byte, or a rune textsafe.IsUnsafeNonASCII
 		// refuses (a C1 control, a bidi control, U+2028/U+2029), is escaped
 		// byte-by-byte; every other valid multi-byte rune is forwarded as-is.
 		r, size := utf8.DecodeRune(line[i:])
-		if (r == utf8.RuneError && size == 1) || runesafe.IsUnsafeNonASCII(r) {
+		if (r == utf8.RuneError && size == 1) || textsafe.IsUnsafeNonASCII(r) {
 			for j := range size {
 				out = escHexByte(out, line[i+j])
 			}
@@ -174,7 +174,7 @@ func escapeControlBytes(line []byte) []byte {
 
 // sanitizeControlBytes rewrites, to a visible "\xNN" escape, every C0
 // control byte (0x00-0x1F) except '\n'/'\t', DEL (0x7F), any byte not part of
-// a valid UTF-8 sequence, and every rune runesafe.IsUnsafeNonASCII refuses
+// a valid UTF-8 sequence, and every rune textsafe.IsUnsafeNonASCII refuses
 // (the C1 block, Unicode bidi controls, U+2028/U+2029). fclones renders
 // attacker-influenceable scanned filenames raw into its stderr diagnostics;
 // without this rewrite those bytes would reach an operator's terminal or

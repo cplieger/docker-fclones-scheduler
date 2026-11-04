@@ -16,7 +16,7 @@ import (
 	"github.com/cplieger/docker-fclones-scheduler/internal/capbuf"
 	"github.com/cplieger/docker-fclones-scheduler/internal/linefilter"
 	"github.com/cplieger/docker-fclones-scheduler/internal/parsing"
-	"github.com/cplieger/scheduler/v4"
+	"github.com/cplieger/go/scheduler"
 )
 
 var defaultCommandRunner = scheduler.NewCommandRunner(scheduler.DefaultGrace)

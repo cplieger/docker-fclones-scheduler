@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/cplieger/scheduler/v4/trigger"
+	"github.com/cplieger/go/scheduler/trigger"
 )
 
 // The `scan` subcommand: a thin trigger client over the scheduler library.
