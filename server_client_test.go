@@ -146,8 +146,8 @@ func TestFinishResult_LogsTheOutcomeReason(t *testing.T) {
 }
 
 // A run that succeeded with nothing to explain carries no reason attribute at
-// all, so `reason` present in Loki always means the daemon had something to
-// say about the outcome.
+// all, so a `reason` in the log always means the daemon had something to say
+// about the outcome.
 func TestFinishResult_SilentSuccessLogsNoReasonAttr(t *testing.T) {
 	logs := captureLogs(t, slog.LevelInfo)
 

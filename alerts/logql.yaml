@@ -1,66 +1,65 @@
-# Recommended LogQL alert rules for docker-fclones-scheduler, for Loki's ruler.
-# Thresholds and severity labels are starting points. Change the container
-# selector to the label your log collector sets, such as job or service.
-# Setup, window sizing and per-alert notes are in docs/monitoring.md.
+# Alert rules for docker-fclones-scheduler as a Loki ruler (LogQL) group. Every
+# rule reads the `run finished` record, which each completed run writes once at
+# INFO, so keep LOG_LEVEL at info. Change the `container` selector to the label
+# your log collector sets. Thresholds, windows and severity labels are starting
+# points. The 30h windows are twice SCAN_INTERVAL plus twice SCAN_TIMEOUT at the
+# defaults, the same deadline as the healthcheck; resize them to your settings.
+# Setup and per-alert notes are in docs/monitoring.md.
 groups:
   - name: fclones
     rules:
-      # A deadman. It fires on silence, so it catches a stuck schedule that
-      # logs nothing. The 28h window fits the default SCAN_TIMEOUT and
-      # SCAN_INTERVAL. docs/monitoring.md shows how to resize it.
+      # Each state rule reads the latest record in the window, so it fires at
+      # the first run that reports the problem and resolves at the next run
+      # that does not. `| logfmt <field>` extracts that one field; a bare
+      # `| logfmt` would turn every line into its own series.
+      - alert: FclonesRunFailed
+        expr: |
+          last_over_time({container="fclones"} |= `msg="run finished"` | logfmt ok | unwrap ok [30h]) by (container) == 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The last fclones run failed, so no space was reclaimed"
+          description: >
+            The latest `run finished` record has ok=0. Its `result` field names
+            the cause, and the run's ERROR line has the detail. For
+            action_no_op, check the container can write to the scanned
+            folders and, for dedupe, that the filesystem supports reflinks.
       - alert: FclonesScanStalled
         expr: |
-          absent_over_time({container="fclones"} |= "scan complete" [28h])
+          absent_over_time({container="fclones"} |= `msg="run finished"` [30h])
         for: 15m
         labels:
           severity: warning
         annotations:
-          summary: "No fclones scan has completed in 28h"
+          summary: "No fclones run has finished in 30h"
           description: >
-            No `scan complete` line has arrived in 28h. Check for a stuck
-            schedule, a scan past its phase timeout, or no outside trigger with
-            SCAN_INTERVAL=off. Also check that the container runs and its logs
-            reach Loki.
-      - alert: FclonesLinkEstablished
+            No `run finished` record arrived in 30h. Check for a stuck schedule,
+            a phase stuck with SCAN_TIMEOUT=0, no outside trigger with
+            SCAN_INTERVAL=off, or another container holding the scan lock. Also
+            check the container runs and its logs reach Loki.
+      - alert: FclonesFormatDrift
         expr: |
-          sum by (files_deduped, reclaimed_human) (
-            count_over_time(
-              {container="fclones"} |= "action complete" | logfmt | action="link" | files_deduped > 0 [15m]
-            )
-          ) > 0
+          last_over_time({container="fclones"} |= `msg="run finished"` | logfmt summary_recognized | summary_recognized != "" | unwrap summary_recognized [30h]) by (container) == 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "fclones printed an action summary the container does not recognize"
+          description: >
+            The latest action's summary was not recognized, so files_processed
+            and reclaimed_bytes read zero after real work. The run still
+            succeeds. A --dry-run in FCLONES_ACTION_ARGS causes this by design.
+            Otherwise check the fclones version.
+      - alert: FclonesSpaceReclaimed
+        expr: |
+          sum by (container) (sum_over_time({container="fclones"} |= `msg="run finished"` | logfmt files_processed | unwrap files_processed [30h])) > 0
         for: 0m
         labels:
           severity: info
         annotations:
-          summary: "fclones linked {{ $labels.files_deduped }} duplicate files and reclaimed {{ $labels.reclaimed_human }}"
+          summary: "fclones processed {{ $value }} duplicate files in the last 30h"
           description: >
-            fclones replaced {{ $labels.files_deduped }} duplicate files with
-            hardlinks and freed {{ $labels.reclaimed_human }}. The scan's
-            `duplicate file` log lines list the linked paths. This is a success
-            notice and needs no action.
-      - alert: FclonesActionReclaimedNothing
-        expr: |
-          sum(count_over_time({container="fclones"} |= "action reclaimed nothing" [2h])) > 0
-        for: 0m
-        labels:
-          severity: warning
-        annotations:
-          summary: "fclones deduplicated none of the duplicates it found"
-          description: >
-            A link, remove or dedupe run found duplicates and freed no space.
-            Check that the container's user can write to the scanned folders.
-            For dedupe, check that the filesystem supports reflinks. The
-            container stays unhealthy until a run frees space.
-      - alert: FclonesFormatDrift
-        expr: |
-          sum(count_over_time({container="fclones"} |= "possible fclones format drift" [2h])) > 0
-        for: 0m
-        labels:
-          severity: warning
-        annotations:
-          summary: "fclones output-format drift detected, so action stats may be unreliable"
-          description: >
-            The container did not recognize the summary line of the fclones
-            action, so files_deduped and bytes_reclaimed may read zero after
-            real work. The run still succeeds. Check the fclones version against
-            the summary formats the container recognizes.
+            Runs in the last 30h linked, removed or deduplicated {{ $value }}
+            duplicate files. Each `run finished` record's reclaimed_bytes field
+            gives the space freed. This is a success notice and needs no action.

@@ -189,38 +189,36 @@ func (d *daemon) tick(trig string) {
 	<-j.Result()
 }
 
-// run performs one request: run the scan+action job, route the outcome
-// through the health latch, and return the result. Runs under the
-// shutdown-cancellable ctx on purpose: SIGTERM interrupts an in-flight
-// fclones phase, and jobHealthSignal's interrupted-run carve-out keeps that
-// drain from registering as a failure. A cross-container lock skip
-// (ran=false, no error) performed no scan and writes no marker.
+// run performs one request: run the scan+action job, report the outcome,
+// and return the result. Runs under the shutdown-cancellable ctx on purpose:
+// SIGTERM interrupts an in-flight fclones phase, and jobHealthSignal's
+// interrupted-run carve-out keeps that drain from registering as a failure. A
+// cross-container lock skip (ran=false, no error) performed no scan and
+// reports nothing.
 func (d *daemon) run(ctx context.Context, trig string, _ struct{}) trigger.Result {
 	start := time.Now()
 
-	ran, err := runFclonesJob(ctx, d.cfg, trig, d.newCmd)
-	d.recordOutcome(trig, ctx.Err(), ran, err)
+	rep := runFclonesJob(ctx, d.cfg, trig, d.newCmd)
+	d.recordOutcome(ctx.Err(), &rep)
 
-	out := trigger.Result{OK: err == nil, Duration: time.Since(start)}
-	if !ran && err == nil {
+	out := trigger.Result{OK: rep.err == nil, Duration: time.Since(start)}
+	if !rep.ran && rep.err == nil {
 		out.Reason = "skipped: scan lock held by another process sharing /cache"
 	}
 	return out
 }
 
-// recordOutcome routes a finished run into the health marker and, for the
-// daemon's own scheduled runs, the /cache stamp. A cancelled run or a
-// cross-container lock skip completed no scan (jobHealthSignal reports
-// set=false), so it reaches neither. A stamp write failure never affects the
-// run: an absent record reads as due, costing at most one extra startup scan
-// after the next recreate.
-func (d *daemon) recordOutcome(trig string, ctxErr error, ran bool, runErr error) {
-	set, healthy := jobHealthSignal(ctxErr, ran, runErr)
-	if !set {
+// recordOutcome reports a finished run through reportRun and, for the
+// daemon's own scheduled runs, records the /cache stamp. A cancelled run or a
+// cross-container lock skip completed no scan, so it reaches neither. A stamp
+// write failure never affects the run: an absent record reads as due, costing
+// at most one extra startup scan after the next recreate.
+func (d *daemon) recordOutcome(ctxErr error, rep *jobReport) {
+	completed, healthy := reportRun(ctxErr, rep, d.health.Set)
+	if !completed {
 		return
 	}
-	d.health.Set(healthy)
-	if trig != triggerStartup && trig != triggerInterval {
+	if rep.trigger != triggerStartup && rep.trigger != triggerInterval {
 		return
 	}
 	if err := d.stamp.Record(healthy); err != nil {

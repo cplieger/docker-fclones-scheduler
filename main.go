@@ -117,16 +117,14 @@ func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
 		"uid", os.Getuid(), "mode", cfg.Mode, "target", cfg.ScanPath, "action", cfg.Action,
 		"phase_timeout", cfg.PhaseTimeout)
 
-	ran, err := runFclonesJob(ctx, cfg, "once", defaultCommandRunner)
-	if set, healthy := jobHealthSignal(ctx.Err(), ran, err); set {
-		marker.Set(healthy)
-	}
-	switch outcome := classifyRunOnceOutcome(ran, err, ctx.Err()); outcome {
+	rep := runFclonesJob(ctx, cfg, "once", defaultCommandRunner)
+	reportRun(ctx.Err(), &rep, marker.Set)
+	switch outcome := classifyRunOnceOutcome(rep.ran, rep.err, ctx.Err()); outcome {
 	case runOnceFailed:
-		return err
+		return rep.err
 	case runOnceSkipped:
-		// jobHealthSignal writes no marker on a skip; set it here so the
-		// exit code and the healthcheck agree.
+		// reportRun writes no marker on a skip; set it here so the exit code
+		// and the healthcheck agree.
 		marker.Set(false)
 		slog.Warn("run-once skipped: another process holds the scan lock; no scan ran",
 			logKeyOutcome, "skipped", "lock", lockFile)

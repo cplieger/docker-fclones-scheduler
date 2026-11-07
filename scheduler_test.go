@@ -746,7 +746,7 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		done, err := classifyAndLogOutcome(t.Context(), t.Context(), log,
+		_, done, err := classifyAndLogOutcome(t.Context(), t.Context(), log,
 			"scan", nil, time.Minute, time.Second,
 			&capbuf.Buffer{Max: 1024}, nil)
 
@@ -766,7 +766,7 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		var buf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&buf, nil))
 
-		done, err := classifyAndLogOutcome(cancelledCtx(), t.Context(), log,
+		_, done, err := classifyAndLogOutcome(cancelledCtx(), t.Context(), log,
 			"scan", context.Canceled, time.Minute, time.Second,
 			&capbuf.Buffer{Max: 1024}, nil)
 
@@ -791,7 +791,7 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		stderr := &capbuf.Buffer{Max: 1024}
 		_, _ = stderr.Write([]byte("boom"))
 
-		done, err := classifyAndLogOutcome(t.Context(), deadlineCtx(), log,
+		_, done, err := classifyAndLogOutcome(t.Context(), deadlineCtx(), log,
 			"scan", context.DeadlineExceeded, 30*time.Second, 31*time.Second,
 			stderr, nil)
 
@@ -817,7 +817,7 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		stderr := &capbuf.Buffer{Max: 1024}
 		_, _ = stderr.Write([]byte("permission denied"))
 
-		done, err := classifyAndLogOutcome(t.Context(), t.Context(), log,
+		_, done, err := classifyAndLogOutcome(t.Context(), t.Context(), log,
 			"scan", errors.New("exit status 1"), time.Minute, 2*time.Second,
 			stderr, nil)
 
@@ -847,7 +847,7 @@ func TestClassifyAndLogOutcome(t *testing.T) {
 		stdout := &capbuf.Buffer{Max: 1024}
 		_, _ = stdout.Write([]byte("actionout"))
 
-		done, err := classifyAndLogOutcome(t.Context(), t.Context(), log,
+		_, done, err := classifyAndLogOutcome(t.Context(), t.Context(), log,
 			"action", errors.New("exit status 1"), time.Minute, time.Second,
 			stderr, stdout, "action", "link")
 
@@ -928,7 +928,7 @@ func TestRunFclonesActionZeroDedupedFailsTheRun(t *testing.T) {
 			log := slog.New(slog.NewTextHandler(&buf, nil))
 			cfg := &config{Action: test.act, PhaseTimeout: time.Minute}
 
-			err := runFclonesAction(t.Context(), cfg, report, log, summaryRunner(test.summary))
+			_, err := runFclonesAction(t.Context(), cfg, report, log, summaryRunner(test.summary))
 
 			if (err != nil) != test.wantErr {
 				t.Fatalf("runFclonesAction(%q) error = %v, want error: %v", test.summary, err, test.wantErr)
@@ -938,7 +938,7 @@ func TestRunFclonesActionZeroDedupedFailsTheRun(t *testing.T) {
 				t.Errorf("runFclonesAction(%q) log = %q, want it to contain %s", test.summary, out, test.wantLine)
 			}
 			if test.wantErr && !strings.Contains(out, "outcome=action_no_op") {
-				t.Errorf("runFclonesAction(%q) log = %q, want the outcome=action_no_op attr an alert rule keys on", test.summary, out)
+				t.Errorf("runFclonesAction(%q) log = %q, want the outcome=action_no_op attr", test.summary, out)
 			}
 			if !test.wantErr && strings.Contains(out, "action reclaimed nothing") {
 				t.Errorf("runFclonesAction(%q) log = %q, want no no-op verdict", test.summary, out)

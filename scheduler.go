@@ -78,8 +78,8 @@ func sweepStaleReports(dir string) {
 
 // --- Scan Job ---
 
-// newScanID returns a short random hex token used to correlate log lines
-// from a single scan run in Loki.
+// newScanID returns a short random hex token that ties together the log lines
+// of one run.
 func newScanID() string {
 	var b [4]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -106,7 +106,7 @@ func markerAction(ctxErr, runErr error) (set, healthy bool) {
 func streamAttrs(stderr, stdout *capbuf.Buffer) []any {
 	// Escaped here too (not just at the terminal writer): a JSON handler
 	// forwards bidi controls verbatim, so the raw capture would keep the
-	// CWE-117 vector open on the Loki side.
+	// CWE-117 vector open in whatever stores the log.
 	attrs := []any{
 		"stderr", linefilter.EscapeUnsafe(stderr.String()),
 		"stderr_total_bytes", stderr.Total(),
@@ -122,8 +122,8 @@ func streamAttrs(stderr, stdout *capbuf.Buffer) []any {
 }
 
 // classifyAndLogOutcome classifies a finished subprocess run and logs any
-// terminal (non-success) outcome, returning (done, err): done is true for
-// every outcome except outcomeSuccess, and err is the value the phase should
+// terminal (non-success) outcome, returning the outcome, done (true for
+// every outcome except outcomeSuccess), and the error the phase should
 // return (nil for an expected shutdown). Keeps the scan and action phases'
 // log keys, return semantics, and truncation attrs from drifting apart. The
 // action phase passes its stdout buffer (the scan passes nil) and any
@@ -136,10 +136,10 @@ func classifyAndLogOutcome(
 	timeout, duration time.Duration,
 	stderr, stdout *capbuf.Buffer,
 	extra ...any,
-) (done bool, err error) {
-	switch outcome := classifyExecOutcome(parent, phaseCtx, runErr); outcome {
+) (outcome phaseOutcome, done bool, err error) {
+	switch outcome = classifyExecOutcome(parent, phaseCtx, runErr); outcome {
 	case outcomeSuccess:
-		return false, nil
+		return outcome, false, nil
 	case outcomeShutdown:
 		attrs := make([]any, 0, 6+len(extra))
 		attrs = append(attrs,
@@ -148,7 +148,7 @@ func classifyAndLogOutcome(
 		)
 		attrs = append(attrs, extra...)
 		log.Info(phase+" interrupted", attrs...)
-		return true, nil
+		return outcome, true, nil
 	case outcomeTimeout:
 		// 10 fixed attrs + up to 12 from streamAttrs (stderr trio +
 		// optional stdout trio) + caller extra; never under-allocates.
@@ -161,7 +161,7 @@ func classifyAndLogOutcome(
 		attrs = append(attrs, streamAttrs(stderr, stdout)...)
 		attrs = append(attrs, extra...)
 		log.Error(phase+" timeout exceeded", attrs...)
-		return true, fmt.Errorf("%s timeout exceeded after %s", phase, timeout)
+		return outcome, true, fmt.Errorf("%s timeout exceeded after %s", phase, timeout)
 	case outcomeExecError:
 		// 10 fixed attrs + up to 12 from streamAttrs (stderr trio +
 		// optional stdout trio) + caller extra; never under-allocates.
@@ -175,46 +175,51 @@ func classifyAndLogOutcome(
 		attrs = append(attrs, streamAttrs(stderr, stdout)...)
 		attrs = append(attrs, extra...)
 		log.Error(phase+" failed", attrs...)
-		return true, fmt.Errorf("%s exec failed: %w", phase, runErr)
+		return outcome, true, fmt.Errorf("%s exec failed: %w", phase, runErr)
 	default:
 		panic(fmt.Sprintf("unhandled phaseOutcome: %d", int(outcome)))
 	}
 }
 
-// runFclonesJob attempts one scan+action. It returns ran=false ONLY when the
-// scan lock was already held by another process (a different container or a
-// manual `docker run` sharing this /cache — the daemon owns all in-process
-// runs): no scan or action ran. In every other outcome ran=true. err is
-// non-nil on a genuine failure; on the lock-skip and on a clean run it is
-// nil, so callers that care about "did a scan actually happen" must inspect
-// ran, not just err. Marker writes are the caller's job, routed through
-// jobHealthSignal so a skip writes nothing and an interrupted run leaves the
-// last real outcome in place.
-func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd scheduler.CommandRunner) (ran bool, err error) {
-	lock, ok, lockErr := scheduler.TryLock(lockFile)
+// Where runFclonesJob takes its lock and writes its report; package vars so a
+// test can run the job outside the container.
+var (
+	scanLockPath = lockFile
+	reportDir    = cacheDir
+)
+
+// runFclonesJob attempts one scan+action and reports how it ended. ran is
+// false ONLY when the scan lock was already held by another process (a
+// different container or a manual `docker run` sharing this /cache; the
+// daemon owns all in-process runs): no scan or action ran. err is non-nil on a
+// genuine failure and nil on the lock skip, a clean run and a shutdown. The
+// caller hands the report to reportRun, which writes the health signal and the
+// run finished record.
+func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd scheduler.CommandRunner) jobReport {
+	rep := jobReport{scanID: newScanID(), trigger: trigger, ran: true}
+	lock, ok, lockErr := scheduler.TryLock(scanLockPath)
 	if lockErr != nil {
-		slog.Error("cannot acquire scan lock", "trigger", trigger, logKeyOutcome, "lock_error", "path", lockFile, "error", lockErr)
-		return true, lockErr
+		slog.Error("cannot acquire scan lock", "trigger", trigger, logKeyOutcome, "lock_error", "path", scanLockPath, "error", lockErr)
+		return rep.ended(resultLockError, lockErr)
 	}
 	if !ok {
 		slog.Info("job already running elsewhere, skipping overlapping request", "trigger", trigger, logKeyOutcome, "skipped")
-		return false, nil
+		return jobReport{trigger: trigger}
 	}
 	defer lock.Unlock()
 
-	scanID := newScanID()
-	log := slog.With("scan_id", scanID, "trigger", trigger)
+	log := slog.With("scan_id", rep.scanID, "trigger", trigger)
 
 	scanArgs, err := buildScanArgs(cfg)
 	if err != nil {
 		log.Error("scan failed to start", "reason", "bad_args", logKeyOutcome, "start_error", "error", err)
-		return true, err
+		return rep.ended(resultStartError, err)
 	}
 
-	tmpFile, err := os.CreateTemp(cacheDir, reportTempPattern)
+	tmpFile, err := os.CreateTemp(reportDir, reportTempPattern)
 	if err != nil {
 		log.Error("scan failed to start", "reason", "tmpfile", logKeyOutcome, "start_error", "error", err)
-		return true, err
+		return rep.ended(resultStartError, err)
 	}
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath)
@@ -236,6 +241,7 @@ func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd sche
 	startTime := time.Now()
 	runErr := cmd.Run()
 	duration := time.Since(startTime)
+	rep.scanRan, rep.scanDuration = true, duration
 	scanFilter.Flush()
 	if n := scanFilter.Floods(); n > 0 {
 		log.Warn("fclones emitted a no-newline output flood; partial line force-flushed at cap",
@@ -245,9 +251,9 @@ func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd sche
 		log.Warn("failed to close report temp file", "error", cerr)
 	}
 
-	if done, phaseErr := classifyAndLogOutcome(ctx, scanCtx, log, "scan", runErr,
+	if outcome, done, phaseErr := classifyAndLogOutcome(ctx, scanCtx, log, "scan", runErr,
 		cfg.PhaseTimeout, duration, errBuf, nil); done {
-		return true, phaseErr
+		return rep.ended(runResult(outcome.String()), phaseErr)
 	}
 	// success: continue to report parsing
 
@@ -255,7 +261,7 @@ func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd sche
 	if err != nil {
 		log.Error("failed to open report for decode",
 			"reason", "decode_error", logKeyOutcome, "decode_error", "error", err)
-		return true, err
+		return rep.ended(resultDecodeError, err)
 	}
 	report, decErr := parsing.DecodeReport(bufio.NewReaderSize(reportFile, 64*1024), maxLoggedGroups)
 	if cerr := reportFile.Close(); cerr != nil {
@@ -267,7 +273,12 @@ func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd sche
 		// risk silently degraded stats.
 		log.Error("fclones report decode failed; failing the run",
 			"reason", "decode_error", logKeyOutcome, "decode_error", "error", decErr)
-		return true, fmt.Errorf("decode fclones report: %w", decErr)
+		return rep.ended(resultDecodeError, fmt.Errorf("decode fclones report: %w", decErr))
+	}
+	rep.scan = &scanTotals{
+		groups:         report.TotalGroups,
+		duplicateFiles: report.TotalDuplicates,
+		redundantBytes: report.Stats.RedundantFileSize,
 	}
 
 	hasDuplicates := report.TotalGroups > 0
@@ -284,10 +295,12 @@ func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd sche
 	}
 
 	if !shouldRunAction(log, cfg, hasDuplicates) {
-		return true, nil
+		return rep.ended(resultSuccess, nil)
 	}
 
-	return true, runFclonesAction(ctx, cfg, tmpPath, log, newCmd)
+	act, err := runFclonesAction(ctx, cfg, tmpPath, log, newCmd)
+	rep.action = &act
+	return rep.ended(act.result, err)
 }
 
 // shouldRunAction reports whether the action phase should run after a scan.
@@ -422,7 +435,7 @@ func resolveActionSummary(log *slog.Logger, act action, stderrOut, stdoutOut str
 			summary = alt
 		}
 	}
-	if !summary.Matched && summary.RawLine != "" {
+	if !summaryRecognized(summary) {
 		log.Warn("action summary not recognized, possible fclones format drift",
 			"action", act, "result", summary.RawLine)
 	}
@@ -445,22 +458,25 @@ func actionAccomplishedNothing(summary parsing.ActionSummary) bool {
 }
 
 // runFclonesAction executes the post-scan action (remove, link, dedupe) on
-// the report file. It returns nil on success (including the group-only case
-// with no action to run, and shutdown mid-action) and a non-nil error when
-// the action times out, exits non-zero, or completes having deduped nothing.
-func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *slog.Logger, newCmd scheduler.CommandRunner) error {
+// the report file. It returns a nil error on success (including the
+// group-only case with no action to run, and shutdown mid-action) and a
+// non-nil one when the action cannot start, times out, exits non-zero, or
+// completes having deduped nothing; act.result names which.
+func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *slog.Logger, newCmd scheduler.CommandRunner) (act actionRun, err error) {
+	act.result = resultSuccess
 	actionCmdArgs, err := buildActionArgs(cfg)
 	if err != nil {
 		log.Error("invalid FCLONES_ACTION_ARGS syntax", logKeyOutcome, "start_error", "error", err)
-		return err
+		act.result = resultStartError
+		return act, err
 	}
 	if actionCmdArgs == nil {
-		return nil
+		return act, nil
 	}
 
 	if ctx.Err() != nil {
 		log.Info("action skipped, shutting down", logKeyOutcome, outcomeShutdown)
-		return nil
+		return act, nil
 	}
 
 	actionCtx, cancel := phaseContext(ctx, cfg.PhaseTimeout)
@@ -473,7 +489,8 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 	inFile, err := os.Open(reportPath)
 	if err != nil {
 		log.Error("failed to open report for action", logKeyOutcome, "start_error", "error", err)
-		return err
+		act.result = resultStartError
+		return act, err
 	}
 	defer inFile.Close()
 
@@ -488,18 +505,21 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 	startTime := time.Now()
 	runErr := actionCmd.Run()
 	duration := time.Since(startTime)
+	act.ran, act.duration = true, duration
 	actionFilter.Flush()
 	if n := actionFilter.Floods(); n > 0 {
 		log.Warn("fclones emitted a no-newline output flood; partial line force-flushed at cap",
 			"flood_count", n, "cap_bytes", linefilter.MaxLineBytes)
 	}
-	if done, phaseErr := classifyAndLogOutcome(ctx, actionCtx, log, "action", runErr,
+	if outcome, done, phaseErr := classifyAndLogOutcome(ctx, actionCtx, log, "action", runErr,
 		cfg.PhaseTimeout, duration, actionStderr, actionStdout, "action", cfg.Action); done {
-		return phaseErr
+		act.result = runResult(outcome.String())
+		return act, phaseErr
 	}
 	// success: continue to summary parsing
 
 	summary := resolveActionSummary(log, cfg.Action, actionStderr.String(), actionStdout.String())
+	act.summary, act.summarized = summary, true
 
 	if actionStdout.Truncated() || actionStderr.Truncated() {
 		log.Warn("action output exceeded capture cap; summary stats may be incomplete",
@@ -522,7 +542,8 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 			"files_deduped", summary.Files,
 			"bytes_reclaimed", summary.ReclaimedBytes,
 			"result", linefilter.EscapeUnsafe(summary.RawLine))
-		return fmt.Errorf("%s action reclaimed nothing over the duplicates the scan found: %s",
+		act.result = resultActionNoOp
+		return act, fmt.Errorf("%s action reclaimed nothing over the duplicates the scan found: %s",
 			cfg.Action, linefilter.EscapeUnsafe(summary.RawLine))
 	}
 
@@ -541,5 +562,5 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 		attrs = append(attrs, "result", summary.RawLine)
 	}
 	log.Info("action complete", attrs...)
-	return nil
+	return act, nil
 }

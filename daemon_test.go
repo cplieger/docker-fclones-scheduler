@@ -228,7 +228,11 @@ func TestDaemonRecordOutcome(t *testing.T) {
 				stamp:  scheduler.NewStamp(filepath.Join(dir, "last-run")),
 			}
 
-			d.recordOutcome(tt.trig, tt.ctxErr, tt.ran, tt.runErr)
+			rep := jobReport{trigger: tt.trig, ran: tt.ran, err: tt.runErr, result: resultSuccess}
+			if tt.runErr != nil {
+				rep.result = resultExecError
+			}
+			d.recordOutcome(tt.ctxErr, &rep)
 
 			if got := marker.Healthy(); got != tt.wantHealthy {
 				t.Errorf("recordOutcome(%q) marker healthy = %v, want %v", tt.trig, got, tt.wantHealthy)
@@ -257,7 +261,7 @@ func TestDaemonRecordOutcomeStampWriteFailureWarns(t *testing.T) {
 		stamp:  scheduler.NewStamp(filepath.Join(dir, "missing-dir", "last-run")),
 	}
 
-	d.recordOutcome(triggerInterval, nil, true, nil)
+	d.recordOutcome(nil, &jobReport{trigger: triggerInterval, ran: true, result: resultSuccess})
 
 	if !marker.Healthy() {
 		t.Error("marker healthy = false after a stamp write failure, want true (the failure must not demote the run)")
