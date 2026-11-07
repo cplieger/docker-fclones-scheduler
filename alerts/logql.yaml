@@ -1,10 +1,12 @@
-# Alert rules for docker-fclones-scheduler as a Loki ruler (LogQL) group. Every
-# rule reads the `run finished` record, which each completed run writes once at
-# INFO, so keep LOG_LEVEL at info. Change the `container` selector to the label
-# your log collector sets. Thresholds, windows and severity labels are starting
-# points. The 30h windows are twice SCAN_INTERVAL plus twice SCAN_TIMEOUT at the
-# defaults, the same deadline as the healthcheck; resize them to your settings.
-# Setup and per-alert notes are in docs/monitoring.md.
+# Alert rules for docker-fclones-scheduler as a Loki ruler (LogQL) group. This
+# file is the alternative to alerts/promql.yaml: load one of the two, not both.
+# Every rule reads the `run finished` record, which each completed run writes
+# once at INFO, so keep LOG_LEVEL at info. Change the `container` selector to the
+# label your log collector sets. Thresholds, windows and severity labels are
+# starting points. The 30h windows are twice SCAN_INTERVAL plus twice
+# SCAN_TIMEOUT at the defaults, the healthcheck's deadline; resize them to your
+# settings. FclonesDown exists only in alerts/promql.yaml; here
+# FclonesScanStalled covers it. Per-alert notes are in docs/monitoring.md.
 groups:
   - name: fclones
     rules:
