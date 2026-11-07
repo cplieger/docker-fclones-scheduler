@@ -94,6 +94,7 @@ func holdScanLock(t *testing.T, _ string) {
 
 // pathRun is what one run path left behind.
 type pathRun struct {
+	output     string
 	records    []map[string]string
 	healthy    bool
 	healthSet  bool
@@ -136,7 +137,7 @@ func runThrough(t *testing.T, p *runPath) pathRun {
 		t.Fatalf("reportRun completed = %v, want %v", completed, p.completed)
 	}
 	healthy := marker.CheckHealthy()
-	return pathRun{records: runFinishedRecords(t, buf.String()), healthy: healthy, healthSet: healthy != pre, preHealthy: pre}
+	return pathRun{output: buf.String(), records: runFinishedRecords(t, buf.String()), healthy: healthy, healthSet: healthy != pre, preHealthy: pre}
 }
 
 // runFinishedRecords returns the logfmt fields of every run finished record in
@@ -159,6 +160,17 @@ func runFinishedRecords(t *testing.T, out string) []map[string]string {
 func parseLogfmt(t *testing.T, line string) map[string]string {
 	t.Helper()
 	fields := make(map[string]string)
+	for _, kv := range logfmtPairs(t, line) {
+		fields[kv[0]] = kv[1]
+	}
+	return fields
+}
+
+// logfmtPairs splits one slog text line into its key and value pairs, in
+// order and with repeats kept.
+func logfmtPairs(t *testing.T, line string) [][2]string {
+	t.Helper()
+	var pairs [][2]string
 	for line != "" {
 		key, rest, found := strings.Cut(line, "=")
 		if !found {
@@ -178,10 +190,10 @@ func parseLogfmt(t *testing.T, line string) map[string]string {
 		} else {
 			value, rest, _ = strings.Cut(rest, " ")
 		}
-		fields[key] = value
+		pairs = append(pairs, [2]string{key, value})
 		line = strings.TrimLeft(rest, " ")
 	}
-	return fields
+	return pairs
 }
 
 // TestEveryCompletedRunWritesOneRunFinishedRecord pins the record to the
@@ -285,4 +297,46 @@ func TestRunFinishedRecordCarriesTheRunsMeasurements(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestFailingRunLinesCarryOneOutcomeKey pins one key per fact: every line of
+// a failing or interrupted run that names its outcome does so once, and
+// carries a reason only where the reason says more than the outcome.
+func TestFailingRunLinesCarryOneOutcomeKey(t *testing.T) {
+	for i := range runPaths {
+		p := &runPaths[i]
+		if p.want == resultSuccess {
+			continue
+		}
+		t.Run(p.name, func(t *testing.T) {
+			got := runThrough(t, p)
+			tagged := 0
+			for line := range strings.SplitSeq(strings.TrimSpace(got.output), "\n") {
+				var outcomes, reasons []string
+				for _, kv := range logfmtPairs(t, line) {
+					switch kv[0] {
+					case logKeyOutcome:
+						outcomes = append(outcomes, kv[1])
+					case "reason":
+						reasons = append(reasons, kv[1])
+					}
+				}
+				if len(outcomes) == 0 {
+					continue
+				}
+				tagged++
+				if len(outcomes) != 1 {
+					t.Errorf("line carries outcome %d times: %s", len(outcomes), line)
+				}
+				for _, r := range reasons {
+					if r == outcomes[0] {
+						t.Errorf("line carries reason=%s beside the equal outcome: %s", r, line)
+					}
+				}
+			}
+			if tagged == 0 {
+				t.Errorf("no line names the outcome:\n%s", got.output)
+			}
+		})
+	}
 }

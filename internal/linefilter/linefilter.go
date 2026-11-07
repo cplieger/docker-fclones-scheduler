@@ -178,7 +178,7 @@ func escapeControlBytes(line []byte) []byte {
 // (the C1 block, Unicode bidi controls, U+2028/U+2029). fclones renders
 // attacker-influenceable scanned filenames raw into its stderr diagnostics;
 // without this rewrite those bytes would reach an operator's terminal or
-// Loki unescaped (CWE-117 log injection / Trojan-Source). Every other valid
+// a log store unescaped (CWE-117 log injection / Trojan-Source). Every other valid
 // multi-byte rune (accented Latin, CJK, emoji) is forwarded verbatim. Returns
 // the input unchanged, without allocating, when it is already clean.
 func sanitizeControlBytes(line []byte) []byte {

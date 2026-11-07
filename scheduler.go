@@ -31,11 +31,10 @@ const reportTempPattern = "fclones_report_*.txt"
 // duration.
 const logKeyDurationS = "duration_s"
 
-// logKeyOutcome tags the terminal outcome of a run or startup so one
-// Loki/Grafana query (outcome=~".+") catches every outcome. On the run-once
-// terminal paths, "shutdown"/"skipped" are re-emitted at WARN (vs. INFO for
-// the benign daemon occurrences), so level disambiguates a one-shot failure
-// from a clean daemon shutdown/overlap skip.
+// logKeyOutcome tags the terminal outcome of a run or startup, so one log
+// query (outcome=~".+") finds every outcome. Run-once logs shutdown and
+// skipped again at WARN, where the daemon's are INFO: a one-shot run that did
+// not run is a failed batch job to its reader.
 const logKeyOutcome = "outcome"
 
 // cleanStaleReports removes orphaned fclones report temp files left in /cache
@@ -143,7 +142,7 @@ func classifyAndLogOutcome(
 	case outcomeShutdown:
 		attrs := make([]any, 0, 6+len(extra))
 		attrs = append(attrs,
-			"reason", outcome.String(), logKeyOutcome, outcome,
+			logKeyOutcome, outcome,
 			"cause", context.Cause(parent),
 		)
 		attrs = append(attrs, extra...)
@@ -154,7 +153,7 @@ func classifyAndLogOutcome(
 		// optional stdout trio) + caller extra; never under-allocates.
 		attrs := make([]any, 0, 22+len(extra))
 		attrs = append(attrs,
-			"reason", outcome.String(), logKeyOutcome, outcome,
+			logKeyOutcome, outcome,
 			"timeout", timeout, "duration", duration,
 			logKeyDurationS, int(duration.Round(time.Second).Seconds()),
 		)
@@ -167,7 +166,7 @@ func classifyAndLogOutcome(
 		// optional stdout trio) + caller extra; never under-allocates.
 		attrs := make([]any, 0, 22+len(extra))
 		attrs = append(attrs,
-			"reason", outcome.String(), logKeyOutcome, outcome,
+			logKeyOutcome, outcome,
 			"duration", duration,
 			logKeyDurationS, int(duration.Round(time.Second).Seconds()),
 			"error", runErr,
@@ -260,7 +259,7 @@ func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd sche
 	reportFile, err := os.Open(tmpPath)
 	if err != nil {
 		log.Error("failed to open report for decode",
-			"reason", "decode_error", logKeyOutcome, "decode_error", "error", err)
+			logKeyOutcome, "decode_error", "error", err)
 		return rep.ended(resultDecodeError, err)
 	}
 	report, decErr := parsing.DecodeReport(bufio.NewReaderSize(reportFile, 64*1024), maxLoggedGroups)
@@ -272,7 +271,7 @@ func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd sche
 		// drift, an interrupted write, or corruption — fail loudly rather than
 		// risk silently degraded stats.
 		log.Error("fclones report decode failed; failing the run",
-			"reason", "decode_error", logKeyOutcome, "decode_error", "error", decErr)
+			logKeyOutcome, "decode_error", "error", decErr)
 		return rep.ended(resultDecodeError, fmt.Errorf("decode fclones report: %w", decErr))
 	}
 	rep.scan = &scanTotals{
@@ -536,7 +535,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 		// nothing else can fail this run: without this the container reports
 		// healthy while reclaiming nothing on every pass.
 		log.Error("action reclaimed nothing; failing the run",
-			"reason", "action_no_op", logKeyOutcome, "action_no_op",
+			logKeyOutcome, "action_no_op",
 			"action", cfg.Action,
 			logKeyDurationS, int(duration.Round(time.Second).Seconds()),
 			"files_deduped", summary.Files,
