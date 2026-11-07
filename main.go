@@ -74,7 +74,7 @@ func run(ctx context.Context) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	return serve(ctx, &cfg, health.NewLatch(marker))
+	return serve(ctx, &cfg, marker)
 }
 
 // completedStampPath is where the reporter records every completed run; a
@@ -93,9 +93,10 @@ func newReporter(cfg *config, state *health.Latch) (*measure.Registry, *reporter
 // serve binds the metrics listener, then dispatches on the configured mode.
 // The bind comes before any run, so a bad METRICS_LISTEN_ADDR stops the
 // container at once instead of leaving it scanning with no page.
-func serve(ctx context.Context, cfg *config, state *health.Latch) error {
+func serve(ctx context.Context, cfg *config, marker *health.Marker) error {
+	state := health.NewLatch(marker)
 	reg, rep := newReporter(cfg, state)
-	stopMetrics, err := serveMetrics(ctx, cfg.MetricsListenAddr, reg)
+	stopMetrics, err := serveMetrics(ctx, cfg.MetricsListenAddr, reg, newHealthz(marker, cfg))
 	if err != nil {
 		state.Set(false)
 		return err

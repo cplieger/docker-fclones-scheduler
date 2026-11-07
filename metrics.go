@@ -151,11 +151,12 @@ const (
 	metricsWriteTimeout = 30 * time.Second
 )
 
-// serveMetrics binds addr and serves reg's page on it until ctx ends; stop
-// cancels the server and waits until it has shut down. An empty addr opens no
-// listener. A bind failure is logged once, naming METRICS_LISTEN_ADDR, and
-// returned so the container refuses to start rather than run with no page.
-func serveMetrics(ctx context.Context, addr string, reg *measure.Registry) (stop func(), err error) {
+// serveMetrics binds addr and serves reg's page and healthz on it until ctx
+// ends; stop cancels the server and waits until it has shut down. An empty
+// addr opens no listener. A bind failure is logged once, naming
+// METRICS_LISTEN_ADDR, and returned so the container refuses to start rather
+// than run with no page.
+func serveMetrics(ctx context.Context, addr string, reg *measure.Registry, healthz http.Handler) (stop func(), err error) {
 	if addr == "" {
 		return func() {}, nil
 	}
@@ -167,6 +168,7 @@ func serveMetrics(ctx context.Context, addr string, reg *measure.Registry) (stop
 	}
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", reg.Handler())
+	mux.Handle("GET /healthz", healthz)
 	srv := httpserver.New(mux,
 		httpserver.WithReadTimeout(metricsReadTimeout),
 		httpserver.WithWriteTimeout(metricsWriteTimeout))

@@ -49,7 +49,7 @@ func countListens(t *testing.T) *int {
 
 func TestServeMetricsUnsetOpensNoListener(t *testing.T) {
 	binds := countListens(t)
-	stop, err := serveMetrics(t.Context(), "", measure.NewRegistry(metricsPrefix))
+	stop, err := serveMetrics(t.Context(), "", measure.NewRegistry(metricsPrefix), nil)
 	if err != nil {
 		t.Fatalf("serveMetrics(\"\") error = %v", err)
 	}
@@ -75,8 +75,10 @@ func freeAddr(t *testing.T) string {
 
 func TestServeMetricsServesThePage(t *testing.T) {
 	addr := freeAddr(t)
-	reg, _ := newReporter(&config{Action: actionLink}, health.NewLatch(health.NewMarker(filepath.Join(t.TempDir(), "healthy"))))
-	stop, err := serveMetrics(t.Context(), addr, reg)
+	marker := health.NewMarker(filepath.Join(t.TempDir(), "healthy"))
+	cfg := &config{Action: actionLink}
+	reg, _ := newReporter(cfg, health.NewLatch(marker))
+	stop, err := serveMetrics(t.Context(), addr, reg, newHealthz(marker, cfg))
 	if err != nil {
 		t.Fatalf("serveMetrics(%q) error = %v", addr, err)
 	}
@@ -123,7 +125,7 @@ func TestServeRefusesAnAddressItCannotBind(t *testing.T) {
 			marker := health.NewMarker(filepath.Join(dir, "healthy"))
 			marker.Set(true)
 
-			err := serve(t.Context(), &config{Mode: modeOnce, MetricsListenAddr: addr}, health.NewLatch(marker))
+			err := serve(t.Context(), &config{Mode: modeOnce, MetricsListenAddr: addr}, marker)
 
 			if err == nil {
 				t.Fatalf("serve with METRICS_LISTEN_ADDR=%q returned nil, want an error", addr)
