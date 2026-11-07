@@ -97,7 +97,7 @@ The healthcheck reads a file the container updates after each scan. Unhealthy me
 With the built-in schedule, a container that has not scanned for twice `SCAN_INTERVAL` plus twice `SCAN_TIMEOUT` is unhealthy too. With the defaults that is 30 hours. [How it works](docs/how-it-works.md#health) has the full rules. An unhealthy container notifies nobody. [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what does.
 
 - The container restarts in a loop with `cache directory verification failed`. The cache folder does not belong to the container's user. Repeat step 1 of the quick start.
-- A run fails with `action reclaimed nothing` and `FclonesRunFailed` fires. The container's user cannot write to the scanned folder, or, for `dedupe`, the filesystem has no reflink support.
+- A run fails with `action reclaimed nothing`, and with the shipped rules loaded `FclonesRunFailed` fires. The container's user cannot write to the scanned folder, or, for `dedupe`, the filesystem has no reflink support.
 - The container exits with `positional argument not allowed`. Give each pattern its own flag, as in `--name '*.mp4' --name '*.mkv'`.
 - The container shows unhealthy during a long first scan. Raise `start_period`, as [Configuration](docs/configuration.md#a-slow-first-scan) shows.
 

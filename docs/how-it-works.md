@@ -34,7 +34,7 @@ Only scheduled scans write the record. Scans started with `wrapper scan` and the
 
 ## Health
 
-The healthcheck runs `/app/wrapper health`, which reads a file the main process updates after each run. The container turns unhealthy when:
+The healthcheck runs `/app/wrapper health`, which reads the health file `/tmp/.healthy`. The main process updates it after each run. The container turns unhealthy when:
 
 - fclones exits non-zero, for example because a scan path is missing, permission is denied or the cache is corrupt.
 - The action phase fails, for example on a hardlink across filesystems.
@@ -48,6 +48,6 @@ The state at start follows the last completed run, scheduled or triggered, which
 
 With the built-in schedule, a startup scan that is due overrides that record. The container then starts unhealthy, scans, and turns healthy when that scan succeeds. When the startup scan is skipped and the last completed run failed, the container stays unhealthy until the next good run, at most one `SCAN_INTERVAL` after the start for a scheduled one.
 
-The built-in schedule also sets a deadline of `2 x SCAN_INTERVAL + 2 x SCAN_TIMEOUT` on that file. A file older than that means the schedule has stopped, and the healthcheck reports unhealthy. With `SCAN_TIMEOUT=0` there is no deadline, because a run then has no time limit. With an outside scheduler, the container starts from the last completed run in the same way, and healthy when no run has completed yet. Each scan updates the file, and no deadline applies.
+The built-in schedule also sets a deadline of `2 x SCAN_INTERVAL + 2 x SCAN_TIMEOUT` on the health file `/tmp/.healthy`. A health file older than that means the schedule has stopped, and the healthcheck reports unhealthy. With `SCAN_TIMEOUT=0` there is no deadline, because a run then has no time limit. With an outside scheduler, the container starts from the last completed run in the same way, and healthy when no run has completed yet. Each scan updates the health file, and no deadline applies.
 
-With `METRICS_LISTEN_ADDR` set, `/healthz` on that address gives the same verdict as the healthcheck, deadline included. [Knowing the app is alive](monitoring.md#knowing-the-app-is-alive) lists what it answers.
+With `METRICS_LISTEN_ADDR` set, `/healthz` on that address gives the same verdict as the healthcheck, deadline included, while `/tmp` is writable. [Knowing the app is alive](monitoring.md#knowing-the-app-is-alive) lists what it answers.
