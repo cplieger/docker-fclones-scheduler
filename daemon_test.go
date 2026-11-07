@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -125,52 +126,110 @@ func TestStartTickerSkipsStartupScanWhenNotDue(t *testing.T) {
 	})
 }
 
-// TestBuiltinBootState pins the boot decision pair the /cache record
-// drives. The fresh-FAILED case is the CountFailed policy's signature:
-// the startup scan is skipped (any completed scan holds its schedule slot;
-// the interval ticker owns the retry) AND the marker boots unhealthy,
-// because not-due does not imply the last scan succeeded.
-func TestBuiltinBootState(t *testing.T) {
+// TestBootDaemon pins the two boot calls. The schedule stamp decides only
+// built-in mode's startup scan, under scheduler.CountFailed: a fresh FAILED
+// scheduled scan skips the startup scan. The marker starts from the last
+// completed run of any trigger, so a triggered run the schedule stamp never
+// saw still decides it.
+func TestBootDaemon(t *testing.T) {
 	t.Parallel()
 	const interval = time.Hour
+	type rec struct {
+		age time.Duration
+		ok  bool
+	}
 	tests := []struct {
+		schedule    *rec
+		completed   *rec
 		name        string
-		hasRecord   bool
-		recordOK    bool
-		age         time.Duration
+		mode        runMode
 		wantDue     bool
 		wantHealthy bool
 	}{
-		{name: "no record fires the startup scan and boots unhealthy", wantDue: true},
-		{name: "fresh success skips the startup scan and boots healthy", hasRecord: true, recordOK: true, wantHealthy: true},
-		{name: "fresh FAILED skips the startup scan and boots unhealthy", hasRecord: true},
-		{name: "stale success fires the startup scan", hasRecord: true, recordOK: true, age: 2 * interval, wantDue: true},
-		{name: "stale failure fires the startup scan", hasRecord: true, age: 2 * interval, wantDue: true},
+		{name: "built-in with no record fires the startup scan and boots unhealthy", mode: modeBuiltin, wantDue: true},
+		{name: "built-in fresh success skips the startup scan and boots healthy", mode: modeBuiltin, schedule: &rec{ok: true}, completed: &rec{ok: true}, wantHealthy: true},
+		{name: "built-in fresh FAILED skips the startup scan and boots unhealthy", mode: modeBuiltin, schedule: &rec{}, completed: &rec{}},
+		{name: "built-in stale success fires the startup scan", mode: modeBuiltin, schedule: &rec{ok: true, age: 2 * interval}, completed: &rec{ok: true, age: 2 * interval}, wantDue: true},
+		{name: "built-in stale failure fires the startup scan", mode: modeBuiltin, schedule: &rec{age: 2 * interval}, wantDue: true},
+		{name: "built-in scheduled success then a failed triggered run boots unhealthy", mode: modeBuiltin, schedule: &rec{ok: true}, completed: &rec{}},
+		{name: "built-in scheduled failure then a good triggered run boots healthy", mode: modeBuiltin, schedule: &rec{}, completed: &rec{ok: true}, wantHealthy: true},
+		{name: "built-in due startup scan boots unhealthy after a good triggered run", mode: modeBuiltin, completed: &rec{ok: true}, wantDue: true},
+		{name: "built-in with only the schedule stamp boots from it", mode: modeBuiltin, schedule: &rec{ok: true}, wantHealthy: true},
+		{name: "external with no completed run boots healthy", mode: modeExternal, wantHealthy: true},
+		{name: "external after a failed run boots unhealthy", mode: modeExternal, completed: &rec{}},
+		{name: "external after a good run boots healthy", mode: modeExternal, completed: &rec{ok: true}, wantHealthy: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			stamp := scheduler.NewStamp(filepath.Join(t.TempDir(), "last-run"))
-			if tt.hasRecord {
-				if err := stamp.Record(tt.recordOK); err != nil {
-					t.Fatalf("Record(%v): %v", tt.recordOK, err)
+			dir := t.TempDir()
+			schedule := scheduler.NewStamp(filepath.Join(dir, "last-run"))
+			completed := scheduler.NewStamp(filepath.Join(dir, "last-completed"))
+			for _, s := range []struct {
+				r     *rec
+				stamp *scheduler.Stamp
+			}{{tt.schedule, schedule}, {tt.completed, completed}} {
+				if s.r == nil {
+					continue
+				}
+				if err := s.stamp.Record(s.r.ok); err != nil {
+					t.Fatalf("Record(%v): %v", s.r.ok, err)
 				}
 			}
-			now := time.Now().Add(tt.age)
+			// Both records are written now; age them by booting later.
+			age := time.Duration(0)
+			for _, r := range []*rec{tt.schedule, tt.completed} {
+				if r != nil {
+					age = max(age, r.age)
+				}
+			}
+			marker := health.NewMarker(filepath.Join(dir, "healthy"))
+			cfg := &config{Mode: tt.mode, Interval: interval}
 
-			due, healthy, last := builtinBootState(stamp, interval, now)
+			due := bootDaemon(cfg, schedule, &reporter{completed: completed}, health.NewLatch(marker), time.Now().Add(age))
 			if due != tt.wantDue {
-				t.Errorf("builtinBootState(record=%v/%v, age=%s) due = %v, want %v",
-					tt.hasRecord, tt.recordOK, tt.age, due, tt.wantDue)
+				t.Errorf("bootDaemon startup due = %v, want %v", due, tt.wantDue)
 			}
-			if healthy != tt.wantHealthy {
-				t.Errorf("builtinBootState(record=%v/%v, age=%s) healthy = %v, want %v",
-					tt.hasRecord, tt.recordOK, tt.age, healthy, tt.wantHealthy)
-			}
-			if tt.hasRecord && last.OK != tt.recordOK {
-				t.Errorf("builtinBootState last.OK = %v, want the recorded %v", last.OK, tt.recordOK)
+			if got := marker.CheckHealthy(); got != tt.wantHealthy {
+				t.Errorf("bootDaemon marker healthy = %v, want %v", got, tt.wantHealthy)
 			}
 		})
+	}
+}
+
+// TestBootVerdictMatchesTheRestoredLastRun pins that after a restart the
+// marker and last_run_ok give the same verdict before any run.
+func TestBootVerdictMatchesTheRestoredLastRun(t *testing.T) {
+	for _, mode := range []runMode{modeExternal, modeBuiltin} {
+		for _, ok := range []bool{true, false} {
+			t.Run(mode.String()+" last run ok "+strconv.FormatBool(ok), func(t *testing.T) {
+				dir := t.TempDir()
+				prevStamp := completedStampPath
+				completedStampPath = filepath.Join(dir, "last-completed")
+				t.Cleanup(func() { completedStampPath = prevStamp })
+				schedule := scheduler.NewStamp(filepath.Join(dir, "last-run"))
+				// The schedule stamp holds the opposite verdict: a scheduled run
+				// followed by a triggered one.
+				if err := schedule.Record(!ok); err != nil {
+					t.Fatalf("Record: %v", err)
+				}
+				if err := scheduler.NewStamp(completedStampPath).Record(ok); err != nil {
+					t.Fatalf("Record: %v", err)
+				}
+				marker := health.NewMarker(filepath.Join(dir, "healthy"))
+				latch := health.NewLatch(marker)
+				cfg := &config{Mode: mode, Interval: time.Hour}
+
+				reg, rep := newReporter(cfg, latch)
+				bootDaemon(cfg, schedule, rep, latch, time.Now())
+				if got := marker.CheckHealthy(); got != ok {
+					t.Errorf("marker healthy after restart = %v, want the last run's %v", got, ok)
+				}
+				if got := gauge(t, reg, "last_run_ok"); got != float64(flag(ok)) {
+					t.Errorf("last_run_ok after restart = %v, want %d", got, flag(ok))
+				}
+			})
+		}
 	}
 }
 

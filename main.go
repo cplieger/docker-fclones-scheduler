@@ -134,14 +134,13 @@ func bootstrap(ctx context.Context) (config, error) {
 }
 
 // runOnce performs exactly one scan+action then returns (SCAN_INTERVAL=0).
-// It runs the job directly (no daemon, no socket) and is the marker's single
-// writer for its short life. Unlike the daemon modes, every non-success
-// outcome here — exec failure, an interrupt mid-run, or a lock-contention
-// skip — exits non-zero, because the exit code IS the batch job result.
-func runOnce(ctx context.Context, marker *health.Latch, rep *reporter, cfg *config) error {
+// Unlike the daemon modes, every non-success outcome (exec failure, an
+// interrupt mid-run, or a lock-contention skip) exits non-zero, because the
+// exit code IS the batch job result.
+func runOnce(ctx context.Context, state *health.Latch, rep *reporter, cfg *config) error {
 	// Begins unhealthy: clears any stale health file from a previous run
 	// that crashed before its defer ran.
-	marker.Set(false)
+	state.Set(false)
 
 	slog.Info("container started (run once)",
 		"uid", os.Getuid(), "mode", cfg.Mode, "target", cfg.ScanPath, "action", cfg.Action,
@@ -155,7 +154,7 @@ func runOnce(ctx context.Context, marker *health.Latch, rep *reporter, cfg *conf
 	case runOnceSkipped:
 		// The reporter writes no marker on a skip; set it here so the exit code
 		// and the healthcheck agree.
-		marker.Set(false)
+		state.Set(false)
 		slog.Warn("run-once skipped: another process holds the scan lock; no scan ran",
 			logKeyOutcome, "skipped", "lock", lockFile)
 		return errors.New("run-once skipped: scan lock held by another process")

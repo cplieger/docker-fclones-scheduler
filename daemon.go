@@ -38,8 +38,8 @@ const (
 // daemon carries the executor's dependencies.
 type daemon struct {
 	queue *trigger.Queue[struct{}]
-	// health is the single writer of the marker; every run outcome reaches it
-	// through reporter.
+	// health holds the marker: bootDaemon writes the starting verdict, the
+	// reporter each completed run's, and shutdown begins the drain.
 	health   *health.Latch
 	reporter *reporter
 	cfg      *config
@@ -63,21 +63,7 @@ func runDaemon(ctx context.Context, cfg *config, state *health.Latch, rep *repor
 
 	stamp := scheduler.NewStamp(stampFile)
 	builtin := cfg.Mode == modeBuiltin
-
-	// Built-in mode fires its startup scan only when the /cache record says
-	// one is due, and starts unhealthy until a fresh SUCCESSFUL record proves
-	// the setup; external mode starts healthy (idle, nothing has failed).
-	startupDue := false
-	bootHealthy := cfg.Mode == modeExternal
-	if builtin {
-		var last scheduler.RunRecord
-		startupDue, bootHealthy, last = builtinBootState(stamp, cfg.Interval, time.Now())
-		if !startupDue {
-			slog.Info("startup scan skipped, a completed scan survived the restart",
-				"completed", last.Time, "ok", last.OK)
-		}
-	}
-	state.Set(bootHealthy)
+	startupDue := bootDaemon(cfg, stamp, rep, state, time.Now())
 
 	d := &daemon{
 		queue:    trigger.NewQueue[struct{}](queueCapacity),
@@ -138,19 +124,31 @@ func runDaemon(ctx context.Context, cfg *config, state *health.Latch, rep *repor
 	return nil
 }
 
-// builtinBootState reads the /cache last-run record and decides built-in
-// mode's two boot calls: whether the startup scan is due, and whether the
-// health marker starts healthy. The record is judged under
-// scheduler.CountFailed — any COMPLETED scan holds its schedule slot and the
-// interval ticker owns the retry, because repeating a failed multi-hour scan
-// on every restart is exactly the churn the record exists to prevent. Under
-// that policy not-due does not imply the last scan succeeded, so boot health
-// reads the outcome separately: a fresh FAILED record boots unhealthy with
-// no startup scan, until the next scheduled scan succeeds.
-func builtinBootState(stamp *scheduler.Stamp, interval time.Duration, now time.Time) (due, healthy bool, last scheduler.RunRecord) {
-	due = stamp.Due(interval, now, scheduler.CountFailed)
-	last, _ = stamp.Last()
-	return due, !due && last.OK, last
+// bootDaemon sets the marker's starting verdict and reports whether built-in
+// mode's startup scan is due. The schedule stamp decides only that scan, under
+// CountFailed so a failed multi-hour scan is not repeated on every restart.
+// The verdict is the last completed run's, the record last_run_ok is seeded
+// from, so the two agree; a due startup scan boots unhealthy.
+func bootDaemon(cfg *config, schedule *scheduler.Stamp, rep *reporter, state *health.Latch, now time.Time) (startupDue bool) {
+	builtin := cfg.Mode == modeBuiltin
+	last, _ := schedule.Last()
+	// With no completed-run record yet, external mode is idle with nothing
+	// failed and built-in mode falls back to the schedule stamp.
+	healthy := !builtin || last.OK
+	if completed, known := rep.completed.Last(); known {
+		healthy = completed.OK
+	}
+	if builtin {
+		startupDue = schedule.Due(cfg.Interval, now, scheduler.CountFailed)
+		if startupDue {
+			healthy = false
+		} else {
+			slog.Info("startup scan skipped, a completed scan survived the restart",
+				"completed", last.Time, "ok", last.OK)
+		}
+	}
+	state.Set(healthy)
+	return startupDue
 }
 
 // startTicker runs the built-in interval scheduler: when the /cache record

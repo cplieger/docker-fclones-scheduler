@@ -5,7 +5,9 @@
 # `fclones`. Thresholds and severity labels are starting points. The 30h stall
 # window (108000 seconds) is twice SCAN_INTERVAL plus twice SCAN_TIMEOUT at the
 # defaults, the healthcheck's deadline; resize it to your settings. FclonesDown
-# exists only here; in alerts/logql.yaml FclonesScanStalled covers it.
+# exists only here; in alerts/logql.yaml FclonesScanStalled covers it. With
+# SCAN_INTERVAL=0 the page exists only while a run lasts, so load
+# alerts/logql.yaml instead.
 groups:
   - name: fclones
     rules:

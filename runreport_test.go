@@ -104,8 +104,9 @@ type pathRun struct {
 	preHealthy bool
 }
 
-// runThrough runs p through runFclonesJob and reportRun with the production
-// log handler, as the daemon does, and returns the records and the marker.
+// runThrough runs p through runFclonesJob and reporter.report with the
+// production log handler, as the daemon does, and returns the records and the
+// marker.
 // It swaps process globals, so callers are not parallel.
 func runThrough(t *testing.T, p *runPath) pathRun {
 	t.Helper()
@@ -138,7 +139,7 @@ func runThrough(t *testing.T, p *runPath) pathRun {
 	r, reg := testReporterOn(t, marker, cfg)
 	completed, _ := r.report(ctx.Err(), &rep)
 	if completed != p.completed {
-		t.Fatalf("reportRun completed = %v, want %v", completed, p.completed)
+		t.Fatalf("reporter.report completed = %v, want %v", completed, p.completed)
 	}
 	healthy := marker.CheckHealthy()
 	return pathRun{reg: reg, action: cfg.Action, output: buf.String(), records: runFinishedRecords(t, buf.String()), healthy: healthy, healthSet: healthy != pre, preHealthy: pre}

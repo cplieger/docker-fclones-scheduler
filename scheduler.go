@@ -192,8 +192,7 @@ var (
 // different container or a manual `docker run` sharing this /cache; the
 // daemon owns all in-process runs): no scan or action ran. err is non-nil on a
 // genuine failure and nil on the lock skip, a clean run and a shutdown. The
-// caller hands the report to reportRun, which writes the health signal and the
-// run finished record.
+// caller hands the report to reporter.report.
 func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd scheduler.CommandRunner) jobReport {
 	rep := jobReport{scanID: newScanID(), trigger: trigger, ran: true}
 	lock, ok, lockErr := scheduler.TryLock(scanLockPath)
