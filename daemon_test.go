@@ -233,6 +233,44 @@ func TestBootVerdictMatchesTheRestoredLastRun(t *testing.T) {
 	}
 }
 
+// TestStartupSkipLogsTheBootVerdict pins that the startup-skip line reports
+// the verdict the marker boots with, not the schedule stamp's: a failed
+// scheduled scan followed by a good triggered run boots healthy.
+func TestStartupSkipLogsTheBootVerdict(t *testing.T) {
+	logs := captureLogs(t, slog.LevelInfo)
+	dir := t.TempDir()
+	schedule := scheduler.NewStamp(filepath.Join(dir, "last-run"))
+	completed := scheduler.NewStamp(filepath.Join(dir, "last-completed"))
+	if err := schedule.Record(false); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if err := completed.Record(true); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	marker := health.NewMarker(filepath.Join(dir, "healthy"))
+	cfg := &config{Mode: modeBuiltin, Interval: time.Hour}
+
+	bootDaemon(cfg, schedule, &reporter{completed: completed}, health.NewLatch(marker), time.Now())
+	if !marker.CheckHealthy() {
+		t.Fatal("marker boots unhealthy, want healthy from the good triggered run")
+	}
+	var line string
+	for l := range strings.SplitSeq(logs.String(), "\n") {
+		if strings.Contains(l, "startup scan skipped") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("no startup-skip line in:\n%s", logs.String())
+	}
+	if !strings.Contains(line, " healthy=true") {
+		t.Errorf("startup-skip line %q does not carry healthy=true", line)
+	}
+	if strings.Contains(line, "=false") {
+		t.Errorf("startup-skip line %q logs a failing verdict beside a healthy boot", line)
+	}
+}
+
 // TestDaemonRecordOutcome pins which runs reach the health marker and the
 // /cache stamp: a completed scheduled run records both with its outcome, a
 // triggered run updates health only (it does not answer the startup

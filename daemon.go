@@ -144,7 +144,7 @@ func bootDaemon(cfg *config, schedule *scheduler.Stamp, rep *reporter, state *he
 			healthy = false
 		} else {
 			slog.Info("startup scan skipped, a completed scan survived the restart",
-				"completed", last.Time, "ok", last.OK)
+				"completed", last.Time, "healthy", healthy)
 		}
 	}
 	state.Set(healthy)
