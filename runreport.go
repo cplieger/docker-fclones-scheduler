@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/cplieger/docker-fclones-scheduler/internal/parsing"
+	"github.com/cplieger/go/scheduler"
 )
 
 // runFinishedMsg is the message of the one record each completed run writes.
@@ -86,7 +87,7 @@ func flag(b bool) int {
 func (r *jobReport) recordAttrs(ok bool) []any {
 	attrs := []any{
 		"scan_id", r.scanID, "trigger", r.trigger,
-		"result", string(r.result), "ok", flag(ok),
+		keyResult, string(r.result), "ok", flag(ok),
 	}
 	if r.scanRan {
 		attrs = append(attrs, "scan_duration_s", seconds(r.scanDuration))
@@ -112,15 +113,30 @@ func seconds(d time.Duration) int {
 	return int(d.Round(time.Second).Seconds())
 }
 
-// reportRun writes a completed run's verdict to the health signal and to the
-// run finished record in one call, so the two cannot disagree. A lock skip or
-// an interrupted run writes neither; completed reports which happened.
-func reportRun(ctxErr error, rep *jobReport, setHealth func(healthy bool)) (completed, healthy bool) {
+// reporter writes each completed run's verdict to the health signal, the
+// metrics and the run finished record in one call, so the three cannot
+// disagree, and records the run on /cache so the time series survive a
+// restart.
+type reporter struct {
+	setHealth func(healthy bool)
+	metrics   *runMetrics
+	completed *scheduler.Stamp
+}
+
+// report hands one attempted run to every reader. A lock skip or an
+// interrupted run has no verdict and reaches none of them; completed reports
+// which happened.
+func (r *reporter) report(ctxErr error, rep *jobReport) (completed, healthy bool) {
 	completed, healthy = jobHealthSignal(ctxErr, rep.ran, rep.err)
 	if !completed {
 		return false, false
 	}
-	setHealth(healthy)
+	r.setHealth(healthy)
+	r.metrics.observe(rep, healthy, time.Now())
 	slog.Info(runFinishedMsg, rep.recordAttrs(healthy)...)
+	if err := r.completed.Record(healthy); err != nil {
+		slog.Warn("cannot record the run on /cache; after a restart the metrics start without its time",
+			"error", err)
+	}
 	return true, healthy
 }

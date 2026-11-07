@@ -250,7 +250,7 @@ func runFclonesJob(ctx context.Context, cfg *config, trigger string, newCmd sche
 		log.Warn("failed to close report temp file", "error", cerr)
 	}
 
-	if outcome, done, phaseErr := classifyAndLogOutcome(ctx, scanCtx, log, "scan", runErr,
+	if outcome, done, phaseErr := classifyAndLogOutcome(ctx, scanCtx, log, phaseScan, runErr,
 		cfg.PhaseTimeout, duration, errBuf, nil); done {
 		return rep.ended(runResult(outcome.String()), phaseErr)
 	}
@@ -510,7 +510,7 @@ func runFclonesAction(ctx context.Context, cfg *config, reportPath string, log *
 		log.Warn("fclones emitted a no-newline output flood; partial line force-flushed at cap",
 			"flood_count", n, "cap_bytes", linefilter.MaxLineBytes)
 	}
-	if outcome, done, phaseErr := classifyAndLogOutcome(ctx, actionCtx, log, "action", runErr,
+	if outcome, done, phaseErr := classifyAndLogOutcome(ctx, actionCtx, log, phaseAction, runErr,
 		cfg.PhaseTimeout, duration, actionStderr, actionStdout, "action", cfg.Action); done {
 		act.result = runResult(outcome.String())
 		return act, phaseErr

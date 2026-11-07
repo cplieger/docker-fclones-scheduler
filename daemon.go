@@ -38,9 +38,11 @@ const (
 // daemon carries the executor's dependencies.
 type daemon struct {
 	queue *trigger.Queue[struct{}]
-	// health is the single writer of the marker; every run outcome funnels through it.
-	health *health.Latch
-	cfg    *config
+	// health is the single writer of the marker; every run outcome reaches it
+	// through reporter.
+	health   *health.Latch
+	reporter *reporter
+	cfg      *config
 	// stamp is the restart-surviving last-run record on /cache.
 	stamp  *scheduler.Stamp
 	newCmd scheduler.CommandRunner
@@ -50,7 +52,7 @@ type daemon struct {
 // the trigger socket, wires the health latch, starts the executor, and
 // — in built-in mode — drives the interval ticker. Returning an error exits
 // non-zero.
-func runDaemon(ctx context.Context, cfg *config, state *health.Latch, newCmd scheduler.CommandRunner) error {
+func runDaemon(ctx context.Context, cfg *config, state *health.Latch, rep *reporter, newCmd scheduler.CommandRunner) error {
 	ln, err := trigger.Listen(socketPath)
 	if err != nil {
 		slog.Error("cannot bind trigger socket", "path", socketPath, "error", err)
@@ -78,11 +80,12 @@ func runDaemon(ctx context.Context, cfg *config, state *health.Latch, newCmd sch
 	state.Set(bootHealthy)
 
 	d := &daemon{
-		queue:  trigger.NewQueue[struct{}](queueCapacity),
-		health: state,
-		cfg:    cfg,
-		stamp:  stamp,
-		newCmd: newCmd,
+		queue:    trigger.NewQueue[struct{}](queueCapacity),
+		health:   state,
+		reporter: rep,
+		cfg:      cfg,
+		stamp:    stamp,
+		newCmd:   newCmd,
 	}
 
 	executorDone := make(chan struct{})
@@ -111,6 +114,7 @@ func runDaemon(ctx context.Context, cfg *config, state *health.Latch, newCmd sch
 		"uid", os.Getuid(), "mode", cfg.Mode, "interval", cfg.Interval,
 		"target", cfg.ScanPath, "action", cfg.Action,
 		"phase_timeout", cfg.PhaseTimeout, "socket", socketPath,
+		"metrics_listen_addr", cfg.MetricsListenAddr,
 	}
 	if builtin {
 		bootAttrs = append(bootAttrs, "startup_scan", startupDue)
@@ -208,13 +212,13 @@ func (d *daemon) run(ctx context.Context, trig string, _ struct{}) trigger.Resul
 	return out
 }
 
-// recordOutcome reports a finished run through reportRun and, for the
+// recordOutcome reports a finished run through the reporter and, for the
 // daemon's own scheduled runs, records the /cache stamp. A cancelled run or a
 // cross-container lock skip completed no scan, so it reaches neither. A stamp
 // write failure never affects the run: an absent record reads as due, costing
 // at most one extra startup scan after the next recreate.
 func (d *daemon) recordOutcome(ctxErr error, rep *jobReport) {
-	completed, healthy := reportRun(ctxErr, rep, d.health.Set)
+	completed, healthy := d.reporter.report(ctxErr, rep)
 	if !completed {
 		return
 	}

@@ -224,8 +224,9 @@ func TestDaemonRecordOutcome(t *testing.T) {
 			marker := health.NewMarker(filepath.Join(dir, "healthy"))
 			marker.Set(tt.preHealthy)
 			d := &daemon{
-				health: health.NewLatch(marker),
-				stamp:  scheduler.NewStamp(filepath.Join(dir, "last-run")),
+				health:   health.NewLatch(marker),
+				reporter: testReporter(t, marker),
+				stamp:    scheduler.NewStamp(filepath.Join(dir, "last-run")),
 			}
 
 			rep := jobReport{trigger: tt.trig, ran: tt.ran, err: tt.runErr, result: resultSuccess}
@@ -257,8 +258,9 @@ func TestDaemonRecordOutcomeStampWriteFailureWarns(t *testing.T) {
 	dir := t.TempDir()
 	marker := health.NewMarker(filepath.Join(dir, "healthy"))
 	d := &daemon{
-		health: health.NewLatch(marker),
-		stamp:  scheduler.NewStamp(filepath.Join(dir, "missing-dir", "last-run")),
+		health:   health.NewLatch(marker),
+		reporter: testReporter(t, marker),
+		stamp:    scheduler.NewStamp(filepath.Join(dir, "missing-dir", "last-run")),
 	}
 
 	d.recordOutcome(nil, &jobReport{trigger: triggerInterval, ran: true, result: resultSuccess})

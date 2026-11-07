@@ -10,6 +10,8 @@ import (
 	"syscall"
 
 	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/measure"
+	"github.com/cplieger/go/scheduler"
 )
 
 // --- Main ---
@@ -72,11 +74,39 @@ func run(ctx context.Context) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	return serve(ctx, &cfg, health.NewLatch(marker))
+}
+
+// completedStampPath is where the reporter records every completed run; a
+// package var so a test can keep it off /cache.
+var completedStampPath = completedStampFile
+
+// newReporter builds the registry the metrics page serves and the reporter
+// that sets it, seeded from the completed-run record on /cache.
+func newReporter(cfg *config, state *health.Latch) (*measure.Registry, *reporter) {
+	reg := measure.NewRegistry(metricsPrefix)
+	completed := scheduler.NewStamp(completedStampPath)
+	last, known := completed.Last()
+	return reg, &reporter{setHealth: state.Set, metrics: newRunMetrics(reg, cfg, last, known), completed: completed}
+}
+
+// serve binds the metrics listener, then dispatches on the configured mode.
+// The bind comes before any run, so a bad METRICS_LISTEN_ADDR stops the
+// container at once instead of leaving it scanning with no page.
+func serve(ctx context.Context, cfg *config, state *health.Latch) error {
+	reg, rep := newReporter(cfg, state)
+	stopMetrics, err := serveMetrics(ctx, cfg.MetricsListenAddr, reg)
+	if err != nil {
+		state.Set(false)
+		return err
+	}
+	defer stopMetrics()
+
 	switch cfg.Mode {
 	case modeOnce:
-		return runOnce(ctx, marker, &cfg)
+		return runOnce(ctx, state, rep, cfg)
 	case modeBuiltin, modeExternal:
-		return runDaemon(ctx, &cfg, health.NewLatch(marker), defaultCommandRunner)
+		return runDaemon(ctx, cfg, state, rep, defaultCommandRunner)
 	default:
 		panic(fmt.Sprintf("unhandled runMode: %d", int(cfg.Mode)))
 	}
@@ -108,22 +138,22 @@ func bootstrap(ctx context.Context) (config, error) {
 // writer for its short life. Unlike the daemon modes, every non-success
 // outcome here — exec failure, an interrupt mid-run, or a lock-contention
 // skip — exits non-zero, because the exit code IS the batch job result.
-func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
+func runOnce(ctx context.Context, marker *health.Latch, rep *reporter, cfg *config) error {
 	// Begins unhealthy: clears any stale health file from a previous run
 	// that crashed before its defer ran.
 	marker.Set(false)
 
 	slog.Info("container started (run once)",
 		"uid", os.Getuid(), "mode", cfg.Mode, "target", cfg.ScanPath, "action", cfg.Action,
-		"phase_timeout", cfg.PhaseTimeout)
+		"phase_timeout", cfg.PhaseTimeout, "metrics_listen_addr", cfg.MetricsListenAddr)
 
-	rep := runFclonesJob(ctx, cfg, "once", defaultCommandRunner)
-	reportRun(ctx.Err(), &rep, marker.Set)
-	switch outcome := classifyRunOnceOutcome(rep.ran, rep.err, ctx.Err()); outcome {
+	job := runFclonesJob(ctx, cfg, "once", defaultCommandRunner)
+	rep.report(ctx.Err(), &job)
+	switch outcome := classifyRunOnceOutcome(job.ran, job.err, ctx.Err()); outcome {
 	case runOnceFailed:
-		return rep.err
+		return job.err
 	case runOnceSkipped:
-		// reportRun writes no marker on a skip; set it here so the exit code
+		// The reporter writes no marker on a skip; set it here so the exit code
 		// and the healthcheck agree.
 		marker.Set(false)
 		slog.Warn("run-once skipped: another process holds the scan lock; no scan ran",

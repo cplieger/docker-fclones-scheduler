@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/measure"
 	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/go/slogx"
 	"github.com/cplieger/go/slogx/capture"
@@ -94,6 +95,8 @@ func holdScanLock(t *testing.T, _ string) {
 
 // pathRun is what one run path left behind.
 type pathRun struct {
+	reg        *measure.Registry
+	action     action
 	output     string
 	records    []map[string]string
 	healthy    bool
@@ -132,16 +135,36 @@ func runThrough(t *testing.T, p *runPath) pathRun {
 	}
 
 	rep := runFclonesJob(ctx, cfg, triggerInterval, fakeFclones(p.scan, p.action))
-	completed, _ := reportRun(ctx.Err(), &rep, health.NewLatch(marker).Set)
+	r, reg := testReporterOn(t, marker, cfg)
+	completed, _ := r.report(ctx.Err(), &rep)
 	if completed != p.completed {
 		t.Fatalf("reportRun completed = %v, want %v", completed, p.completed)
 	}
 	healthy := marker.CheckHealthy()
-	return pathRun{output: buf.String(), records: runFinishedRecords(t, buf.String()), healthy: healthy, healthSet: healthy != pre, preHealthy: pre}
+	return pathRun{reg: reg, action: cfg.Action, output: buf.String(), records: runFinishedRecords(t, buf.String()), healthy: healthy, healthSet: healthy != pre, preHealthy: pre}
 }
 
 // runFinishedRecords returns the logfmt fields of every run finished record in
 // out.
+// testReporter is a reporter that writes marker, a fresh registry and a
+// completed-run record under the test's own directory.
+func testReporter(t *testing.T, marker *health.Marker) *reporter {
+	t.Helper()
+	r, _ := testReporterOn(t, marker, &config{})
+	return r
+}
+
+// testReporterOn is testReporter for cfg, returning the registry it sets.
+func testReporterOn(t *testing.T, marker *health.Marker, cfg *config) (*reporter, *measure.Registry) {
+	t.Helper()
+	reg := measure.NewRegistry(metricsPrefix)
+	return &reporter{
+		setHealth: health.NewLatch(marker).Set,
+		metrics:   newRunMetrics(reg, cfg, scheduler.RunRecord{}, false),
+		completed: scheduler.NewStamp(filepath.Join(t.TempDir(), "last-completed")),
+	}, reg
+}
+
 func runFinishedRecords(t *testing.T, out string) []map[string]string {
 	t.Helper()
 	var records []map[string]string
@@ -237,8 +260,9 @@ func TestEveryCompletedRunWritesOneRunFinishedRecord(t *testing.T) {
 	}
 }
 
-// recordFor returns the run finished record of the named run path.
-func recordFor(t *testing.T, name string) map[string]string {
+// runThroughNamed runs the named completed run path and checks it wrote one
+// run finished record.
+func runThroughNamed(t *testing.T, name string) pathRun {
 	t.Helper()
 	for i := range runPaths {
 		if runPaths[i].name == name {
@@ -246,11 +270,17 @@ func recordFor(t *testing.T, name string) map[string]string {
 			if len(got.records) != 1 {
 				t.Fatalf("%s wrote %d run finished records, want one", name, len(got.records))
 			}
-			return got.records[0]
+			return got
 		}
 	}
 	t.Fatalf("no run path named %q", name)
-	return nil
+	return pathRun{}
+}
+
+// recordFor returns the run finished record of the named run path.
+func recordFor(t *testing.T, name string) map[string]string {
+	t.Helper()
+	return runThroughNamed(t, name).records[0]
 }
 
 // TestRunFinishedRecordCarriesTheRunsMeasurements pins the record's numbers

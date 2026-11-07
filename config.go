@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/cplieger/docker-fclones-scheduler/internal/args"
 	"github.com/cplieger/go/envx"
@@ -24,12 +25,15 @@ import (
 
 // config holds all user-configurable settings loaded from environment variables.
 type config struct {
-	ScanPath     string
-	Args         string
-	Action       action
-	ActionArgs   string
-	Interval     time.Duration
-	PhaseTimeout time.Duration
+	ScanPath   string
+	Args       string
+	Action     action
+	ActionArgs string
+	// MetricsListenAddr is METRICS_LISTEN_ADDR with invisible edge bytes
+	// trimmed; empty opens no listener.
+	MetricsListenAddr string
+	Interval          time.Duration
+	PhaseTimeout      time.Duration
 
 	// Mode is derived from SCAN_INTERVAL (see parseInterval); Interval is
 	// consulted only in modeBuiltin.
@@ -113,6 +117,10 @@ const (
 	// letting built-in mode skip the startup scan when a recent scan already
 	// answered it; on a non-persistent /cache it degrades to always firing.
 	stampFile = cacheDir + "/.docker-fclones-scheduler-last-run"
+
+	// completedStampFile records every completed run of any trigger, so the
+	// last-run and last-success series start from it after a restart.
+	completedStampFile = cacheDir + "/.docker-fclones-scheduler-last-completed"
 
 	// Bounds each captured subprocess stream so a chatty fclones cannot OOM
 	// the container.
@@ -200,14 +208,25 @@ func loadConfig() (config, error) {
 	interval, mode := parseInterval(os.Getenv("SCAN_INTERVAL"))
 
 	return config{
-		Interval:     interval,
-		Mode:         mode,
-		ScanPath:     scanPaths,
-		Args:         argsStr,
-		Action:       parsedAction,
-		ActionArgs:   actionArgs,
-		PhaseTimeout: scanTimeout,
+		Interval:          interval,
+		Mode:              mode,
+		ScanPath:          scanPaths,
+		Args:              argsStr,
+		Action:            parsedAction,
+		ActionArgs:        actionArgs,
+		PhaseTimeout:      scanTimeout,
+		MetricsListenAddr: metricsListenAddr(),
 	}, nil
+}
+
+// metricsListenAddr reads METRICS_LISTEN_ADDR with whitespace and invisible
+// runes trimmed from its edges: an untrimmed " :9469" fails as a host lookup
+// the operator cannot see. Nothing else is checked; the bind is the check.
+func metricsListenAddr() string {
+	return strings.TrimFunc(os.Getenv("METRICS_LISTEN_ADDR"), func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) ||
+			unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r)
+	})
 }
 
 // parseInterval interprets SCAN_INTERVAL into the built-in scan interval and
