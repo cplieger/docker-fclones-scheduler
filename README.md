@@ -3,7 +3,7 @@
 [![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-fclones-scheduler/badges/size.json)](https://github.com/cplieger/docker-fclones-scheduler/pkgs/container/docker-fclones-scheduler) [![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)](https://github.com/cplieger/docker-fclones-scheduler/pkgs/container/docker-fclones-scheduler) [![base: Distroless](https://img.shields.io/badge/base-Distroless_nonroot-4285F4?logo=google)](https://github.com/cplieger/docker-fclones-scheduler/blob/main/Dockerfile) [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/docker-fclones-scheduler/badges/mutation.json)](https://github.com/cplieger/docker-fclones-scheduler/issues?q=label%3Agremlins-tracker) [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/docker-fclones-scheduler/releases)
 
 <!-- hub-overview BEGIN -->
-docker-fclones-scheduler runs the [fclones](https://github.com/pkolaczk/fclones) duplicate finder on a schedule, in a rootless container, and replaces the copies it finds with hardlinks or removes them. It has no web page and writes its results to its log.
+docker-fclones-scheduler runs the [fclones](https://github.com/pkolaczk/fclones) duplicate finder on a schedule, in a rootless container, and replaces the copies it finds with hardlinks or removes them. It has no web interface and writes its results to its log.
 
 ## What it does
 
@@ -75,36 +75,41 @@ Settings are environment variables, read once at start, so recreate the containe
 | `ALLOW_UNSAFE_ARGS` | `true` allows `--transform`, `--in-place` and `--no-copy`, which are refused otherwise | `false` |
 | `SCAN_TIMEOUT` | Longest time the scan and the action may each run before the run is stopped and fails. `0` means no limit | `12h` |
 | `LOG_LEVEL` | `debug`, `info`, `warn` or `error`. Any other value means `info` | `info` |
+| `METRICS_LISTEN_ADDR` | Address for a Prometheus metrics page and a health check, for example `:9469`. Empty opens no port | _(unset)_ |
 
 | Mount | Description |
 | --- | --- |
 | `/scandir` | The folder to scan, matching `FCLONES_SCAN_PATHS`. `link`, `remove` and `dedupe` change files here, so the container's user must be able to write to it |
 | `/cache` | The fclones hash cache and the record of the last scan. The container exits at start when its user cannot write here |
 
+The image publishes no port. With `METRICS_LISTEN_ADDR` set, publish the port it names, such as `9469:9469`.
+
 ## Security
 
-The image opens no ports. An outside scheduler starts a scan with `docker exec fclones /app/wrapper scan`, through a local socket that only the container's own user can open. The container runs as the user that `user:` names, on a distroless base with no shell. Without a `user:` line it runs as UID 65532. `FCLONES_ACTION` must be one of the four actions.
+The image opens no port unless you set `METRICS_LISTEN_ADDR`, which serves only `/metrics` and `/healthz`, with no login, so keep that port on your network. An outside scheduler starts a scan with `docker exec fclones /app/wrapper scan`, through a local socket that only the container's own user can open. The container runs as the user that `user:` names, on a distroless base with no shell. Without a `user:` line it runs as UID 65532. `FCLONES_ACTION` must be one of the four actions.
 
 The fclones options that run a command or change a file in place are refused unless `ALLOW_UNSAFE_ARGS` is `true`. Leave it `false` unless you need one of them, such as `--transform`. Options reach fclones as a list, with no shell to expand them. [Security](docs/hardening.md) has a hardened compose example and what the image contains.
 
 ## Troubleshooting
 
-The healthcheck reads a file the container updates after each scan. Unhealthy means the last scan or action failed, or its report could not be read. It also means an action changed none of the duplicates the scan found, or the check of `/cache` at start failed. It turns healthy again after the next good scan, with no restart. With the built-in schedule, a container that has not scanned for twice `SCAN_INTERVAL` plus twice `SCAN_TIMEOUT` is unhealthy too. With the defaults that is 30 hours. [How it works](docs/how-it-works.md#health) has the full rules.
+The healthcheck reads a file the container updates after each scan. Unhealthy means the last scan or action failed, or its report could not be read. It also means an action changed none of the duplicates the scan found, or the check of `/cache` at start failed. It turns healthy again after the next good scan, with no restart.
+
+With the built-in schedule, a container that has not scanned for twice `SCAN_INTERVAL` plus twice `SCAN_TIMEOUT` is unhealthy too. With the defaults that is 30 hours. [How it works](docs/how-it-works.md#health) has the full rules. An unhealthy container notifies nobody. [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what does.
 
 - The container restarts in a loop with `cache directory verification failed`. The cache folder does not belong to the container's user. Repeat step 1 of the quick start.
-- A run fails with `action reclaimed nothing`. The container's user cannot write to the scanned folder, or, for `dedupe`, the filesystem has no reflink support.
+- A run fails with `action reclaimed nothing` and `FclonesRunFailed` fires. The container's user cannot write to the scanned folder, or, for `dedupe`, the filesystem has no reflink support.
 - The container exits with `positional argument not allowed`. Give each pattern its own flag, as in `--name '*.mp4' --name '*.mkv'`.
 - The container shows unhealthy during a long first scan. Raise `start_period`, as [Configuration](docs/configuration.md#a-slow-first-scan) shows.
 
 ## Monitoring
 
-docker-fclones-scheduler writes logfmt lines with UTC times to its container log and has no metrics endpoint. Four Loki alert rules ship in [`alerts/logql.yaml`](alerts/logql.yaml). [Monitoring and alerts](docs/monitoring.md) lists the log lines and the rules and shows how to load them.
+docker-fclones-scheduler logs one `run finished` record per run and can serve a Prometheus metrics page when `METRICS_LISTEN_ADDR` is set. The same alerts ship for Prometheus in [`alerts/promql.yaml`](alerts/promql.yaml) and for Loki in [`alerts/logql.yaml`](alerts/logql.yaml). Load one of the two files. The image has a Docker healthcheck, and [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what it proves and who is told.
 
 ## Documentation
 
 - [Configuration](docs/configuration.md) covers the scheduling modes, extra fclones options and a slow first scan.
 - [How it works](docs/how-it-works.md) explains the schedule, the two phases of a run and the health rules.
-- [Monitoring and alerts](docs/monitoring.md) lists the log lines and the alert rules.
+- [Monitoring and alerts](docs/monitoring.md) lists the metrics, the `run finished` record, both rule files, and who tells you the schedule stopped.
 - [Security](docs/hardening.md) has the hardened compose example and what the image contains.
 
 ## Credits
