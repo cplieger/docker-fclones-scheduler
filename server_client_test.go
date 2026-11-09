@@ -12,7 +12,7 @@ import (
 
 // startTestDaemon binds a trigger server on a per-test socket with a fake
 // executor that finishes every request with out. It returns the socket path.
-func startTestDaemon(t *testing.T, out trigger.Outcome) string {
+func startTestDaemon(t *testing.T, out trigger.Result) string {
 	t.Helper()
 	sock := filepath.Join(t.TempDir(), "trigger.sock")
 
@@ -22,7 +22,11 @@ func startTestDaemon(t *testing.T, out trigger.Outcome) string {
 	}
 	q := trigger.NewQueue[struct{}](queueCapacity)
 	srv := &trigger.Server[struct{}]{Queue: q}
-	srv.Serve(ln)
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = srv.Serve(t.Context(), ln)
+	}()
 	go func() {
 		for j := range q.Jobs() {
 			j.Start()
@@ -32,6 +36,7 @@ func startTestDaemon(t *testing.T, out trigger.Outcome) string {
 	t.Cleanup(func() {
 		_ = ln.Close()
 		q.Close()
+		<-served
 	})
 	return sock
 }
@@ -41,21 +46,21 @@ func startTestDaemon(t *testing.T, out trigger.Outcome) string {
 // outcome to its exit code. runClient installs the process-global logger,
 // so these run serially (no t.Parallel).
 func TestRunClient_SuccessExitsZero(t *testing.T) {
-	sock := startTestDaemon(t, trigger.Outcome{OK: true, Duration: time.Millisecond})
+	sock := startTestDaemon(t, trigger.Result{OK: true, Duration: time.Millisecond})
 	if code := runClient(sock); code != 0 {
 		t.Errorf("runClient(success) = %d, want 0", code)
 	}
 }
 
 func TestRunClient_LockSkipExitsZeroWithReason(t *testing.T) {
-	sock := startTestDaemon(t, trigger.Outcome{OK: true, Reason: "skipped: scan lock held by another process sharing /cache"})
+	sock := startTestDaemon(t, trigger.Result{OK: true, Reason: "skipped: scan lock held by another process sharing /cache"})
 	if code := runClient(sock); code != 0 {
 		t.Errorf("runClient(lock skip) = %d, want 0 (documented overlap tolerance)", code)
 	}
 }
 
 func TestRunClient_FailureExitsOne(t *testing.T) {
-	sock := startTestDaemon(t, trigger.Outcome{OK: false, Duration: time.Millisecond})
+	sock := startTestDaemon(t, trigger.Result{OK: false, Duration: time.Millisecond})
 	if code := runClient(sock); code != 1 {
 		t.Errorf("runClient(failed run) = %d, want 1", code)
 	}
@@ -77,8 +82,15 @@ func TestRunClient_QueueClosedExitsOne(t *testing.T) {
 	q := trigger.NewQueue[struct{}](queueCapacity)
 	q.Close() // shutting down: submissions rejected with a reason
 	srv := &trigger.Server[struct{}]{Queue: q}
-	srv.Serve(ln)
-	t.Cleanup(func() { _ = ln.Close() })
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = srv.Serve(t.Context(), ln)
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-served
+	})
 
 	if code := runClient(sock); code != 1 {
 		t.Errorf("runClient(queue closed) = %d, want 1 (cancelled/rejected requests fail the trigger)", code)
