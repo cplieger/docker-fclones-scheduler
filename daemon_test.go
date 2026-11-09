@@ -70,9 +70,9 @@ func (l *triggerLog) snapshot() []string {
 func startRecordingExecutor(t *testing.T, d *daemon) *triggerLog {
 	t.Helper()
 	rec := &triggerLog{}
-	go trigger.Execute(t.Context(), d.queue, func(_ context.Context, trig string, _ struct{}) trigger.Outcome {
+	go trigger.Execute(t.Context(), d.queue, func(_ context.Context, trig string, _ struct{}) trigger.Result {
 		rec.append(trig)
-		return trigger.Outcome{OK: true}
+		return trigger.Result{OK: true}
 	})
 	t.Cleanup(d.queue.Close)
 	return rec
@@ -230,7 +230,7 @@ func TestDaemonRecordOutcome(t *testing.T) {
 
 			d.recordOutcome(tt.trig, tt.ctxErr, tt.ran, tt.runErr)
 
-			if got := marker.CheckHealthy(); got != tt.wantHealthy {
+			if got := marker.Healthy(); got != tt.wantHealthy {
 				t.Errorf("recordOutcome(%q) marker healthy = %v, want %v", tt.trig, got, tt.wantHealthy)
 			}
 			rec, known := d.stamp.Last()
@@ -259,7 +259,7 @@ func TestDaemonRecordOutcomeStampWriteFailureWarns(t *testing.T) {
 
 	d.recordOutcome(triggerInterval, nil, true, nil)
 
-	if !marker.CheckHealthy() {
+	if !marker.Healthy() {
 		t.Error("marker healthy = false after a stamp write failure, want true (the failure must not demote the run)")
 	}
 	got := logs.String()

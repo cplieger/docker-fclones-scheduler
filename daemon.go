@@ -99,7 +99,11 @@ func runDaemon(ctx context.Context, cfg *config, state *health.Latch, newCmd sch
 			slog.Info("triggered scan queued")
 		},
 	}
-	srv.Serve(ln)
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = srv.Serve(ctx, ln)
+	}()
 
 	tickerDone := startTicker(ctx, d, cfg.Interval, builtin, startupDue)
 
@@ -125,7 +129,7 @@ func runDaemon(ctx context.Context, cfg *config, state *health.Latch, newCmd sch
 	d.queue.Close()
 	<-executorDone
 	<-tickerDone
-	srv.Wait()
+	<-served
 	slog.Info("shutdown complete")
 	return nil
 }
@@ -191,13 +195,13 @@ func (d *daemon) tick(trig string) {
 // fclones phase, and jobHealthSignal's interrupted-run carve-out keeps that
 // drain from registering as a failure. A cross-container lock skip
 // (ran=false, no error) performed no scan and writes no marker.
-func (d *daemon) run(ctx context.Context, trig string, _ struct{}) trigger.Outcome {
+func (d *daemon) run(ctx context.Context, trig string, _ struct{}) trigger.Result {
 	start := time.Now()
 
 	ran, err := runFclonesJob(ctx, d.cfg, trig, d.newCmd)
 	d.recordOutcome(trig, ctx.Err(), ran, err)
 
-	out := trigger.Outcome{OK: err == nil, Duration: time.Since(start)}
+	out := trigger.Result{OK: err == nil, Duration: time.Since(start)}
 	if !ran && err == nil {
 		out.Reason = "skipped: scan lock held by another process sharing /cache"
 	}
