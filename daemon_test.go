@@ -190,7 +190,7 @@ func TestBootDaemon(t *testing.T) {
 			if due != tt.wantDue {
 				t.Errorf("bootDaemon startup due = %v, want %v", due, tt.wantDue)
 			}
-			if got := marker.CheckHealthy(); got != tt.wantHealthy {
+			if got := marker.Healthy(); got != tt.wantHealthy {
 				t.Errorf("bootDaemon marker healthy = %v, want %v", got, tt.wantHealthy)
 			}
 		})
@@ -222,7 +222,7 @@ func TestBootVerdictMatchesTheRestoredLastRun(t *testing.T) {
 
 				reg, rep := newReporter(cfg, latch)
 				bootDaemon(cfg, schedule, rep, latch, time.Now())
-				if got := marker.CheckHealthy(); got != ok {
+				if got := marker.Healthy(); got != ok {
 					t.Errorf("marker healthy after restart = %v, want the last run's %v", got, ok)
 				}
 				if got := gauge(t, reg, "last_run_ok"); got != float64(flag(ok)) {
@@ -251,7 +251,7 @@ func TestStartupSkipLogsTheBootVerdict(t *testing.T) {
 	cfg := &config{Mode: modeBuiltin, Interval: time.Hour}
 
 	bootDaemon(cfg, schedule, &reporter{completed: completed}, health.NewLatch(marker), time.Now())
-	if !marker.CheckHealthy() {
+	if !marker.Healthy() {
 		t.Fatal("marker boots unhealthy, want healthy from the good triggered run")
 	}
 	var line string

@@ -141,7 +141,7 @@ func runThrough(t *testing.T, p *runPath) pathRun {
 	if completed != p.completed {
 		t.Fatalf("reporter.report completed = %v, want %v", completed, p.completed)
 	}
-	healthy := marker.CheckHealthy()
+	healthy := marker.Healthy()
 	return pathRun{reg: reg, action: cfg.Action, output: buf.String(), records: runFinishedRecords(t, buf.String()), healthy: healthy, healthSet: healthy != pre, preHealthy: pre}
 }
 

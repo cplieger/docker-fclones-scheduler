@@ -137,7 +137,7 @@ func TestServeRefusesAnAddressItCannotBind(t *testing.T) {
 			if strings.Contains(out, "scan starting") || strings.Contains(out, "container started") {
 				t.Errorf("started before the bind failed:\n%s", out)
 			}
-			if marker.CheckHealthy() {
+			if marker.Healthy() {
 				t.Error("marker healthy after a refused start, want unhealthy")
 			}
 		})
