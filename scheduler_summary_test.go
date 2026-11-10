@@ -11,8 +11,8 @@ import (
 // drift warning: stderr's matched summary wins; a matched stdout summary
 // beats an unmatched stderr fallback (stderr diagnostics cannot mask a real
 // stdout summary); and when neither stream contains a recognizable summary
-// but output exists, exactly one "possible fclones format drift" Warn fires
-// so the drift alert rules cover the action phase too. The logger is
+// but output exists, exactly one "possible fclones format drift" Warn fires.
+// The logger is
 // injected (no slog.Default swap), so the capture is race-free.
 func TestResolveActionSummary(t *testing.T) {
 	t.Parallel()

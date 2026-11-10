@@ -1,0 +1,191 @@
+# promtool test rules alerts/promql_test.yaml
+rule_files:
+  - promql.yaml
+
+evaluation_interval: 1m
+
+tests:
+  - name: a failing scrape pages after 5m and keeps the target's labels
+    interval: 1m
+    input_series:
+      - series: 'up{job="fclones", instance="fc:9469"}'
+        values: "1 0x10"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: FclonesDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: FclonesDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: fclones
+              instance: fc:9469
+            exp_annotations:
+              summary: "docker-fclones-scheduler is not being scraped"
+              description: "No successful scrape for 5m: the container is stopped, crash-looping or refusing to start, or the scrape cannot reach METRICS_LISTEN_ADDR. Check the container's state and its last ERROR line.\n"
+
+  - name: a target that is gone pages through the absent arm
+    interval: 1m
+    input_series:
+      - series: 'up{job="other", instance="x:1"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: FclonesDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: fclones
+            exp_annotations:
+              summary: "docker-fclones-scheduler is not being scraped"
+              description: "No successful scrape for 5m: the container is stopped, crash-looping or refusing to start, or the scrape cannot reach METRICS_LISTEN_ADDR. Check the container's state and its last ERROR line.\n"
+
+  - name: FclonesRunFailed holds while the last run failed and clears at the next good run
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_last_run_ok{job="fclones", instance="fc:9469"}'
+        values: "1 0x4 1x4"
+      - series: 'fclones_scheduler_last_run_timestamp_seconds{job="fclones", instance="fc:9469"}'
+        values: "60+60x9"
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: FclonesRunFailed
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: FclonesRunFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: fclones
+              instance: fc:9469
+            exp_annotations:
+              summary: "The last fclones run failed, so no space was reclaimed"
+              description: "The latest completed run failed. fclones_scheduler_last_run_result names the cause, and the run's ERROR line has the detail. For action_no_op, check the container can write to the scanned folders and, for dedupe, that the filesystem supports reflinks.\n"
+      - eval_time: 7m
+        alertname: FclonesRunFailed
+        exp_alerts: []
+
+  - name: a fresh install that has not finished a run yet is not a failed run
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_last_run_ok{job="fclones", instance="fc:9469"}'
+        values: "0x10"
+      - series: 'fclones_scheduler_last_run_timestamp_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: FclonesRunFailed
+        exp_alerts: []
+
+  - name: FclonesScanStalled fires 30h after the last run, after its 15m for
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_last_run_timestamp_seconds{job="fclones", instance="fc:9469"}'
+        values: "1x2000"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x2000"
+    alert_rule_test:
+      - eval_time: 30h10m
+        alertname: FclonesScanStalled
+        exp_alerts: []
+      - eval_time: 30h17m
+        alertname: FclonesScanStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: fclones
+              instance: fc:9469
+            exp_annotations:
+              summary: "No fclones run has finished in 30h"
+              description: "No run completed in 30h. Check for a stuck schedule, a phase stuck with SCAN_TIMEOUT=0, no outside trigger with SCAN_INTERVAL=off, or another container holding the scan lock.\n"
+
+  - name: FclonesScanStalled measures from the process start before the first run
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_last_run_timestamp_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x2000"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x2000"
+    alert_rule_test:
+      - eval_time: 30h10m
+        alertname: FclonesScanStalled
+        exp_alerts: []
+      - eval_time: 30h17m
+        alertname: FclonesScanStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: fclones
+              instance: fc:9469
+            exp_annotations:
+              summary: "No fclones run has finished in 30h"
+              description: "No run completed in 30h. Check for a stuck schedule, a phase stuck with SCAN_TIMEOUT=0, no outside trigger with SCAN_INTERVAL=off, or another container holding the scan lock.\n"
+
+  - name: a run every 3h, the default interval, never stalls
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_last_run_timestamp_seconds{job="fclones", instance="fc:9469"}'
+        values: "1x179 10801x179 21601x179 32401x179 43201x179 54001x179 64801x179 75601x179 86401x179 97201x179 108001x179 118801x179 129601x179 140401x179"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x2519"
+    alert_rule_test:
+      - eval_time: 31h
+        alertname: FclonesScanStalled
+        exp_alerts: []
+      - eval_time: 41h
+        alertname: FclonesScanStalled
+        exp_alerts: []
+
+  - name: FclonesFormatDrift holds while the last summary was not recognized and clears at the next recognized one
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_action_summary_recognized{job="fclones", instance="fc:9469"}'
+        values: "1 0x4 1x4"
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: FclonesFormatDrift
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: FclonesFormatDrift
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: fclones
+              instance: fc:9469
+            exp_annotations:
+              summary: "fclones printed an action summary the container does not recognize"
+              description: "The latest action's summary was not recognized, so the files and bytes reclaimed read zero after real work. The run still succeeds. A --dry-run in FCLONES_ACTION_ARGS causes this by design. Otherwise check the fclones version.\n"
+      - eval_time: 7m
+        alertname: FclonesFormatDrift
+        exp_alerts: []
+
+  - name: FclonesSpaceReclaimed carries the file count in its value, never a label
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_files_processed_total{job="fclones", instance="fc:9469"}'
+        values: "0 0 2x5"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: FclonesSpaceReclaimed
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: FclonesSpaceReclaimed
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              job: fclones
+              instance: fc:9469
+            exp_annotations:
+              summary: "fclones processed 2 duplicate files in the last 30h"
+              description: "Runs in the last 30h linked, removed or deduplicated about 2 duplicate files. fclones_scheduler_reclaimed_bytes_total gives the space freed. This is a success notice and needs no action.\n"
+
+  - name: runs that processed no files send no reclaim notice
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_files_processed_total{job="fclones", instance="fc:9469"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: FclonesSpaceReclaimed
+        exp_alerts: []

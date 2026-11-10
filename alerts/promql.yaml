@@ -1,0 +1,80 @@
+# Alert rules for docker-fclones-scheduler as a Prometheus rule group, for
+# Prometheus, Mimir, vmalert or any ruler that reads Prometheus rules. This file
+# is the alternative to alerts/logql.yaml: load one of the two, not both. The
+# rules read the page served when METRICS_LISTEN_ADDR is set; scrape it as job
+# `fclones`. Thresholds and severity labels are starting points. The 30h stall
+# window (108000 seconds) is twice SCAN_INTERVAL plus twice SCAN_TIMEOUT at the
+# defaults, the healthcheck's deadline; resize it to your settings. FclonesDown
+# exists only here; in alerts/logql.yaml FclonesScanStalled covers it. With
+# SCAN_INTERVAL=0 the page exists only while a run lasts, so load
+# alerts/logql.yaml instead.
+groups:
+  - name: fclones
+    rules:
+      # Two arms, because neither covers the other: `up == 0` catches a target
+      # that fails its scrape and keeps its labels, `absent(up{...})` catches a
+      # target that is gone. Use an exact job matcher, never a regex.
+      - alert: FclonesDown
+        expr: up{job="fclones"} == 0 or absent(up{job="fclones"})
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "docker-fclones-scheduler is not being scraped"
+          description: >
+            No successful scrape for 5m: the container is stopped, crash-looping
+            or refusing to start, or the scrape cannot reach METRICS_LISTEN_ADDR.
+            Check the container's state and its last ERROR line.
+      # The timestamp guard keeps a fresh install quiet until its first run.
+      - alert: FclonesRunFailed
+        expr: fclones_scheduler_last_run_ok == 0 and fclones_scheduler_last_run_timestamp_seconds > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The last fclones run failed, so no space was reclaimed"
+          description: >
+            The latest completed run failed. fclones_scheduler_last_run_result
+            names the cause, and the run's ERROR line has the detail. For
+            action_no_op, check the container can write to the scanned folders
+            and, for dedupe, that the filesystem supports reflinks.
+      # Before any run has completed, the timestamp is 0, so the second arm
+      # measures the wait from the process start instead.
+      - alert: FclonesScanStalled
+        expr: |
+          (time() - fclones_scheduler_last_run_timestamp_seconds > 108000 and fclones_scheduler_last_run_timestamp_seconds > 0)
+          or
+          (time() - process_start_time_seconds > 108000 and on (job, instance) fclones_scheduler_last_run_timestamp_seconds == 0)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No fclones run has finished in 30h"
+          description: >
+            No run completed in 30h. Check for a stuck schedule, a phase stuck
+            with SCAN_TIMEOUT=0, no outside trigger with SCAN_INTERVAL=off, or
+            another container holding the scan lock.
+      - alert: FclonesFormatDrift
+        expr: fclones_scheduler_action_summary_recognized == 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "fclones printed an action summary the container does not recognize"
+          description: >
+            The latest action's summary was not recognized, so the files and
+            bytes reclaimed read zero after real work. The run still succeeds.
+            A --dry-run in FCLONES_ACTION_ARGS causes this by design. Otherwise
+            check the fclones version.
+      - alert: FclonesSpaceReclaimed
+        expr: increase(fclones_scheduler_files_processed_total[30h]) > 0
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: 'fclones processed {{ printf "%.0f" $value }} duplicate files in the last 30h'
+          description: >
+            Runs in the last 30h linked, removed or deduplicated about
+            {{ printf "%.0f" $value }} duplicate files.
+            fclones_scheduler_reclaimed_bytes_total gives the space freed. This
+            is a success notice and needs no action.

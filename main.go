@@ -10,6 +10,8 @@ import (
 	"syscall"
 
 	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/measure"
+	"github.com/cplieger/go/scheduler"
 )
 
 // --- Main ---
@@ -72,11 +74,40 @@ func run(ctx context.Context) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	return serve(ctx, &cfg, marker)
+}
+
+// completedStampPath is where the reporter records every completed run; a
+// package var so a test can keep it off /cache.
+var completedStampPath = completedStampFile
+
+// newReporter builds the registry the metrics page serves and the reporter
+// that sets it, seeded from the completed-run record on /cache.
+func newReporter(cfg *config, state *health.Latch) (*measure.Registry, *reporter) {
+	reg := measure.NewRegistry(metricsPrefix)
+	completed := scheduler.NewStamp(completedStampPath)
+	last, known := completed.Last()
+	return reg, &reporter{setHealth: state.Set, metrics: newRunMetrics(reg, cfg, last, known), completed: completed}
+}
+
+// serve binds the metrics listener, then dispatches on the configured mode.
+// The bind comes before any run, so a bad METRICS_LISTEN_ADDR stops the
+// container at once instead of leaving it scanning with no page.
+func serve(ctx context.Context, cfg *config, marker *health.Marker) error {
+	state := health.NewLatch(marker)
+	reg, rep := newReporter(cfg, state)
+	stopMetrics, err := serveMetrics(ctx, cfg.MetricsListenAddr, reg, newHealthz(marker, cfg))
+	if err != nil {
+		state.Set(false)
+		return err
+	}
+	defer stopMetrics()
+
 	switch cfg.Mode {
 	case modeOnce:
-		return runOnce(ctx, marker, &cfg)
+		return runOnce(ctx, state, rep, cfg)
 	case modeBuiltin, modeExternal:
-		return runDaemon(ctx, &cfg, health.NewLatch(marker), defaultCommandRunner)
+		return runDaemon(ctx, cfg, state, rep, defaultCommandRunner)
 	default:
 		panic(fmt.Sprintf("unhandled runMode: %d", int(cfg.Mode)))
 	}
@@ -104,30 +135,27 @@ func bootstrap(ctx context.Context) (config, error) {
 }
 
 // runOnce performs exactly one scan+action then returns (SCAN_INTERVAL=0).
-// It runs the job directly (no daemon, no socket) and is the marker's single
-// writer for its short life. Unlike the daemon modes, every non-success
-// outcome here — exec failure, an interrupt mid-run, or a lock-contention
-// skip — exits non-zero, because the exit code IS the batch job result.
-func runOnce(ctx context.Context, marker *health.Marker, cfg *config) error {
+// Unlike the daemon modes, every non-success outcome (exec failure, an
+// interrupt mid-run, or a lock-contention skip) exits non-zero, because the
+// exit code IS the batch job result.
+func runOnce(ctx context.Context, state *health.Latch, rep *reporter, cfg *config) error {
 	// Begins unhealthy: clears any stale health file from a previous run
 	// that crashed before its defer ran.
-	marker.Set(false)
+	state.Set(false)
 
 	slog.Info("container started (run once)",
 		"uid", os.Getuid(), "mode", cfg.Mode, "target", cfg.ScanPath, "action", cfg.Action,
-		"phase_timeout", cfg.PhaseTimeout)
+		"phase_timeout", cfg.PhaseTimeout, "metrics_listen_addr", cfg.MetricsListenAddr)
 
-	ran, err := runFclonesJob(ctx, cfg, "once", defaultCommandRunner)
-	if set, healthy := jobHealthSignal(ctx.Err(), ran, err); set {
-		marker.Set(healthy)
-	}
-	switch outcome := classifyRunOnceOutcome(ran, err, ctx.Err()); outcome {
+	job := runFclonesJob(ctx, cfg, "once", defaultCommandRunner)
+	rep.report(ctx.Err(), &job)
+	switch outcome := classifyRunOnceOutcome(job.ran, job.err, ctx.Err()); outcome {
 	case runOnceFailed:
-		return err
+		return job.err
 	case runOnceSkipped:
-		// jobHealthSignal writes no marker on a skip; set it here so the
-		// exit code and the healthcheck agree.
-		marker.Set(false)
+		// The reporter writes no marker on a skip; set it here so the exit code
+		// and the healthcheck agree.
+		state.Set(false)
 		slog.Warn("run-once skipped: another process holds the scan lock; no scan ran",
 			logKeyOutcome, "skipped", "lock", lockFile)
 		return errors.New("run-once skipped: scan lock held by another process")

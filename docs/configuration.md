@@ -1,6 +1,6 @@
 # Configuration
 
-This page covers the three scheduling modes, extra fclones options, time limits, a slow first scan and the log settings, which need more than one table row. The [Configuration reference](../README.md#configuration-reference) in the README lists every variable with its default.
+This page covers the three scheduling modes, extra fclones options, time limits, a slow first scan, the metrics page and the log settings, which need more than one table row. The [Configuration reference](../README.md#configuration-reference) in the README lists every variable with its default.
 
 ## Scheduling
 
@@ -93,6 +93,21 @@ services:
       start_period: 10m  # how long your first scan takes
 ```
 
+## The metrics page
+
+Set `METRICS_LISTEN_ADDR` to serve Prometheus metrics at `/metrics` and a health check at `/healthz`, and publish the port it names:
+
+```yaml
+services:
+  fclones:
+    environment:
+      METRICS_LISTEN_ADDR: ":9469"
+    ports:
+      - "9469:9469"
+```
+
+The value is a `host:port` or `:port` address, read once at start. Empty, the default, opens no port. An address the container cannot listen on stops it at start with `cannot listen on METRICS_LISTEN_ADDR`. The page has no login, so keep the port on your network. With `SCAN_INTERVAL=0` the page exists only while the one run lasts, so a scraper would see the container as down between runs. [Monitoring and alerts](monitoring.md#metrics) lists the series.
+
 ## Logs
 
-`LOG_LEVEL` takes `debug`, `info`, `warn` or `warning`, and `error`. Any other value means `info` and logs a warning. Log lines are logfmt with UTC times whatever `TZ` is set to, so the container needs no `TZ` setting.
+`LOG_LEVEL` takes `debug`, `info`, `warn` or `warning`, and `error`. Any other value means `info` and logs a warning. The log alert rules read the `run finished` record, which is logged at INFO, so keep `LOG_LEVEL` at `info` or `debug` when you load `alerts/logql.yaml`. Log lines are logfmt with UTC times whatever `TZ` is set to, so the container needs no `TZ` setting.
