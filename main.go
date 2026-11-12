@@ -83,8 +83,7 @@ var completedStampPath = completedStampFile
 
 // newReporter builds the registry the metrics page serves and the reporter
 // that sets it, seeded from the completed-run record on /cache. The run
-// deadline's gap is the health lease, so FclonesScanStalled and the /healthz
-// freshness check judge a stopped schedule at the same moment.
+// deadline's gap is the health lease.
 func newReporter(cfg *config, st *health.Status) (*measure.Registry, *reporter) {
 	reg := measure.NewRegistry(metricsPrefix)
 	registerBuildInfo(reg)
