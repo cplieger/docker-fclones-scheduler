@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/measure"
 	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/slogx/capture"
 )
 
 func TestMetricsListenAddrTrimsInvisibleEdges(t *testing.T) {
@@ -34,28 +36,47 @@ func TestMetricsListenAddrTrimsInvisibleEdges(t *testing.T) {
 	}
 }
 
-// countListens swaps listenTCP for the test and counts the binds.
-func countListens(t *testing.T) *int {
-	t.Helper()
-	n := 0
-	prev := listenTCP
-	listenTCP = func(network, addr string) (net.Listener, error) {
-		n++
-		return prev(network, addr)
-	}
-	t.Cleanup(func() { listenTCP = prev })
-	return &n
-}
-
-func TestServeMetricsUnsetOpensNoListener(t *testing.T) {
-	binds := countListens(t)
-	stop, err := serveMetrics(t.Context(), "", measure.NewRegistry(metricsPrefix), nil)
+// TestServeMetricsLogsStraysButNotScrapes pins the listener's access log: a
+// scrape and a probe log at Debug, any other path one INFO "http" line.
+func TestServeMetricsLogsStraysButNotScrapes(t *testing.T) {
+	rec := capture.Default(t)
+	st := health.NewStatus()
+	cfg := &config{Action: actionLink}
+	reg, _ := newReporter(cfg, st)
+	addr := freeAddr(t)
+	stop, err := serveMetrics(t.Context(), addr, reg, newHealthz(st, cfg))
 	if err != nil {
-		t.Fatalf("serveMetrics(\"\") error = %v", err)
+		t.Fatalf("serveMetrics(%q) error = %v", addr, err)
 	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, path := range []string{"/metrics", "/healthz", "/stray"} {
+		resp, err := client.Get("http://" + addr + path)
+		if err != nil {
+			stop()
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+	}
+	// The shutdown waits for every handler, so each access line is written.
 	stop()
-	if *binds != 0 {
-		t.Errorf("serveMetrics(\"\") bound %d listeners, want none", *binds)
+
+	lines := map[slog.Level][]string{}
+	for _, r := range rec.Records() {
+		if r.Message != "http" {
+			continue
+		}
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "path" {
+				lines[r.Level] = append(lines[r.Level], a.Value.String())
+			}
+			return true
+		})
+	}
+	if got, want := lines[slog.LevelDebug], []string{"/metrics", "/healthz"}; !slices.Equal(got, want) {
+		t.Errorf("Debug access lines = %q, want %q", got, want)
+	}
+	if got, want := lines[slog.LevelInfo], []string{"/stray"}; !slices.Equal(got, want) {
+		t.Errorf("INFO access lines = %q, want %q", got, want)
 	}
 }
 

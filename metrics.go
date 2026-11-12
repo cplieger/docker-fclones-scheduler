@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net"
 	"net/http"
 	"time"
 
@@ -141,42 +140,23 @@ func (m *runMetrics) observe(rep *jobReport, ok bool, at time.Time) {
 	}
 }
 
-// listenTCP is a seam so a test can see that an unset address opens nothing.
-var listenTCP = net.Listen
-
-// Timeouts for the metrics page: a scrape reads one small page, so a slow
-// client is cut off rather than held.
-const (
-	metricsReadTimeout  = 10 * time.Second
-	metricsWriteTimeout = 30 * time.Second
-)
-
 // serveMetrics binds addr and serves reg's page and healthz on it until ctx
 // ends; stop cancels the server and waits until it has shut down. An empty
 // addr opens no listener. A bind failure is logged once, naming
 // METRICS_LISTEN_ADDR, and returned so the container refuses to start rather
 // than run with no page.
 func serveMetrics(ctx context.Context, addr string, reg *measure.Registry, healthz http.Handler) (stop func(), err error) {
-	if addr == "" {
-		return func() {}, nil
-	}
-	ln, err := listenTCP("tcp", addr)
+	ms, err := httpserver.ListenMetrics(ctx, addr, httpserver.MetricsHandlers{Metrics: reg.Handler(), Healthz: healthz})
 	if err != nil {
 		slog.Error("cannot listen on METRICS_LISTEN_ADDR; refusing to start",
 			"value", addr, logKeyOutcome, "config_error", "error", err)
 		return nil, err
 	}
-	mux := http.NewServeMux()
-	mux.Handle("GET /metrics", reg.Handler())
-	mux.Handle("GET /healthz", healthz)
-	srv := httpserver.New(mux)
-	srv.ReadTimeout = metricsReadTimeout
-	srv.WriteTimeout = metricsWriteTimeout
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if err := httpserver.Run(ctx, srv, ln); err != nil {
+		if err := ms.Serve(ctx); err != nil {
 			slog.Error("metrics listener stopped", "address", addr, "error", err)
 		}
 	}()
