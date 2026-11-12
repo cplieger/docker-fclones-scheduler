@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/measure"
@@ -81,12 +82,14 @@ func run(ctx context.Context) error {
 var completedStampPath = completedStampFile
 
 // newReporter builds the registry the metrics page serves and the reporter
-// that sets it, seeded from the completed-run record on /cache.
+// that sets it, seeded from the completed-run record on /cache. The run
+// deadline's gap is the health lease, so FclonesScanStalled and the /healthz
+// freshness check judge a stopped schedule at the same moment.
 func newReporter(cfg *config, st *health.Status) (*measure.Registry, *reporter) {
 	reg := measure.NewRegistry(metricsPrefix)
 	completed := scheduler.NewStamp(completedStampPath)
 	last, known := completed.Last()
-	return reg, &reporter{setHealth: st.Set, metrics: newRunMetrics(reg, cfg, last, known), completed: completed}
+	return reg, &reporter{setHealth: st.Set, metrics: newRunMetrics(reg, cfg, last, known, time.Now()), completed: completed}
 }
 
 // serve binds the metrics listener, then dispatches on the configured mode.

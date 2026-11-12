@@ -2,10 +2,13 @@
 # Prometheus, Mimir, vmalert or any ruler that reads Prometheus rules. This file
 # is the alternative to alerts/logql.yaml: load one of the two, not both. The
 # rules read the page served when METRICS_LISTEN_ADDR is set; scrape it as job
-# `fclones`. Thresholds and severity labels are starting points. The 30h stall
-# window (108000 seconds) is twice SCAN_INTERVAL plus twice SCAN_TIMEOUT at the
-# defaults, the healthcheck's deadline; resize it to your settings. FclonesDown
-# exists only here; in alerts/logql.yaml FclonesScanStalled covers it. With
+# `fclones`. Thresholds and severity labels are starting points. While the
+# built-in schedule runs, FclonesScanStalled reads the run deadline the app
+# derives from SCAN_INTERVAL and SCAN_TIMEOUT, so it needs no resizing. Its 30h
+# window applies only while that deadline reads 0 (SCAN_INTERVAL=off or
+# SCAN_TIMEOUT=0). Load this file with a release that exports
+# fclones_scheduler_run_deadline_timestamp_seconds: on an older one neither arm
+# of that rule fires. FclonesDown exists only here; in alerts/logql.yaml FclonesScanStalled covers it. With
 # SCAN_INTERVAL=0 the page exists only while a run lasts, so load
 # alerts/logql.yaml instead.
 groups:
@@ -38,22 +41,33 @@ groups:
             names the cause, and the run's ERROR line has the detail. For
             action_no_op, check the container can write to the scanned folders
             and, for dedupe, that the filesystem supports reflinks.
-      # Before any run has completed, the timestamp is 0, so the second arm
-      # measures the wait from the process start instead.
+      # The deadline decides while it is above 0: each successful run moves it
+      # two intervals plus two timeouts ahead, the healthcheck's lease, so a
+      # stopped schedule and runs that keep failing both cross it. The 30h
+      # window (108000 seconds, the lease at the defaults) reads only while the
+      # deadline is 0; size it to twice your outside scheduler's period plus
+      # twice a run's longest time. Before any run has completed, the timestamp
+      # is 0, so its last branch measures the wait from the process start.
       - alert: FclonesScanStalled
         expr: |
-          (time() - fclones_scheduler_last_run_timestamp_seconds > 108000 and fclones_scheduler_last_run_timestamp_seconds > 0)
+          (time() > fclones_scheduler_run_deadline_timestamp_seconds + 900 and fclones_scheduler_run_deadline_timestamp_seconds > 0)
           or
-          (time() - process_start_time_seconds > 108000 and on (job, instance) fclones_scheduler_last_run_timestamp_seconds == 0)
+          (time() - fclones_scheduler_last_run_timestamp_seconds > 108000 and fclones_scheduler_last_run_timestamp_seconds > 0 and on (job, instance) fclones_scheduler_run_deadline_timestamp_seconds == 0)
+          or
+          (time() - process_start_time_seconds > 108000 and on (job, instance) fclones_scheduler_last_run_timestamp_seconds == 0 and on (job, instance) fclones_scheduler_run_deadline_timestamp_seconds == 0)
         for: 15m
         labels:
           severity: warning
         annotations:
-          summary: "No fclones run has finished in 30h"
+          summary: "fclones runs are overdue"
           description: >
-            No run completed in 30h. Check for a stuck schedule, a phase stuck
-            with SCAN_TIMEOUT=0, no outside trigger with SCAN_INTERVAL=off, or
-            another container holding the scan lock.
+            No run succeeded by the deadline the built-in schedule sets, two
+            SCAN_INTERVAL periods plus two SCAN_TIMEOUT runs after the last
+            success or the start; with no deadline (0), no run completed in
+            30h. Runs that keep failing cross the deadline too, so check
+            FclonesRunFailed first. Otherwise check for a stuck schedule, a
+            phase stuck with SCAN_TIMEOUT=0, no outside trigger with
+            SCAN_INTERVAL=off, or another container holding the scan lock.
       - alert: FclonesFormatDrift
         expr: fclones_scheduler_action_summary_recognized == 0
         for: 0m

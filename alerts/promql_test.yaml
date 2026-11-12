@@ -78,14 +78,58 @@ tests:
         alertname: FclonesRunFailed
         exp_alerts: []
 
-  - name: FclonesScanStalled fires 30h after the last run, after its 15m for
+  - name: FclonesScanStalled fires 15m past the run deadline even while failed runs keep ending, and resolves at a success
     interval: 1m
     input_series:
+      # Due at 1h, so the arm reads past 1h15m and fires 15m later; a success at 100m moves it.
+      - series: 'fclones_scheduler_run_deadline_timestamp_seconds{job="fclones", instance="fc:9469"}'
+        values: "3600x99 100000x10"
+      - series: 'fclones_scheduler_last_run_timestamp_seconds{job="fclones", instance="fc:9469"}'
+        values: "60+60x109"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x109"
+    alert_rule_test:
+      - eval_time: 74m
+        alertname: FclonesScanStalled
+        exp_alerts: []
+      - eval_time: 95m
+        alertname: FclonesScanStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: fclones
+              instance: fc:9469
+            exp_annotations:
+              summary: "fclones runs are overdue"
+              description: "No run succeeded by the deadline the built-in schedule sets, two SCAN_INTERVAL periods plus two SCAN_TIMEOUT runs after the last success or the start; with no deadline (0), no run completed in 30h. Runs that keep failing cross the deadline too, so check FclonesRunFailed first. Otherwise check for a stuck schedule, a phase stuck with SCAN_TIMEOUT=0, no outside trigger with SCAN_INTERVAL=off, or another container holding the scan lock.\n"
+      - eval_time: 101m
+        alertname: FclonesScanStalled
+        exp_alerts: []
+
+  - name: FclonesScanStalled ignores the 30h window while the run deadline is ahead
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_run_deadline_timestamp_seconds{job="fclones", instance="fc:9469"}'
+        values: "10000000000x2000"
       - series: 'fclones_scheduler_last_run_timestamp_seconds{job="fclones", instance="fc:9469"}'
         values: "1x2000"
       - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
         values: "0x2000"
     alert_rule_test:
+      - eval_time: 31h
+        alertname: FclonesScanStalled
+        exp_alerts: []
+
+  - name: FclonesScanStalled with no deadline fires 30h after the last run, after its 15m for, and clears at the next run
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_run_deadline_timestamp_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x2000"
+      - series: 'fclones_scheduler_last_run_timestamp_seconds{job="fclones", instance="fc:9469"}'
+        values: "1x1820 200000x179"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x2000"
+    alert_rule_test:
       - eval_time: 30h10m
         alertname: FclonesScanStalled
         exp_alerts: []
@@ -97,12 +141,17 @@ tests:
               job: fclones
               instance: fc:9469
             exp_annotations:
-              summary: "No fclones run has finished in 30h"
-              description: "No run completed in 30h. Check for a stuck schedule, a phase stuck with SCAN_TIMEOUT=0, no outside trigger with SCAN_INTERVAL=off, or another container holding the scan lock.\n"
+              summary: "fclones runs are overdue"
+              description: "No run succeeded by the deadline the built-in schedule sets, two SCAN_INTERVAL periods plus two SCAN_TIMEOUT runs after the last success or the start; with no deadline (0), no run completed in 30h. Runs that keep failing cross the deadline too, so check FclonesRunFailed first. Otherwise check for a stuck schedule, a phase stuck with SCAN_TIMEOUT=0, no outside trigger with SCAN_INTERVAL=off, or another container holding the scan lock.\n"
+      - eval_time: 30h25m
+        alertname: FclonesScanStalled
+        exp_alerts: []
 
-  - name: FclonesScanStalled measures from the process start before the first run
+  - name: FclonesScanStalled with no deadline measures from the process start before the first run
     interval: 1m
     input_series:
+      - series: 'fclones_scheduler_run_deadline_timestamp_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x2000"
       - series: 'fclones_scheduler_last_run_timestamp_seconds{job="fclones", instance="fc:9469"}'
         values: "0x2000"
       - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
@@ -119,17 +168,22 @@ tests:
               job: fclones
               instance: fc:9469
             exp_annotations:
-              summary: "No fclones run has finished in 30h"
-              description: "No run completed in 30h. Check for a stuck schedule, a phase stuck with SCAN_TIMEOUT=0, no outside trigger with SCAN_INTERVAL=off, or another container holding the scan lock.\n"
+              summary: "fclones runs are overdue"
+              description: "No run succeeded by the deadline the built-in schedule sets, two SCAN_INTERVAL periods plus two SCAN_TIMEOUT runs after the last success or the start; with no deadline (0), no run completed in 30h. Runs that keep failing cross the deadline too, so check FclonesRunFailed first. Otherwise check for a stuck schedule, a phase stuck with SCAN_TIMEOUT=0, no outside trigger with SCAN_INTERVAL=off, or another container holding the scan lock.\n"
 
-  - name: a run every 3h, the default interval, never stalls
+  - name: a deadline of 0 never fires the deadline arm, with a run every 3h, the default interval
     interval: 1m
     input_series:
+      - series: 'fclones_scheduler_run_deadline_timestamp_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x2519"
       - series: 'fclones_scheduler_last_run_timestamp_seconds{job="fclones", instance="fc:9469"}'
         values: "1x179 10801x179 21601x179 32401x179 43201x179 54001x179 64801x179 75601x179 86401x179 97201x179 108001x179 118801x179 129601x179 140401x179"
       - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
         values: "0x2519"
     alert_rule_test:
+      - eval_time: 15m
+        alertname: FclonesScanStalled
+        exp_alerts: []
       - eval_time: 31h
         alertname: FclonesScanStalled
         exp_alerts: []

@@ -46,13 +46,17 @@ type runMetrics struct {
 	summaryRecognized *measure.Gauge
 	filesProcessed    *measure.Counter
 	reclaimedBytes    *measure.Counter
+	deadline          *measure.Gauge
+	// gap is the health lease: a success dates the deadline this far ahead.
+	gap time.Duration
 }
 
 // newRunMetrics registers the run series on reg and seeds them: every label
 // value at 0, and the last run's time, verdict and, when it succeeded, the
 // success time from last, the record of the last completed run that survived
-// a restart.
-func newRunMetrics(reg *measure.Registry, cfg *config, last scheduler.RunRecord, known bool) *runMetrics {
+// a restart. The run deadline starts one health lease after that success, or
+// after start when there is none.
+func newRunMetrics(reg *measure.Registry, cfg *config, last scheduler.RunRecord, known bool, start time.Time) *runMetrics {
 	m := &runMetrics{
 		runs: measure.NewLabeledCounter("runs_total",
 			"Completed runs by how they ended.", []string{keyResult}),
@@ -80,10 +84,13 @@ func newRunMetrics(reg *measure.Registry, cfg *config, last scheduler.RunRecord,
 			"Duplicate files the actions processed, from their summary lines."),
 		reclaimedBytes: measure.NewCounter("reclaimed_bytes_total",
 			"Bytes the actions reclaimed, from fclones' rounded summary; an upper bound for dedupe."),
+		deadline: measure.NewGauge("run_deadline_timestamp_seconds",
+			"Unix time by which the next successful run is due; 0 in external and run-once modes and with SCAN_TIMEOUT=0."),
+		gap: healthLease(cfg.Mode, cfg.Interval, cfg.PhaseTimeout),
 	}
 	reg.MustRegister(m.runs, m.lastResult, m.phaseDuration, m.info, m.lastOK, m.lastRun,
 		m.lastSuccess, m.groups, m.duplicateFiles, m.redundantBytes, m.summaryRecognized,
-		m.filesProcessed, m.reclaimedBytes)
+		m.filesProcessed, m.reclaimedBytes, m.deadline)
 	for _, r := range runResults {
 		m.runs.Add(0, string(r))
 		m.lastResult.Set(0, string(r))
@@ -93,14 +100,25 @@ func newRunMetrics(reg *measure.Registry, cfg *config, last scheduler.RunRecord,
 	}
 	m.summaryRecognized.Set(1)
 	m.info.Set(1, cfg.Mode.String(), cfg.Action.String())
+	lastSuccess := start
 	if known {
 		m.lastRun.Set(unixSeconds(last.Time))
 		m.lastOK.Set(float64(flag(last.OK)))
 		if last.OK {
 			m.lastSuccess.Set(unixSeconds(last.Time))
+			lastSuccess = last.Time
 		}
 	}
+	m.setDeadline(lastSuccess)
 	return m
+}
+
+// setDeadline dates the run deadline one gap after a success at
+// lastSuccess; with no gap it stays 0.
+func (m *runMetrics) setDeadline(lastSuccess time.Time) {
+	if m.gap > 0 {
+		m.deadline.Set(unixSeconds(lastSuccess.Add(m.gap)))
+	}
 }
 
 func unixSeconds(t time.Time) float64 {
@@ -118,6 +136,7 @@ func (m *runMetrics) observe(rep *jobReport, ok bool, at time.Time) {
 	m.lastRun.Set(unixSeconds(at))
 	if ok {
 		m.lastSuccess.Set(unixSeconds(at))
+		m.setDeadline(at)
 	}
 	if rep.scanRan {
 		m.phaseDuration.Set(rep.scanDuration.Seconds(), phaseScan)

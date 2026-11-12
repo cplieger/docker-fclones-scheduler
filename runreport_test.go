@@ -161,7 +161,7 @@ func testReporterOn(t *testing.T, st *health.Status, cfg *config) (*reporter, *m
 	reg := measure.NewRegistry(metricsPrefix)
 	return &reporter{
 		setHealth: st.Set,
-		metrics:   newRunMetrics(reg, cfg, scheduler.RunRecord{}, false),
+		metrics:   newRunMetrics(reg, cfg, scheduler.RunRecord{}, false, time.Now()),
 		completed: scheduler.NewStamp(filepath.Join(t.TempDir(), "last-completed")),
 	}, reg
 }
