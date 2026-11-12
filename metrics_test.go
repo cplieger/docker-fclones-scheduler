@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -123,6 +124,23 @@ func TestServeMetricsServesThePage(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("POST /metrics = %d, want 405", resp.StatusCode)
+	}
+}
+
+// TestRunMetricsServeBuildInfo pins the series a query joins on to find the
+// release a target runs: one line at 1, labelled with the stamped version.
+func TestRunMetricsServeBuildInfo(t *testing.T) {
+	reg, _ := newReporter(&config{Action: actionLink}, health.NewStatus())
+	rec := httptest.NewRecorder()
+	reg.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", http.NoBody))
+	var lines []string
+	for line := range strings.SplitSeq(rec.Body.String(), "\n") {
+		if strings.HasPrefix(line, "fclones_scheduler_build_info") {
+			lines = append(lines, line)
+		}
+	}
+	if want := `fclones_scheduler_build_info{version="` + version + `"} 1`; !slices.Equal(lines, []string{want}) {
+		t.Errorf("build_info lines = %q, want [%q]", lines, want)
 	}
 }
 

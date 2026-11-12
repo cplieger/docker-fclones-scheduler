@@ -14,6 +14,10 @@ import (
 // metricsPrefix names every series on the metrics page.
 const metricsPrefix = "fclones_scheduler"
 
+// version is the release this binary is, stamped by the Dockerfile's
+// BUILD_VERSION build argument; an unstamped build reports "dev".
+var version = "dev"
+
 // The two phases of a run, as log lines and the phase label name them.
 const (
 	phaseScan   = "scan"
@@ -119,6 +123,15 @@ func (m *runMetrics) setDeadline(lastSuccess time.Time) {
 	if m.gap > 0 {
 		m.deadline.Set(unixSeconds(lastSuccess.Add(m.gap)))
 	}
+}
+
+// registerBuildInfo serves build_info at 1, labelled with the release this
+// process runs, for a query to join on.
+func registerBuildInfo(reg *measure.Registry) {
+	info := measure.NewLabeledGauge("build_info",
+		"Always 1; the version label is the release this process runs.", []string{"version"})
+	reg.MustRegister(info)
+	info.Set(1, version)
 }
 
 func unixSeconds(t time.Time) float64 {

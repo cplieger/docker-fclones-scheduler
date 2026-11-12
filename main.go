@@ -87,6 +87,7 @@ var completedStampPath = completedStampFile
 // freshness check judge a stopped schedule at the same moment.
 func newReporter(cfg *config, st *health.Status) (*measure.Registry, *reporter) {
 	reg := measure.NewRegistry(metricsPrefix)
+	registerBuildInfo(reg)
 	completed := scheduler.NewStamp(completedStampPath)
 	last, known := completed.Last()
 	return reg, &reporter{setHealth: st.Set, metrics: newRunMetrics(reg, cfg, last, known, time.Now()), completed: completed}
