@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/go/scheduler/trigger"
 )
@@ -38,9 +38,9 @@ const (
 // daemon carries the executor's dependencies.
 type daemon struct {
 	queue *trigger.Queue[struct{}]
-	// health holds the marker: bootDaemon writes the starting verdict, the
+	// health holds the verdict: bootDaemon writes the starting one, the
 	// reporter each completed run's, and shutdown begins the drain.
-	health   *health.Latch
+	health   *health.Status
 	reporter *reporter
 	cfg      *config
 	// stamp is the restart-surviving last-run record on /cache.
@@ -49,25 +49,24 @@ type daemon struct {
 }
 
 // runDaemon runs the two long-running modes (built-in and external): binds
-// the trigger socket, wires the health latch, starts the executor, and
+// the trigger socket, sets the boot verdict, starts the executor, and
 // — in built-in mode — drives the interval ticker. Returning an error exits
 // non-zero.
-func runDaemon(ctx context.Context, cfg *config, state *health.Latch, rep *reporter, newCmd scheduler.CommandRunner) error {
+func runDaemon(ctx context.Context, cfg *config, st *health.Status, rep *reporter, newCmd scheduler.CommandRunner) error {
 	ln, err := trigger.Listen(socketPath)
 	if err != nil {
 		slog.Error("cannot bind trigger socket", "path", socketPath, "error", err)
-		state.Set(false)
 		return err
 	}
 	defer func() { _ = os.Remove(socketPath) }()
 
 	stamp := scheduler.NewStamp(stampFile)
 	builtin := cfg.Mode == modeBuiltin
-	startupDue := bootDaemon(cfg, stamp, rep, state, time.Now())
+	startupDue := bootDaemon(cfg, stamp, rep, st, time.Now())
 
 	d := &daemon{
 		queue:    trigger.NewQueue[struct{}](queueCapacity),
-		health:   state,
+		health:   st,
 		reporter: rep,
 		cfg:      cfg,
 		stamp:    stamp,
@@ -109,8 +108,8 @@ func runDaemon(ctx context.Context, cfg *config, state *health.Latch, rep *repor
 
 	<-ctx.Done()
 	slog.Info("shutting down", "cause", context.Cause(ctx))
-	// Latch unhealthy before the in-flight run resolves so observers see the
-	// drain, and to block a late healthy write.
+	// Drain before the in-flight run resolves so observers see it, and to
+	// block a late healthy write.
 	d.health.BeginDrain()
 
 	// Stop admission, then wait for the executor, ticker and handlers to
@@ -124,12 +123,12 @@ func runDaemon(ctx context.Context, cfg *config, state *health.Latch, rep *repor
 	return nil
 }
 
-// bootDaemon sets the marker's starting verdict and reports whether built-in
+// bootDaemon sets the starting verdict and reports whether built-in
 // mode's startup scan is due. The schedule stamp decides only that scan, under
 // CountFailed so a failed multi-hour scan is not repeated on every restart.
 // The verdict is the last completed run's, the record last_run_ok is seeded
 // from, so the two agree; a due startup scan boots unhealthy.
-func bootDaemon(cfg *config, schedule *scheduler.Stamp, rep *reporter, state *health.Latch, now time.Time) (startupDue bool) {
+func bootDaemon(cfg *config, schedule *scheduler.Stamp, rep *reporter, st *health.Status, now time.Time) (startupDue bool) {
 	builtin := cfg.Mode == modeBuiltin
 	last, _ := schedule.Last()
 	// With no completed-run record yet, external mode is idle with nothing
@@ -147,7 +146,7 @@ func bootDaemon(cfg *config, schedule *scheduler.Stamp, rep *reporter, state *he
 				"completed", last.Time, "healthy", healthy)
 		}
 	}
-	state.Set(healthy)
+	st.Set(healthy)
 	return startupDue
 }
 

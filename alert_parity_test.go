@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -10,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/health/v2"
 )
 
 // promqlWords are the PromQL keywords and functions the shipped rules may use;
@@ -73,7 +72,7 @@ func seriesNames(expr string) []string {
 // export, so a renamed or dropped series fails the build instead of silencing
 // an alert. Every labelled family is seeded at startup, so each has a sample.
 func TestPromQLRulesReadOnlyExportedSeries(t *testing.T) {
-	reg, _ := newReporter(&config{}, health.NewLatch(health.NewMarker(filepath.Join(t.TempDir(), "healthy"))))
+	reg, _ := newReporter(&config{}, health.NewStatus())
 	families, err := reg.Gather(t.Context())
 	if err != nil {
 		t.Fatalf("Gather = %v", err)

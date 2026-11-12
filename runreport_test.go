@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/measure"
 	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/go/slogx"
@@ -106,7 +106,7 @@ type pathRun struct {
 
 // runThrough runs p through runFclonesJob and reporter.report with the
 // production log handler, as the daemon does, and returns the records and the
-// marker.
+// verdict.
 // It swaps process globals, so callers are not parallel.
 func runThrough(t *testing.T, p *runPath) pathRun {
 	t.Helper()
@@ -122,9 +122,9 @@ func runThrough(t *testing.T, p *runPath) pathRun {
 	handler, _ := slogx.NewHandler(slogx.Options{Output: &buf})
 	capture.SwapDefault(t, slog.New(handler))
 
-	marker := health.NewMarker(filepath.Join(dir, "healthy"))
+	st := health.NewStatus()
 	pre := p.want != resultSuccess
-	marker.Set(pre)
+	st.Set(pre)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if p.cancelled {
@@ -136,32 +136,32 @@ func runThrough(t *testing.T, p *runPath) pathRun {
 	}
 
 	rep := runFclonesJob(ctx, cfg, triggerInterval, fakeFclones(p.scan, p.action))
-	r, reg := testReporterOn(t, marker, cfg)
+	r, reg := testReporterOn(t, st, cfg)
 	completed, _ := r.report(ctx.Err(), &rep)
 	if completed != p.completed {
 		t.Fatalf("reporter.report completed = %v, want %v", completed, p.completed)
 	}
-	healthy := marker.Healthy()
+	healthy := st.Healthy()
 	return pathRun{reg: reg, action: cfg.Action, output: buf.String(), records: runFinishedRecords(t, buf.String()), healthy: healthy, healthSet: healthy != pre, preHealthy: pre}
 }
 
 // runFinishedRecords returns the logfmt fields of every run finished record in
 // out.
-// testReporter is a reporter that writes marker, a fresh registry and a
+// testReporter is a reporter that writes st, a fresh registry and a
 // completed-run record under the test's own directory.
-func testReporter(t *testing.T, marker *health.Marker) *reporter {
+func testReporter(t *testing.T, st *health.Status) *reporter {
 	t.Helper()
-	r, _ := testReporterOn(t, marker, &config{})
+	r, _ := testReporterOn(t, st, &config{})
 	return r
 }
 
 // testReporterOn is testReporter for cfg, returning the registry it sets.
-func testReporterOn(t *testing.T, marker *health.Marker, cfg *config) (*reporter, *measure.Registry) {
+func testReporterOn(t *testing.T, st *health.Status, cfg *config) (*reporter, *measure.Registry) {
 	t.Helper()
 	reg := measure.NewRegistry(metricsPrefix)
 	return &reporter{
-		setHealth: health.NewLatch(marker).Set,
-		metrics:   newRunMetrics(reg, cfg, scheduler.RunRecord{}, false),
+		setHealth: st.Set,
+		metrics:   newRunMetrics(reg, cfg, scheduler.RunRecord{}, false, time.Now()),
 		completed: scheduler.NewStamp(filepath.Join(t.TempDir(), "last-completed")),
 	}, reg
 }
@@ -222,7 +222,7 @@ func logfmtPairs(t *testing.T, line string) [][2]string {
 
 // TestEveryCompletedRunWritesOneRunFinishedRecord pins the record to the
 // health signal on every path a run can take: a completed run writes exactly
-// one record whose ok and result agree with the marker it set, and a lock
+// one record whose ok and result agree with the verdict it set, and a lock
 // skip or a shutdown writes neither.
 func TestEveryCompletedRunWritesOneRunFinishedRecord(t *testing.T) {
 	for i := range runPaths {
@@ -234,7 +234,7 @@ func TestEveryCompletedRunWritesOneRunFinishedRecord(t *testing.T) {
 					t.Errorf("wrote %d run finished records, want none: %v", len(got.records), got.records)
 				}
 				if got.healthSet {
-					t.Errorf("marker healthy = %v, want it left at %v", got.healthy, got.preHealthy)
+					t.Errorf("healthy = %v, want it left at %v", got.healthy, got.preHealthy)
 				}
 				return
 			}
@@ -243,7 +243,7 @@ func TestEveryCompletedRunWritesOneRunFinishedRecord(t *testing.T) {
 			}
 			rec := got.records[0]
 			if !got.healthSet {
-				t.Errorf("marker healthy = %v, want the run's verdict written over %v", got.healthy, got.preHealthy)
+				t.Errorf("healthy = %v, want the run's verdict written over %v", got.healthy, got.preHealthy)
 			}
 			if want := strconv.Itoa(flag(got.healthy)); rec["ok"] != want {
 				t.Errorf("record ok = %q, want %s, the health it wrote", rec["ok"], want)

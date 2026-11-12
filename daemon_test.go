@@ -13,7 +13,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/go/scheduler/trigger"
 )
@@ -128,7 +128,7 @@ func TestStartTickerSkipsStartupScanWhenNotDue(t *testing.T) {
 
 // TestBootDaemon pins the two boot calls. The schedule stamp decides only
 // built-in mode's startup scan, under scheduler.CountFailed: a fresh FAILED
-// scheduled scan skips the startup scan. The marker starts from the last
+// scheduled scan skips the startup scan. The verdict starts from the last
 // completed run of any trigger, so a triggered run the schedule stamp never
 // saw still decides it.
 func TestBootDaemon(t *testing.T) {
@@ -183,22 +183,22 @@ func TestBootDaemon(t *testing.T) {
 					age = max(age, r.age)
 				}
 			}
-			marker := health.NewMarker(filepath.Join(dir, "healthy"))
+			st := health.NewStatus()
 			cfg := &config{Mode: tt.mode, Interval: interval}
 
-			due := bootDaemon(cfg, schedule, &reporter{completed: completed}, health.NewLatch(marker), time.Now().Add(age))
+			due := bootDaemon(cfg, schedule, &reporter{completed: completed}, st, time.Now().Add(age))
 			if due != tt.wantDue {
 				t.Errorf("bootDaemon startup due = %v, want %v", due, tt.wantDue)
 			}
-			if got := marker.Healthy(); got != tt.wantHealthy {
-				t.Errorf("bootDaemon marker healthy = %v, want %v", got, tt.wantHealthy)
+			if got := st.Healthy(); got != tt.wantHealthy {
+				t.Errorf("bootDaemon healthy = %v, want %v", got, tt.wantHealthy)
 			}
 		})
 	}
 }
 
 // TestBootVerdictMatchesTheRestoredLastRun pins that after a restart the
-// marker and last_run_ok give the same verdict before any run.
+// health verdict and last_run_ok agree before any run.
 func TestBootVerdictMatchesTheRestoredLastRun(t *testing.T) {
 	for _, mode := range []runMode{modeExternal, modeBuiltin} {
 		for _, ok := range []bool{true, false} {
@@ -216,14 +216,13 @@ func TestBootVerdictMatchesTheRestoredLastRun(t *testing.T) {
 				if err := scheduler.NewStamp(completedStampPath).Record(ok); err != nil {
 					t.Fatalf("Record: %v", err)
 				}
-				marker := health.NewMarker(filepath.Join(dir, "healthy"))
-				latch := health.NewLatch(marker)
+				st := health.NewStatus()
 				cfg := &config{Mode: mode, Interval: time.Hour}
 
-				reg, rep := newReporter(cfg, latch)
-				bootDaemon(cfg, schedule, rep, latch, time.Now())
-				if got := marker.Healthy(); got != ok {
-					t.Errorf("marker healthy after restart = %v, want the last run's %v", got, ok)
+				reg, rep := newReporter(cfg, st)
+				bootDaemon(cfg, schedule, rep, st, time.Now())
+				if got := st.Healthy(); got != ok {
+					t.Errorf("healthy after restart = %v, want the last run's %v", got, ok)
 				}
 				if got := gauge(t, reg, "last_run_ok"); got != float64(flag(ok)) {
 					t.Errorf("last_run_ok after restart = %v, want %d", got, flag(ok))
@@ -234,7 +233,7 @@ func TestBootVerdictMatchesTheRestoredLastRun(t *testing.T) {
 }
 
 // TestStartupSkipLogsTheBootVerdict pins that the startup-skip line reports
-// the verdict the marker boots with, not the schedule stamp's: a failed
+// the verdict the daemon boots with, not the schedule stamp's: a failed
 // scheduled scan followed by a good triggered run boots healthy.
 func TestStartupSkipLogsTheBootVerdict(t *testing.T) {
 	logs := captureLogs(t, slog.LevelInfo)
@@ -247,12 +246,12 @@ func TestStartupSkipLogsTheBootVerdict(t *testing.T) {
 	if err := completed.Record(true); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
-	marker := health.NewMarker(filepath.Join(dir, "healthy"))
+	st := health.NewStatus()
 	cfg := &config{Mode: modeBuiltin, Interval: time.Hour}
 
-	bootDaemon(cfg, schedule, &reporter{completed: completed}, health.NewLatch(marker), time.Now())
-	if !marker.Healthy() {
-		t.Fatal("marker boots unhealthy, want healthy from the good triggered run")
+	bootDaemon(cfg, schedule, &reporter{completed: completed}, st, time.Now())
+	if !st.Healthy() {
+		t.Fatal("boots unhealthy, want healthy from the good triggered run")
 	}
 	var line string
 	for l := range strings.SplitSeq(logs.String(), "\n") {
@@ -271,7 +270,7 @@ func TestStartupSkipLogsTheBootVerdict(t *testing.T) {
 	}
 }
 
-// TestDaemonRecordOutcome pins which runs reach the health marker and the
+// TestDaemonRecordOutcome pins which runs reach the health verdict and the
 // /cache stamp: a completed scheduled run records both with its outcome, a
 // triggered run updates health only (it does not answer the startup
 // freshness question), and a lock skip or a cancelled run touches neither.
@@ -289,12 +288,12 @@ func TestDaemonRecordOutcome(t *testing.T) {
 		wantStampOK bool
 	}{
 		{
-			name: "startup success records healthy marker and ok stamp",
+			name: "startup success records healthy and an ok stamp",
 			trig: triggerStartup, ran: true,
 			wantHealthy: true, wantStamp: true, wantStampOK: true,
 		},
 		{
-			name: "interval failure records unhealthy marker and failed stamp",
+			name: "interval failure records unhealthy and a failed stamp",
 			trig: triggerInterval, ran: true, runErr: errors.New("scan failed"),
 			preHealthy: true, wantStamp: true,
 		},
@@ -318,11 +317,11 @@ func TestDaemonRecordOutcome(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			marker := health.NewMarker(filepath.Join(dir, "healthy"))
-			marker.Set(tt.preHealthy)
+			st := health.NewStatus()
+			st.Set(tt.preHealthy)
 			d := &daemon{
-				health:   health.NewLatch(marker),
-				reporter: testReporter(t, marker),
+				health:   st,
+				reporter: testReporter(t, st),
 				stamp:    scheduler.NewStamp(filepath.Join(dir, "last-run")),
 			}
 
@@ -332,8 +331,8 @@ func TestDaemonRecordOutcome(t *testing.T) {
 			}
 			d.recordOutcome(tt.ctxErr, &rep)
 
-			if got := marker.Healthy(); got != tt.wantHealthy {
-				t.Errorf("recordOutcome(%q) marker healthy = %v, want %v", tt.trig, got, tt.wantHealthy)
+			if got := st.Healthy(); got != tt.wantHealthy {
+				t.Errorf("recordOutcome(%q) healthy = %v, want %v", tt.trig, got, tt.wantHealthy)
 			}
 			rec, known := d.stamp.Last()
 			if known != tt.wantStamp {
@@ -346,24 +345,24 @@ func TestDaemonRecordOutcome(t *testing.T) {
 	}
 }
 
-// A stamp write failure warns and demotes nothing: the marker keeps the
+// A stamp write failure warns and demotes nothing: the verdict keeps the
 // run's real outcome, and the absent record merely reads as due at the next
 // boot. Swaps the process-global logger, so no t.Parallel.
 func TestDaemonRecordOutcomeStampWriteFailureWarns(t *testing.T) {
 	logs := captureLogs(t, slog.LevelInfo)
 
 	dir := t.TempDir()
-	marker := health.NewMarker(filepath.Join(dir, "healthy"))
+	st := health.NewStatus()
 	d := &daemon{
-		health:   health.NewLatch(marker),
-		reporter: testReporter(t, marker),
+		health:   st,
+		reporter: testReporter(t, st),
 		stamp:    scheduler.NewStamp(filepath.Join(dir, "missing-dir", "last-run")),
 	}
 
 	d.recordOutcome(nil, &jobReport{trigger: triggerInterval, ran: true, result: resultSuccess})
 
-	if !marker.Healthy() {
-		t.Error("marker healthy = false after a stamp write failure, want true (the failure must not demote the run)")
+	if !st.Healthy() {
+		t.Error("healthy = false after a stamp write failure, want true (the failure must not demote the run)")
 	}
 	got := logs.String()
 	if !strings.Contains(got, "level=WARN") || !strings.Contains(got, "cannot record the scan outcome") {

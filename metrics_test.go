@@ -6,15 +6,18 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/measure"
 	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/slogx/capture"
 )
 
 func TestMetricsListenAddrTrimsInvisibleEdges(t *testing.T) {
@@ -34,28 +37,47 @@ func TestMetricsListenAddrTrimsInvisibleEdges(t *testing.T) {
 	}
 }
 
-// countListens swaps listenTCP for the test and counts the binds.
-func countListens(t *testing.T) *int {
-	t.Helper()
-	n := 0
-	prev := listenTCP
-	listenTCP = func(network, addr string) (net.Listener, error) {
-		n++
-		return prev(network, addr)
-	}
-	t.Cleanup(func() { listenTCP = prev })
-	return &n
-}
-
-func TestServeMetricsUnsetOpensNoListener(t *testing.T) {
-	binds := countListens(t)
-	stop, err := serveMetrics(t.Context(), "", measure.NewRegistry(metricsPrefix), nil)
+// TestServeMetricsLogsStraysButNotScrapes pins the listener's access log: a
+// scrape and a probe log at Debug, any other path one INFO "http" line.
+func TestServeMetricsLogsStraysButNotScrapes(t *testing.T) {
+	rec := capture.Default(t)
+	st := health.NewStatus()
+	cfg := &config{Action: actionLink}
+	reg, _ := newReporter(cfg, st)
+	addr := freeAddr(t)
+	stop, err := serveMetrics(t.Context(), addr, reg, newHealthz(st, cfg))
 	if err != nil {
-		t.Fatalf("serveMetrics(\"\") error = %v", err)
+		t.Fatalf("serveMetrics(%q) error = %v", addr, err)
 	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, path := range []string{"/metrics", "/healthz", "/stray"} {
+		resp, err := client.Get("http://" + addr + path)
+		if err != nil {
+			stop()
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+	}
+	// The shutdown waits for every handler, so each access line is written.
 	stop()
-	if *binds != 0 {
-		t.Errorf("serveMetrics(\"\") bound %d listeners, want none", *binds)
+
+	lines := map[slog.Level][]string{}
+	for _, r := range rec.Records() {
+		if r.Message != "http" {
+			continue
+		}
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "path" {
+				lines[r.Level] = append(lines[r.Level], a.Value.String())
+			}
+			return true
+		})
+	}
+	if got, want := lines[slog.LevelDebug], []string{"/metrics", "/healthz"}; !slices.Equal(got, want) {
+		t.Errorf("Debug access lines = %q, want %q", got, want)
+	}
+	if got, want := lines[slog.LevelInfo], []string{"/stray"}; !slices.Equal(got, want) {
+		t.Errorf("INFO access lines = %q, want %q", got, want)
 	}
 }
 
@@ -75,10 +97,10 @@ func freeAddr(t *testing.T) string {
 
 func TestServeMetricsServesThePage(t *testing.T) {
 	addr := freeAddr(t)
-	marker := health.NewMarker(filepath.Join(t.TempDir(), "healthy"))
+	st := health.NewStatus()
 	cfg := &config{Action: actionLink}
-	reg, _ := newReporter(cfg, health.NewLatch(marker))
-	stop, err := serveMetrics(t.Context(), addr, reg, newHealthz(marker, cfg))
+	reg, _ := newReporter(cfg, st)
+	stop, err := serveMetrics(t.Context(), addr, reg, newHealthz(st, cfg))
 	if err != nil {
 		t.Fatalf("serveMetrics(%q) error = %v", addr, err)
 	}
@@ -105,6 +127,23 @@ func TestServeMetricsServesThePage(t *testing.T) {
 	}
 }
 
+// TestRunMetricsServeBuildInfo pins the series a query joins on to find the
+// release a target runs: one line at 1, labelled with the stamped version.
+func TestRunMetricsServeBuildInfo(t *testing.T) {
+	reg, _ := newReporter(&config{Action: actionLink}, health.NewStatus())
+	rec := httptest.NewRecorder()
+	reg.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", http.NoBody))
+	var lines []string
+	for line := range strings.SplitSeq(rec.Body.String(), "\n") {
+		if strings.HasPrefix(line, "fclones_scheduler_build_info") {
+			lines = append(lines, line)
+		}
+	}
+	if want := `fclones_scheduler_build_info{version="` + version + `"} 1`; !slices.Equal(lines, []string{want}) {
+		t.Errorf("build_info lines = %q, want [%q]", lines, want)
+	}
+}
+
 // TestServeRefusesAnAddressItCannotBind pins the refusal before any run: a
 // malformed or taken METRICS_LISTEN_ADDR returns an error (run exits
 // non-zero), logs one ERROR naming the variable, starts no scan and leaves
@@ -122,10 +161,9 @@ func TestServeRefusesAnAddressItCannotBind(t *testing.T) {
 			prevStamp := completedStampPath
 			completedStampPath = filepath.Join(dir, "last-completed")
 			t.Cleanup(func() { completedStampPath = prevStamp })
-			marker := health.NewMarker(filepath.Join(dir, "healthy"))
-			marker.Set(true)
+			st := health.NewStatus()
 
-			err := serve(t.Context(), &config{Mode: modeOnce, MetricsListenAddr: addr}, marker)
+			err := serve(t.Context(), &config{Mode: modeOnce, MetricsListenAddr: addr}, st)
 
 			if err == nil {
 				t.Fatalf("serve with METRICS_LISTEN_ADDR=%q returned nil, want an error", addr)
@@ -137,8 +175,8 @@ func TestServeRefusesAnAddressItCannotBind(t *testing.T) {
 			if strings.Contains(out, "scan starting") || strings.Contains(out, "container started") {
 				t.Errorf("started before the bind failed:\n%s", out)
 			}
-			if marker.Healthy() {
-				t.Error("marker healthy after a refused start, want unhealthy")
+			if st.Healthy() {
+				t.Error("healthy after a refused start, want unhealthy")
 			}
 		})
 	}
@@ -169,6 +207,80 @@ func gauge(t *testing.T, reg *measure.Registry, name string, labels ...string) f
 	return 0
 }
 
+// deadlineConfig is built-in mode at a 1h interval and a 10m timeout, whose
+// health lease is deadlineGap.
+var deadlineConfig = config{Mode: modeBuiltin, Interval: time.Hour, PhaseTimeout: 10 * time.Minute, Action: actionLink}
+
+// deadlineGap is two 1h intervals plus two 10m timeouts.
+const deadlineGap = 2*time.Hour + 20*time.Minute
+
+// deadlineOf reads the run deadline as a time; the zero time when it is 0.
+func deadlineOf(t *testing.T, reg *measure.Registry) time.Time {
+	t.Helper()
+	v := gauge(t, reg, "run_deadline_timestamp_seconds")
+	if v == 0 {
+		return time.Time{}
+	}
+	return time.Unix(int64(v), 0).UTC()
+}
+
+// TestRunDeadlineAtStart pins the boot value: one health lease after the last
+// success on record, or after the start when the record is missing or shows a
+// failure, and 0 in every mode that arms no lease.
+func TestRunDeadlineAtStart(t *testing.T) {
+	start := time.Date(2026, 11, 12, 3, 0, 0, 0, time.UTC)
+	last := start.Add(-time.Hour)
+	success := scheduler.RunRecord{Time: last, OK: true}
+	external, once, unbounded := deadlineConfig, deadlineConfig, deadlineConfig
+	external.Mode, once.Mode, unbounded.PhaseTimeout = modeExternal, modeOnce, 0
+	tests := []struct {
+		want  time.Time
+		cfg   *config
+		name  string
+		rec   scheduler.RunRecord
+		known bool
+	}{
+		{name: "no record", cfg: &deadlineConfig, want: start.Add(deadlineGap)},
+		{name: "success record", cfg: &deadlineConfig, rec: success, known: true, want: last.Add(deadlineGap)},
+		{name: "failure record", cfg: &deadlineConfig, rec: scheduler.RunRecord{Time: last}, known: true, want: start.Add(deadlineGap)},
+		{name: "external mode", cfg: &external, rec: success, known: true},
+		{name: "run once", cfg: &once, rec: success, known: true},
+		{name: "unbounded SCAN_TIMEOUT", cfg: &unbounded, rec: success, known: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := measure.NewRegistry(metricsPrefix)
+			newRunMetrics(reg, tt.cfg, tt.rec, tt.known, start)
+			if got := deadlineOf(t, reg); !got.Equal(tt.want) {
+				t.Errorf("run deadline at start = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRunDeadlineMovesOnlyOnASuccess pins that a success dates the deadline
+// one lease after its end and a failed run leaves it where it was.
+func TestRunDeadlineMovesOnlyOnASuccess(t *testing.T) {
+	start := time.Date(2026, 11, 12, 3, 0, 0, 0, time.UTC)
+	reg := measure.NewRegistry(metricsPrefix)
+	m := newRunMetrics(reg, &deadlineConfig, scheduler.RunRecord{}, false, start)
+	failed := &jobReport{ran: true, result: resultExecError, err: errors.New("scan failed")}
+
+	m.observe(failed, false, start.Add(time.Hour))
+	if got, want := deadlineOf(t, reg), start.Add(deadlineGap); !got.Equal(want) {
+		t.Errorf("run deadline after a failed run = %v, want it left at %v", got, want)
+	}
+	end := start.Add(2 * time.Hour)
+	m.observe(&jobReport{ran: true, result: resultSuccess}, true, end)
+	if got, want := deadlineOf(t, reg), end.Add(deadlineGap); !got.Equal(want) {
+		t.Errorf("run deadline after a success = %v, want %v", got, want)
+	}
+	m.observe(failed, false, end.Add(time.Hour))
+	if got, want := deadlineOf(t, reg), end.Add(deadlineGap); !got.Equal(want) {
+		t.Errorf("run deadline after a later failed run = %v, want it left at %v", got, want)
+	}
+}
+
 // TestRestartSeedsTheTimeSeriesFromTheStamp pins that both time series survive
 // a restart: before the first run, they equal the completed-run record that a
 // run in the previous process wrote on /cache.
@@ -179,20 +291,25 @@ func TestRestartSeedsTheTimeSeriesFromTheStamp(t *testing.T) {
 			prevStamp := completedStampPath
 			completedStampPath = filepath.Join(dir, "last-completed")
 			t.Cleanup(func() { completedStampPath = prevStamp })
-			latch := health.NewLatch(health.NewMarker(filepath.Join(dir, "healthy")))
+			st := health.NewStatus()
 			result, runErr := resultSuccess, error(nil)
 			if !ok {
 				result, runErr = resultExecError, errors.New("scan failed")
 			}
 
-			_, before := newReporter(&config{}, latch)
+			_, before := newReporter(&deadlineConfig, st)
 			before.report(nil, &jobReport{ran: true, result: result, err: runErr})
 			rec, known := scheduler.NewStamp(completedStampPath).Last()
 			if !known || rec.OK != ok {
 				t.Fatalf("completed-run record = %+v known %v, want ok %v", rec, known, ok)
 			}
 
-			reg, _ := newReporter(&config{}, latch)
+			reg, _ := newReporter(&deadlineConfig, st)
+			if ok {
+				if got, want := deadlineOf(t, reg), rec.Time.Add(deadlineGap).Truncate(time.Second); !got.Equal(want) {
+					t.Errorf("run deadline after restart = %v, want the record's time plus the lease, %v", got, want)
+				}
+			}
 			if got := gauge(t, reg, "last_run_timestamp_seconds"); got != float64(rec.Time.Unix()) {
 				t.Errorf("last_run_timestamp_seconds after restart = %v, want the record's %d", got, rec.Time.Unix())
 			}

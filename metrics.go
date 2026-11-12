@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net"
 	"net/http"
 	"time"
 
@@ -14,6 +13,10 @@ import (
 
 // metricsPrefix names every series on the metrics page.
 const metricsPrefix = "fclones_scheduler"
+
+// version is the release this binary is, stamped by the Dockerfile's
+// BUILD_VERSION build argument; an unstamped build reports "dev".
+var version = "dev"
 
 // The two phases of a run, as log lines and the phase label name them.
 const (
@@ -47,13 +50,17 @@ type runMetrics struct {
 	summaryRecognized *measure.Gauge
 	filesProcessed    *measure.Counter
 	reclaimedBytes    *measure.Counter
+	deadline          *measure.Gauge
+	// gap is the health lease: a success dates the deadline this far ahead.
+	gap time.Duration
 }
 
 // newRunMetrics registers the run series on reg and seeds them: every label
 // value at 0, and the last run's time, verdict and, when it succeeded, the
 // success time from last, the record of the last completed run that survived
-// a restart.
-func newRunMetrics(reg *measure.Registry, cfg *config, last scheduler.RunRecord, known bool) *runMetrics {
+// a restart. The run deadline starts one health lease after that success, or
+// after start when there is none.
+func newRunMetrics(reg *measure.Registry, cfg *config, last scheduler.RunRecord, known bool, start time.Time) *runMetrics {
 	m := &runMetrics{
 		runs: measure.NewLabeledCounter("runs_total",
 			"Completed runs by how they ended.", []string{keyResult}),
@@ -81,10 +88,13 @@ func newRunMetrics(reg *measure.Registry, cfg *config, last scheduler.RunRecord,
 			"Duplicate files the actions processed, from their summary lines."),
 		reclaimedBytes: measure.NewCounter("reclaimed_bytes_total",
 			"Bytes the actions reclaimed, from fclones' rounded summary; an upper bound for dedupe."),
+		deadline: measure.NewGauge("run_deadline_timestamp_seconds",
+			"Unix time by which the next successful run is due; 0 in external and run-once modes and with SCAN_TIMEOUT=0."),
+		gap: healthLease(cfg.Mode, cfg.Interval, cfg.PhaseTimeout),
 	}
 	reg.MustRegister(m.runs, m.lastResult, m.phaseDuration, m.info, m.lastOK, m.lastRun,
 		m.lastSuccess, m.groups, m.duplicateFiles, m.redundantBytes, m.summaryRecognized,
-		m.filesProcessed, m.reclaimedBytes)
+		m.filesProcessed, m.reclaimedBytes, m.deadline)
 	for _, r := range runResults {
 		m.runs.Add(0, string(r))
 		m.lastResult.Set(0, string(r))
@@ -94,14 +104,34 @@ func newRunMetrics(reg *measure.Registry, cfg *config, last scheduler.RunRecord,
 	}
 	m.summaryRecognized.Set(1)
 	m.info.Set(1, cfg.Mode.String(), cfg.Action.String())
+	lastSuccess := start
 	if known {
 		m.lastRun.Set(unixSeconds(last.Time))
 		m.lastOK.Set(float64(flag(last.OK)))
 		if last.OK {
 			m.lastSuccess.Set(unixSeconds(last.Time))
+			lastSuccess = last.Time
 		}
 	}
+	m.setDeadline(lastSuccess)
 	return m
+}
+
+// setDeadline dates the run deadline one gap after a success at
+// lastSuccess; with no gap it stays 0.
+func (m *runMetrics) setDeadline(lastSuccess time.Time) {
+	if m.gap > 0 {
+		m.deadline.Set(unixSeconds(lastSuccess.Add(m.gap)))
+	}
+}
+
+// registerBuildInfo serves build_info at 1, labelled with the release this
+// process runs, for a query to join on.
+func registerBuildInfo(reg *measure.Registry) {
+	info := measure.NewLabeledGauge("build_info",
+		"Always 1; the version label is the release this process runs.", []string{"version"})
+	reg.MustRegister(info)
+	info.Set(1, version)
 }
 
 func unixSeconds(t time.Time) float64 {
@@ -119,6 +149,7 @@ func (m *runMetrics) observe(rep *jobReport, ok bool, at time.Time) {
 	m.lastRun.Set(unixSeconds(at))
 	if ok {
 		m.lastSuccess.Set(unixSeconds(at))
+		m.setDeadline(at)
 	}
 	if rep.scanRan {
 		m.phaseDuration.Set(rep.scanDuration.Seconds(), phaseScan)
@@ -141,42 +172,23 @@ func (m *runMetrics) observe(rep *jobReport, ok bool, at time.Time) {
 	}
 }
 
-// listenTCP is a seam so a test can see that an unset address opens nothing.
-var listenTCP = net.Listen
-
-// Timeouts for the metrics page: a scrape reads one small page, so a slow
-// client is cut off rather than held.
-const (
-	metricsReadTimeout  = 10 * time.Second
-	metricsWriteTimeout = 30 * time.Second
-)
-
 // serveMetrics binds addr and serves reg's page and healthz on it until ctx
 // ends; stop cancels the server and waits until it has shut down. An empty
 // addr opens no listener. A bind failure is logged once, naming
 // METRICS_LISTEN_ADDR, and returned so the container refuses to start rather
 // than run with no page.
 func serveMetrics(ctx context.Context, addr string, reg *measure.Registry, healthz http.Handler) (stop func(), err error) {
-	if addr == "" {
-		return func() {}, nil
-	}
-	ln, err := listenTCP("tcp", addr)
+	ms, err := httpserver.ListenMetrics(ctx, addr, httpserver.MetricsHandlers{Metrics: reg.Handler(), Healthz: healthz})
 	if err != nil {
 		slog.Error("cannot listen on METRICS_LISTEN_ADDR; refusing to start",
 			"value", addr, logKeyOutcome, "config_error", "error", err)
 		return nil, err
 	}
-	mux := http.NewServeMux()
-	mux.Handle("GET /metrics", reg.Handler())
-	mux.Handle("GET /healthz", healthz)
-	srv := httpserver.New(mux)
-	srv.ReadTimeout = metricsReadTimeout
-	srv.WriteTimeout = metricsWriteTimeout
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if err := httpserver.Run(ctx, srv, ln); err != nil {
+		if err := ms.Serve(ctx); err != nil {
 			slog.Error("metrics listener stopped", "address", addr, "error", err)
 		}
 	}()
