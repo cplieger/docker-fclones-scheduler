@@ -101,7 +101,7 @@ tests:
               instance: fc:9469
             exp_annotations:
               summary: "fclones runs are overdue"
-              description: "No run succeeded by the deadline the built-in schedule sets, two SCAN_INTERVAL periods plus two SCAN_TIMEOUT runs after the last success or the start; with no deadline (0), no run completed in 30h. Runs that keep failing cross the deadline too, so check FclonesRunFailed first. Otherwise check for a stuck schedule, a phase stuck with SCAN_TIMEOUT=0, no outside trigger with SCAN_INTERVAL=off, or another container holding the scan lock.\n"
+              description: "No run succeeded by the deadline, or, with deadline 0, none finished in 30h. Failing runs cross it too: check FclonesRunFailed first. Otherwise suspect a stuck schedule or phase, no outside trigger, or another container holding the scan lock.\n"
       - eval_time: 101m
         alertname: FclonesScanStalled
         exp_alerts: []
@@ -142,7 +142,7 @@ tests:
               instance: fc:9469
             exp_annotations:
               summary: "fclones runs are overdue"
-              description: "No run succeeded by the deadline the built-in schedule sets, two SCAN_INTERVAL periods plus two SCAN_TIMEOUT runs after the last success or the start; with no deadline (0), no run completed in 30h. Runs that keep failing cross the deadline too, so check FclonesRunFailed first. Otherwise check for a stuck schedule, a phase stuck with SCAN_TIMEOUT=0, no outside trigger with SCAN_INTERVAL=off, or another container holding the scan lock.\n"
+              description: "No run succeeded by the deadline, or, with deadline 0, none finished in 30h. Failing runs cross it too: check FclonesRunFailed first. Otherwise suspect a stuck schedule or phase, no outside trigger, or another container holding the scan lock.\n"
       - eval_time: 30h25m
         alertname: FclonesScanStalled
         exp_alerts: []
@@ -169,7 +169,7 @@ tests:
               instance: fc:9469
             exp_annotations:
               summary: "fclones runs are overdue"
-              description: "No run succeeded by the deadline the built-in schedule sets, two SCAN_INTERVAL periods plus two SCAN_TIMEOUT runs after the last success or the start; with no deadline (0), no run completed in 30h. Runs that keep failing cross the deadline too, so check FclonesRunFailed first. Otherwise check for a stuck schedule, a phase stuck with SCAN_TIMEOUT=0, no outside trigger with SCAN_INTERVAL=off, or another container holding the scan lock.\n"
+              description: "No run succeeded by the deadline, or, with deadline 0, none finished in 30h. Failing runs cross it too: check FclonesRunFailed first. Otherwise suspect a stuck schedule or phase, no outside trigger, or another container holding the scan lock.\n"
 
   - name: a deadline of 0 never fires the deadline arm, with a run every 3h, the default interval
     interval: 1m
