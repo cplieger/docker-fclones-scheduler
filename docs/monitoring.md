@@ -34,6 +34,8 @@ Every series starts with `fclones_scheduler_`. After a restart, the last run's t
 | `files_processed_total` | counter | | Duplicate files the actions linked, removed or deduplicated |
 | `reclaimed_bytes_total` | counter | | Bytes the actions freed, from fclones' rounded summary, an upper bound for `dedupe` |
 | `info` | gauge | `mode`, `action` | Always 1, with labels that name the scheduling mode and `FCLONES_ACTION` |
+| `run_deadline_timestamp_seconds` | gauge | | Unix time by which the next successful run is due: the last success, or the start when the record on `/cache` shows no success, plus twice `SCAN_INTERVAL` and twice `SCAN_TIMEOUT`. A failed run leaves it where it was. 0 with an outside scheduler, with `SCAN_INTERVAL=0` and with `SCAN_TIMEOUT=0` |
+| `build_info` | gauge | `version` | Always 1. `version` is the release the image was built from |
 
 `result` is one of `success`, `exec_error`, `timeout`, `decode_error`, `action_no_op`, `start_error` and `lock_error`. The page also carries the Go runtime and process families (`go_*`, `process_*`) under the names Go's official Prometheus client uses, so stock Go dashboards work.
 
@@ -80,6 +82,7 @@ These lines are for reading a run by hand. No alert rule reads them.
 | `scan failed`, `action failed` | ERROR | `error`, `stderr`, with `outcome=exec_error` |
 | `scan timeout exceeded`, `action timeout exceeded` | ERROR | `timeout`, `duration`, with `outcome=timeout` |
 | `fclones report decode failed; failing the run` | ERROR | `error`, with `outcome=decode_error` |
+| `http` | INFO, or DEBUG for `/metrics` and `/healthz` | `method`, `path`, `status`, `duration_ms`, `request_id`, one line per request to the metrics listener |
 
 On these lines `result` holds fclones' own summary text, not the run's result. The `duplicate file` lines stop at 500 pairs or 64 KB per scan, taken from the first 100 groups. A `duplicate pairs truncated` line then gives the full totals. fclones' own messages reach the log with control characters and other unsafe characters shown as `\xNN`. A file name inside an fclones message cannot fake or hide a log line.
 
@@ -93,17 +96,19 @@ Load `alerts/promql.yaml` into Prometheus or the Mimir ruler, or `alerts/logql.y
 | --- | --- | --- |
 | `FclonesDown` | Prometheus has not scraped the metrics page for 5 minutes | warning |
 | `FclonesRunFailed` | the last completed run failed, including an action that processed none of the duplicates it found | warning |
-| `FclonesScanStalled` | no run has finished for 30 hours at the defaults, twice `SCAN_INTERVAL` plus twice `SCAN_TIMEOUT` | warning |
+| `FclonesScanStalled` | in `alerts/promql.yaml`, no run has succeeded by `fclones_scheduler_run_deadline_timestamp_seconds` plus 15 minutes, or, while that deadline is 0, no run has finished for 30 hours. In `alerts/logql.yaml`, no run has finished for 30 hours | warning |
 | `FclonesFormatDrift` | the container did not recognize the summary line of the last fclones action | warning |
 | `FclonesSpaceReclaimed` | runs in the last 30 hours processed duplicate files, with the count in its value | info |
 
-Thresholds and the `severity` labels are starting points. Match the 30-hour stall window to twice your `SCAN_INTERVAL` plus twice your `SCAN_TIMEOUT`. In `alerts/promql.yaml` it is written as `108000` seconds. Change the `container` selector to the label your log collector sets, and keep the scrape job name `fclones` that `FclonesDown` reads.
+Thresholds and the `severity` labels are starting points. The 30-hour windows are twice `SCAN_INTERVAL` plus twice `SCAN_TIMEOUT` at the defaults, so match them to yours. In `alerts/promql.yaml` the window of `FclonesScanStalled` is written as `108000` seconds and applies only while the run deadline reads 0, so with the built-in schedule that rule needs no change. Change the `container` selector to the label your log collector sets, and keep the scrape job name `fclones` that `FclonesDown` reads.
 
 ### Notes on each alert
 
 `FclonesRunFailed` reads the latest run's verdict, so it fires at the first failed run and resolves at the next good one. The record's `result` field, or the `fclones_scheduler_last_run_result` series, names the cause, and the run's ERROR line has the detail. `action_no_op` means fclones opened none of the duplicates for writing. fclones only warns when that fails and then exits 0, so the container fails the run itself. The usual causes are a scanned folder the container's user cannot write to, or, for `dedupe`, a filesystem with no reflink support.
 
-`FclonesScanStalled` fires on silence. It cannot tell a stuck schedule from a container that never started or runs under another name, or from logs that stopped reaching Loki, so rule those out first. With `SCAN_TIMEOUT=0`, a phase has no time limit and no window is safe. With `SCAN_INTERVAL=off`, use two phase timeouts plus the cadence of your scheduler. With `SCAN_INTERVAL=0`, drop the rule, because a container that exits after one run is silent on purpose. A restart adds nothing to the gap, because the records on `/cache` keep the schedule in step.
+`FclonesScanStalled` in `alerts/promql.yaml` has two arms, and `fclones_scheduler_run_deadline_timestamp_seconds` picks one. While the deadline is above 0, which is the built-in schedule with a `SCAN_TIMEOUT` above 0, the alert fires 15 minutes after the deadline passes. The container works the deadline out from `SCAN_INTERVAL` and `SCAN_TIMEOUT`, so this arm has no window to change. Only a successful run moves the deadline, so runs that keep failing cross it too, beside `FclonesRunFailed`. One failed run between two good ones does not, because the deadline holds two intervals. While the deadline reads 0, the alert fires when no run has finished for 30 hours, or, before the first run, 30 hours after the process started. Load the rule file of the release you run, because an older image serves no deadline and neither arm can fire.
+
+The log rule, and the second metric arm, fire on silence. They cannot tell a stuck schedule from a container that never started or runs under another name, or from logs that stopped reaching Loki, so rule those out first. With `SCAN_TIMEOUT=0`, a phase has no time limit and no window is safe. With `SCAN_INTERVAL=off`, use two phase timeouts plus the cadence of your scheduler. With `SCAN_INTERVAL=0`, drop the rule, because a container that exits after one run is silent on purpose. A restart adds nothing to the gap, because the records on `/cache` keep the schedule in step.
 
 `FclonesFormatDrift` matters because the action still runs and the run still succeeds, so `FclonesRunFailed` does not catch it. Only the files and bytes reclaimed read wrong. A `--dry-run` in `FCLONES_ACTION_ARGS` causes it on purpose, because fclones then prints what it would do. The scan report is covered separately. It is read strictly, and an unreadable report fails the run with `result=decode_error`.
 
@@ -118,7 +123,7 @@ Thresholds and the `severity` labels are starting points. Match the 30-hour stal
 
 **What healthy means.** The last completed run succeeded, the check of `/cache` at start passed, and the container is not shutting down. With the built-in schedule, the container is also unhealthy from start until a due startup scan succeeds. It is unhealthy too when no run has finished for twice `SCAN_INTERVAL` plus twice `SCAN_TIMEOUT`, 30 hours at the defaults. `/healthz` names which of these failed in `reasons`. [How it works](how-it-works.md#health) explains how the container decides.
 
-**Docker health.** The image checks itself every 30 seconds with `/app/wrapper health`, which reads the health file the main process updates after each run. Docker marks the container unhealthy after 3 failures, and allows 15 seconds after a start. Docker's health status notifies nobody on its own, and Docker does not restart an unhealthy container.
+**Docker health.** The image checks itself every 30 seconds with `/app/wrapper health`, which reads the health file the app refreshes after each run at `/dev/shm/docker-fclones-scheduler.healthy`. If that file cannot be written, the check passes and the log says so once, while `/healthz` on the metrics listener still gives the true answer. Docker marks the container unhealthy after 3 failures, and allows 15 seconds after a start. Docker's health status notifies nobody on its own, and Docker does not restart an unhealthy container.
 
 **Who is told.**
 
@@ -128,6 +133,6 @@ Thresholds and the `severity` labels are starting points. Match the 30-hour stal
 | Loki only | `FclonesScanStalled` | the same |
 | Docker or Unraid only | an uptime prober on `/healthz`, or something that watches Docker health | the same |
 
-**Probing from outside.** The app opens no port unless `METRICS_LISTEN_ADDR` is set, so nothing outside the container can probe it until then. Watch Docker health, or set `METRICS_LISTEN_ADDR` and probe its `/healthz`. Check `GET http://<host>:<port>/healthz` and pass on status 200 only, without matching the body. Use a 5-second timeout, check every 60 seconds, and alert after 3 failures. With the built-in schedule and no recent good run on `/cache`, wait as long as your first scan takes after a first start.
+**Probing from outside.** The app opens no port unless `METRICS_LISTEN_ADDR` is set, so nothing outside the container can probe it until then. Watch Docker health, or set `METRICS_LISTEN_ADDR` and probe its `/healthz`. Check `GET http://<host>:<port>/healthz` and pass on status 200 only, without matching the body. Use a 5-second timeout, check every 60 seconds, and alert after 3 failures. With the built-in schedule and no recent good run on `/cache`, wait as long as your first scan takes after a first start. A Kubernetes liveness probe that must ignore readiness uses a `tcpSocket` probe on the port.
 
-**With an outside scheduler**, no deadline applies, because the container cannot know your schedule. Alert on your scheduler's own job result: `wrapper scan` exits non-zero when the scan fails. **With `SCAN_INTERVAL=0`**, the exit code is the result: 0 for a good run, non-zero for a failed, timed-out or interrupted run, or one skipped because another container held the scan lock.
+**With an outside scheduler**, no deadline applies, because the container cannot know your schedule. Alert on your scheduler's own job result: `wrapper scan` exits non-zero when the scan fails. **With `SCAN_INTERVAL=0`**, the exit code is the result: 0 for a good run, non-zero for a failed, timed-out or interrupted run, or one skipped because another container held the scan lock. `METRICS_LISTEN_ADDR` still opens the port in this mode, but `/healthz` and `/metrics` answer only while the one run lasts, so a prober or a scrape sees the container as down between runs.

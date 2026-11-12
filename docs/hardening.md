@@ -16,7 +16,7 @@ Options reach fclones as a list of arguments with no shell to expand them. The o
 
 ## Hardened compose settings
 
-These settings add to the quick start's `compose.yaml`. [Hardening a compose file](https://github.com/cplieger/docs/blob/main/docs/hardening.md) explains each setting. The container writes only to `/scandir`, `/cache` and `/tmp`, so the rest of its filesystem can be read-only, and it runs with every Linux capability dropped:
+These settings add to the quick start's `compose.yaml`. [Hardening a compose file](https://github.com/cplieger/docs/blob/main/docs/hardening.md) explains each setting. The container writes only to `/scandir`, `/cache`, `/tmp` and `/dev/shm`, so the rest of its filesystem can be read-only, and it runs with every Linux capability dropped:
 
 ```yaml
 services:
@@ -30,7 +30,7 @@ services:
       - "/tmp:size=128m,mode=1777,noexec,nosuid,nodev"
 ```
 
-The `/tmp` tmpfs holds the trigger socket, the health file and the home folder the image sets with `HOME=/tmp`.
+The `/tmp` tmpfs holds the trigger socket and the home folder the image sets with `HOME=/tmp`. Under a read-only root without it, the container cannot open the socket and stops at start, unless `SCAN_INTERVAL=0`. The health file goes to `/dev/shm`, which stays writable under a read-only root, so health needs no tmpfs of its own. If `/dev/shm` cannot be written, as under `ipc: none`, the healthcheck passes and the startup log says so, while `/healthz` on the metrics listener still gives the true answer.
 
 ## What the image contains
 
@@ -45,7 +45,4 @@ The `/tmp` tmpfs holds the trigger socket, the health file and the home folder t
 
 ## Accepted scanner findings
 
-Live scan results are on the repository's Security tab. Two findings are accepted:
-
-- hadolint DL3008, unpinned `apt-get` packages, fires in the Rust builder stage, which is not part of the final image.
-- semgrep flags the health file path under `/tmp`. It is a fixed marker file and holds no data.
+Live scan results are on the repository's Security tab. One finding is accepted: hadolint DL3008, unpinned `apt-get` packages, fires in the Rust builder stage, which is not part of the final image.
