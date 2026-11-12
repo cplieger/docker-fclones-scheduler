@@ -6,12 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
-	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/measure"
 )
 
@@ -21,37 +20,27 @@ type healthzBody struct {
 	Reasons []string `json:"reasons"`
 }
 
-// setMarker puts a test marker in a state: written by a good run (fresh),
-// removed by a failed one (failed), or written age ago (aged).
-func setMarker(t *testing.T, marker *health.Marker, path, state string, age time.Duration) {
+// getHealthz serves one GET /healthz from h and decodes its answer.
+func getHealthz(t *testing.T, h http.Handler) (int, healthzBody) {
 	t.Helper()
-	switch state {
-	case "fresh":
-		marker.Set(true)
-	case "failed":
-		marker.Set(false)
-	case "aged":
-		marker.Set(true)
-		aged := time.Now().Add(-age)
-		if err := os.Chtimes(path, aged, aged); err != nil {
-			t.Fatal(err)
-		}
-	default:
-		t.Fatalf("unknown marker state %q", state)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	var body healthzBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("GET /healthz body %q is not JSON: %v", rec.Body.String(), err)
 	}
+	return rec.Code, body
 }
 
 // TestServeMetricsServesHealthz pins the route on METRICS_LISTEN_ADDR: GET and
-// HEAD answer 200 {"status":"ok"} on a fresh marker, 503 with one reason per
-// fault on a failed or a stale marker, and any other method gets 405.
+// HEAD answer 200 {"status":"ok"} after a good run, 503 with one reason after
+// a failed one, and any other method gets 405.
 func TestServeMetricsServesHealthz(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "healthy")
-	marker := health.NewMarker(path)
-	// Built-in mode, 1h interval and 30m timeout: a 3-hour lease.
+	st := health.NewStatus()
 	cfg := &config{Mode: modeBuiltin, Interval: time.Hour, PhaseTimeout: 30 * time.Minute}
 	addr := freeAddr(t)
 	ctx, cancel := context.WithCancel(t.Context())
-	stop, err := serveMetrics(ctx, addr, measure.NewRegistry(metricsPrefix), newHealthz(marker, cfg))
+	stop, err := serveMetrics(ctx, addr, measure.NewRegistry(metricsPrefix), newHealthz(st, cfg))
 	if err != nil {
 		cancel()
 		t.Fatalf("serveMetrics(%q) error = %v", addr, err)
@@ -63,67 +52,53 @@ func TestServeMetricsServesHealthz(t *testing.T) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	url := "http://" + addr + "/healthz"
 
-	get := func(t *testing.T) (int, http.Header, healthzBody) {
-		t.Helper()
-		resp, err := client.Get(url)
-		if err != nil {
-			t.Fatalf("GET /healthz: %v", err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		raw, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var body healthzBody
-		if err := json.Unmarshal(raw, &body); err != nil {
-			t.Fatalf("GET /healthz body %q is not JSON: %v", raw, err)
-		}
-		return resp.StatusCode, resp.Header, body
-	}
-
-	const pastLease = 4 * time.Hour
-	reasons := map[string]string{}
 	for _, tc := range []struct {
 		name       string
-		state      string
 		wantStatus string
 		wantCode   int
+		healthy    bool
 	}{
-		{name: "fresh", state: "fresh", wantCode: http.StatusOK, wantStatus: "ok"},
-		{name: "failed", state: "failed", wantCode: http.StatusServiceUnavailable, wantStatus: "unhealthy"},
-		{name: "stale", state: "aged", wantCode: http.StatusServiceUnavailable, wantStatus: "unhealthy"},
+		{name: "fresh", healthy: true, wantCode: http.StatusOK, wantStatus: "ok"},
+		{name: "failed", wantCode: http.StatusServiceUnavailable, wantStatus: "unhealthy"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			setMarker(t, marker, path, tc.state, pastLease)
-			code, header, body := get(t)
-			if code != tc.wantCode || body.Status != tc.wantStatus {
-				t.Errorf("GET /healthz on a %s marker = %d %q, want %d %q", tc.name, code, body.Status, tc.wantCode, tc.wantStatus)
+			st.Set(tc.healthy)
+			resp, err := client.Get(url)
+			if err != nil {
+				t.Fatalf("GET /healthz: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			raw, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body healthzBody
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Fatalf("GET /healthz body %q is not JSON: %v", raw, err)
+			}
+			if resp.StatusCode != tc.wantCode || body.Status != tc.wantStatus {
+				t.Errorf("GET /healthz %s = %d %q, want %d %q", tc.name, resp.StatusCode, body.Status, tc.wantCode, tc.wantStatus)
 			}
 			for key, want := range map[string]string{
 				"Content-Type":           "application/json",
 				"Cache-Control":          "no-store",
 				"X-Content-Type-Options": "nosniff",
 			} {
-				if got := header.Get(key); got != want {
+				if got := resp.Header.Get(key); got != want {
 					t.Errorf("GET /healthz %s = %q, want %q", key, got, want)
 				}
 			}
-			switch {
-			case tc.wantCode == http.StatusOK && body.Reasons != nil:
-				t.Errorf("GET /healthz on a fresh marker lists reasons %q, want none", body.Reasons)
-			case tc.wantCode != http.StatusOK && len(body.Reasons) != 1:
-				t.Errorf("GET /healthz on a %s marker lists reasons %q, want exactly one", tc.name, body.Reasons)
-			case tc.wantCode != http.StatusOK:
-				reasons[tc.name] = body.Reasons[0]
+			if tc.healthy && body.Reasons != nil {
+				t.Errorf("GET /healthz after a good run lists reasons %q, want none", body.Reasons)
+			}
+			if !tc.healthy && len(body.Reasons) != 1 {
+				t.Errorf("GET /healthz after a failed run lists reasons %q, want exactly one", body.Reasons)
 			}
 		})
 	}
-	if reasons["failed"] == reasons["stale"] {
-		t.Errorf("a failed and a stale marker both report %q, want a reason naming each fault", reasons["failed"])
-	}
 
 	t.Run("HEAD", func(t *testing.T) {
-		setMarker(t, marker, path, "fresh", 0)
+		st.Set(true)
 		resp, err := client.Head(url)
 		if err != nil {
 			t.Fatalf("HEAD /healthz: %v", err)
@@ -145,11 +120,37 @@ func TestServeMetricsServesHealthz(t *testing.T) {
 	})
 }
 
-// TestHealthzAgreesWithTheHealthSubcommand pins one verdict for two readers:
-// for a fresh, a failed, a not yet stale and a stale marker, /healthz answers
-// 200 exactly when `wrapper health` exits 0, in every mode. Built-in mode's
-// lease is two intervals plus two scan timeouts; external and run-once modes
-// arm none. Serial: it sets the environment both readers parse.
+// TestHealthzNamesEachFault pins one reason per fault: a failed run and a
+// good run older than the lease each answer 503 with a reason of their own.
+func TestHealthzNamesEachFault(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		st := health.NewStatus()
+		// Built-in mode, 1h interval and 30m timeout: a 3-hour lease.
+		h := newHealthz(st, &config{Mode: modeBuiltin, Interval: time.Hour, PhaseTimeout: 30 * time.Minute})
+
+		st.Set(false)
+		code, failed := getHealthz(t, h)
+		if code != http.StatusServiceUnavailable || len(failed.Reasons) != 1 {
+			t.Fatalf("GET /healthz after a failed run = %d %q, want 503 with one reason", code, failed.Reasons)
+		}
+		st.Set(true)
+		time.Sleep(3*time.Hour + time.Second)
+		code, stale := getHealthz(t, h)
+		if code != http.StatusServiceUnavailable || len(stale.Reasons) != 1 {
+			t.Fatalf("GET /healthz past the lease = %d %q, want 503 with one reason", code, stale.Reasons)
+		}
+		if failed.Reasons[0] == stale.Reasons[0] {
+			t.Errorf("a failed and a stale verdict both report %q, want a reason naming each fault", failed.Reasons[0])
+		}
+	})
+}
+
+// TestHealthzAgreesWithTheHealthSubcommand pins one deadline for two readers:
+// in every mode, the lease the health subcommand arms is the one /healthz
+// applies, and /healthz turns 503 just past it after a good run (never, with
+// no lease). Built-in mode's lease is two intervals plus two scan timeouts;
+// external and run-once modes arm none. Serial: it sets the environment both
+// readers parse.
 func TestHealthzAgreesWithTheHealthSubcommand(t *testing.T) {
 	for _, env := range []struct {
 		interval, timeout string
@@ -161,45 +162,34 @@ func TestHealthzAgreesWithTheHealthSubcommand(t *testing.T) {
 		{interval: "0", timeout: ""},
 		{interval: "1h", timeout: "0"},
 	} {
-		// With no lease, any age is healthy; 100 hours stands for "long ago".
-		within, past := env.lease-time.Hour, env.lease+time.Hour
-		pastCode := http.StatusServiceUnavailable
-		if env.lease == 0 {
-			within, past = time.Hour, 100*time.Hour
-			pastCode = http.StatusOK
-		}
-		for _, tc := range []struct {
-			state    string
-			age      time.Duration
-			wantCode int
-		}{
-			{state: "fresh", wantCode: http.StatusOK},
-			{state: "failed", wantCode: http.StatusServiceUnavailable},
-			{state: "aged", age: within, wantCode: http.StatusOK},
-			{state: "aged", age: past, wantCode: pastCode},
-		} {
-			name := "SCAN_INTERVAL=" + env.interval + " SCAN_TIMEOUT=" + env.timeout + " " + tc.state + " " + tc.age.String()
-			t.Run(name, func(t *testing.T) {
-				t.Setenv("SCAN_INTERVAL", env.interval)
-				t.Setenv("SCAN_TIMEOUT", env.timeout)
-				cfg, err := loadConfig()
-				if err != nil {
-					t.Fatalf("loadConfig: %v", err)
+		t.Run("SCAN_INTERVAL="+env.interval+" SCAN_TIMEOUT="+env.timeout, func(t *testing.T) {
+			t.Setenv("SCAN_INTERVAL", env.interval)
+			t.Setenv("SCAN_TIMEOUT", env.timeout)
+			cfg, err := loadConfig()
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			if got := probeLease(); got != env.lease {
+				t.Fatalf("the health subcommand arms %v, want %v", got, env.lease)
+			}
+			synctest.Test(t, func(t *testing.T) {
+				st := health.NewStatus()
+				h := newHealthz(st, &cfg)
+				st.Set(true)
+				// With no lease, any age is healthy; 100 hours stands for "long ago".
+				within, past, pastCode := env.lease-time.Second, 2*time.Second, http.StatusServiceUnavailable
+				if env.lease == 0 {
+					within, past, pastCode = time.Hour, 100*time.Hour, http.StatusOK
 				}
-				path := filepath.Join(t.TempDir(), "healthy")
-				marker := health.NewMarker(path)
-				setMarker(t, marker, path, tc.state, tc.age)
-
-				rec := httptest.NewRecorder()
-				newHealthz(marker, &cfg).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-				probeHealthy := health.Inspect(path, probeOptions()...).Healthy()
-				if rec.Code != tc.wantCode {
-					t.Errorf("/healthz = %d, want %d", rec.Code, tc.wantCode)
+				time.Sleep(within)
+				if code, _ := getHealthz(t, h); code != http.StatusOK {
+					t.Errorf("/healthz %v after a good run = %d, want 200", within, code)
 				}
-				if probeHealthy != (rec.Code == http.StatusOK) {
-					t.Errorf("/healthz = %d but wrapper health reads healthy = %v: the two readers disagree", rec.Code, probeHealthy)
+				time.Sleep(past)
+				if code, _ := getHealthz(t, h); code != pastCode {
+					t.Errorf("/healthz past the lease = %d, want %d", code, pastCode)
 				}
 			})
-		}
+		})
 	}
 }

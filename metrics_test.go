@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/measure"
 	"github.com/cplieger/go/scheduler"
 )
@@ -75,10 +75,10 @@ func freeAddr(t *testing.T) string {
 
 func TestServeMetricsServesThePage(t *testing.T) {
 	addr := freeAddr(t)
-	marker := health.NewMarker(filepath.Join(t.TempDir(), "healthy"))
+	st := health.NewStatus()
 	cfg := &config{Action: actionLink}
-	reg, _ := newReporter(cfg, health.NewLatch(marker))
-	stop, err := serveMetrics(t.Context(), addr, reg, newHealthz(marker, cfg))
+	reg, _ := newReporter(cfg, st)
+	stop, err := serveMetrics(t.Context(), addr, reg, newHealthz(st, cfg))
 	if err != nil {
 		t.Fatalf("serveMetrics(%q) error = %v", addr, err)
 	}
@@ -122,10 +122,9 @@ func TestServeRefusesAnAddressItCannotBind(t *testing.T) {
 			prevStamp := completedStampPath
 			completedStampPath = filepath.Join(dir, "last-completed")
 			t.Cleanup(func() { completedStampPath = prevStamp })
-			marker := health.NewMarker(filepath.Join(dir, "healthy"))
-			marker.Set(true)
+			st := health.NewStatus()
 
-			err := serve(t.Context(), &config{Mode: modeOnce, MetricsListenAddr: addr}, marker)
+			err := serve(t.Context(), &config{Mode: modeOnce, MetricsListenAddr: addr}, st)
 
 			if err == nil {
 				t.Fatalf("serve with METRICS_LISTEN_ADDR=%q returned nil, want an error", addr)
@@ -137,8 +136,8 @@ func TestServeRefusesAnAddressItCannotBind(t *testing.T) {
 			if strings.Contains(out, "scan starting") || strings.Contains(out, "container started") {
 				t.Errorf("started before the bind failed:\n%s", out)
 			}
-			if marker.Healthy() {
-				t.Error("marker healthy after a refused start, want unhealthy")
+			if st.Healthy() {
+				t.Error("healthy after a refused start, want unhealthy")
 			}
 		})
 	}
@@ -179,20 +178,20 @@ func TestRestartSeedsTheTimeSeriesFromTheStamp(t *testing.T) {
 			prevStamp := completedStampPath
 			completedStampPath = filepath.Join(dir, "last-completed")
 			t.Cleanup(func() { completedStampPath = prevStamp })
-			latch := health.NewLatch(health.NewMarker(filepath.Join(dir, "healthy")))
+			st := health.NewStatus()
 			result, runErr := resultSuccess, error(nil)
 			if !ok {
 				result, runErr = resultExecError, errors.New("scan failed")
 			}
 
-			_, before := newReporter(&config{}, latch)
+			_, before := newReporter(&config{}, st)
 			before.report(nil, &jobReport{ran: true, result: result, err: runErr})
 			rec, known := scheduler.NewStamp(completedStampPath).Last()
 			if !known || rec.OK != ok {
 				t.Fatalf("completed-run record = %+v known %v, want ok %v", rec, known, ok)
 			}
 
-			reg, _ := newReporter(&config{}, latch)
+			reg, _ := newReporter(&config{}, st)
 			if got := gauge(t, reg, "last_run_timestamp_seconds"); got != float64(rec.Time.Unix()) {
 				t.Errorf("last_run_timestamp_seconds after restart = %v, want the record's %d", got, rec.Time.Unix())
 			}
