@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cplieger/jsoncap/v2"
+	"github.com/cplieger/go/jsonx"
 )
 
 // Report is a decoded fclones JSON scan report: the header's exact numeric
@@ -87,7 +87,7 @@ type DuplicateGroup struct {
 // Wire shape verified against pinned upstream fclones v0.35.0; stable since
 // fclones 0.18. Re-verify on every fclones bump.
 func DecodeReport(r io.Reader, keepGroups int) (Report, error) {
-	d := jsoncap.NewDecoder(r, 0)
+	d := jsonx.NewDecoder(r, 0)
 	rd := reportDecoder{keepGroups: keepGroups}
 
 	if err := d.Object(func(key string) error { return rd.field(d, key) }); err != nil {
@@ -118,7 +118,7 @@ func DecodeReport(r io.Reader, keepGroups int) (Report, error) {
 
 // reportDecoder carries the mutable accounting for the top-level object
 // walk. fieldErr records a failure raised inside the field callback, so
-// DecodeReport can tell it apart from a structural error jsoncap.Object
+// DecodeReport can tell it apart from a structural error jsonx.Object
 // itself produced (only the latter needs the generic "report:" prefix; a
 // field error already carries its own context).
 type reportDecoder struct {
@@ -133,7 +133,7 @@ type reportDecoder struct {
 // small), the groups array is streamed via decodeGroups, and unknown fields
 // are token-skipped without materializing so additive upstream changes do
 // not break the wrapper.
-func (rd *reportDecoder) field(d *jsoncap.Decoder, key string) error {
+func (rd *reportDecoder) field(d *jsonx.Decoder, key string) error {
 	switch key {
 	case "header":
 		rd.header = new(reportHeaderJSON)
@@ -164,7 +164,7 @@ func (rd *reportDecoder) fail(err error) error {
 // groups while counting full-document totals. Elements are decoded one at a
 // time, deliberately not via Decoder.Array, which would materialize every
 // element and defeat the bounded-memory retention this decoder exists for.
-func decodeGroups(d *jsoncap.Decoder, keepGroups int, report *Report) error {
+func decodeGroups(d *jsonx.Decoder, keepGroups int, report *Report) error {
 	if err := openStrict(d, json.Delim('[')); err != nil {
 		return fmt.Errorf("report groups: %w", err)
 	}
@@ -199,7 +199,7 @@ func decodeGroups(d *jsoncap.Decoder, keepGroups int, report *Report) error {
 // openStrict consumes a container's opening delimiter, treating a JSON null
 // (Open's ok=false, no error) as malformed: a null where the report's
 // structure belongs is upstream drift and must fail loudly.
-func openStrict(d *jsoncap.Decoder, delim json.Delim) error {
+func openStrict(d *jsonx.Decoder, delim json.Delim) error {
 	ok, err := d.Open(delim)
 	if err != nil {
 		return err

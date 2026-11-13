@@ -6,9 +6,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/cplieger/health"
-	"github.com/cplieger/scheduler/v4"
-	"github.com/cplieger/scheduler/v4/trigger"
+	"github.com/cplieger/go/health/v2"
+	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/scheduler/trigger"
 )
 
 // In the two long-running modes, PID 1 owns every run: the built-in ticker
@@ -38,51 +38,39 @@ const (
 // daemon carries the executor's dependencies.
 type daemon struct {
 	queue *trigger.Queue[struct{}]
-	// health is the single writer of the marker; every run outcome funnels through it.
-	health *health.Latch
-	cfg    *config
+	// health holds the verdict: bootDaemon writes the starting one, the
+	// reporter each completed run's, and shutdown begins the drain.
+	health   *health.Status
+	reporter *reporter
+	cfg      *config
 	// stamp is the restart-surviving last-run record on /cache.
 	stamp  *scheduler.Stamp
 	newCmd scheduler.CommandRunner
 }
 
 // runDaemon runs the two long-running modes (built-in and external): binds
-// the trigger socket, wires the health latch, starts the executor, and
+// the trigger socket, sets the boot verdict, starts the executor, and
 // — in built-in mode — drives the interval ticker. Returning an error exits
 // non-zero.
-func runDaemon(ctx context.Context, cfg *config, state *health.Latch, newCmd scheduler.CommandRunner) error {
+func runDaemon(ctx context.Context, cfg *config, st *health.Status, rep *reporter, newCmd scheduler.CommandRunner) error {
 	ln, err := trigger.Listen(socketPath)
 	if err != nil {
 		slog.Error("cannot bind trigger socket", "path", socketPath, "error", err)
-		state.Set(false)
 		return err
 	}
 	defer func() { _ = os.Remove(socketPath) }()
 
 	stamp := scheduler.NewStamp(stampFile)
 	builtin := cfg.Mode == modeBuiltin
-
-	// Built-in mode fires its startup scan only when the /cache record says
-	// one is due, and starts unhealthy until a fresh SUCCESSFUL record proves
-	// the setup; external mode starts healthy (idle, nothing has failed).
-	startupDue := false
-	bootHealthy := cfg.Mode == modeExternal
-	if builtin {
-		var last scheduler.RunRecord
-		startupDue, bootHealthy, last = builtinBootState(stamp, cfg.Interval, time.Now())
-		if !startupDue {
-			slog.Info("startup scan skipped, a completed scan survived the restart",
-				"completed", last.Time, "ok", last.OK)
-		}
-	}
-	state.Set(bootHealthy)
+	startupDue := bootDaemon(cfg, stamp, rep, st, time.Now())
 
 	d := &daemon{
-		queue:  trigger.NewQueue[struct{}](queueCapacity),
-		health: state,
-		cfg:    cfg,
-		stamp:  stamp,
-		newCmd: newCmd,
+		queue:    trigger.NewQueue[struct{}](queueCapacity),
+		health:   st,
+		reporter: rep,
+		cfg:      cfg,
+		stamp:    stamp,
+		newCmd:   newCmd,
 	}
 
 	executorDone := make(chan struct{})
@@ -99,7 +87,11 @@ func runDaemon(ctx context.Context, cfg *config, state *health.Latch, newCmd sch
 			slog.Info("triggered scan queued")
 		},
 	}
-	srv.Serve(ln)
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = srv.Serve(ctx, ln)
+	}()
 
 	tickerDone := startTicker(ctx, d, cfg.Interval, builtin, startupDue)
 
@@ -107,6 +99,7 @@ func runDaemon(ctx context.Context, cfg *config, state *health.Latch, newCmd sch
 		"uid", os.Getuid(), "mode", cfg.Mode, "interval", cfg.Interval,
 		"target", cfg.ScanPath, "action", cfg.Action,
 		"phase_timeout", cfg.PhaseTimeout, "socket", socketPath,
+		"metrics_listen_addr", cfg.MetricsListenAddr,
 	}
 	if builtin {
 		bootAttrs = append(bootAttrs, "startup_scan", startupDue)
@@ -115,8 +108,8 @@ func runDaemon(ctx context.Context, cfg *config, state *health.Latch, newCmd sch
 
 	<-ctx.Done()
 	slog.Info("shutting down", "cause", context.Cause(ctx))
-	// Latch unhealthy before the in-flight run resolves so observers see the
-	// drain, and to block a late healthy write.
+	// Drain before the in-flight run resolves so observers see it, and to
+	// block a late healthy write.
 	d.health.BeginDrain()
 
 	// Stop admission, then wait for the executor, ticker and handlers to
@@ -125,24 +118,36 @@ func runDaemon(ctx context.Context, cfg *config, state *health.Latch, newCmd sch
 	d.queue.Close()
 	<-executorDone
 	<-tickerDone
-	srv.Wait()
+	<-served
 	slog.Info("shutdown complete")
 	return nil
 }
 
-// builtinBootState reads the /cache last-run record and decides built-in
-// mode's two boot calls: whether the startup scan is due, and whether the
-// health marker starts healthy. The record is judged under
-// scheduler.CountFailed — any COMPLETED scan holds its schedule slot and the
-// interval ticker owns the retry, because repeating a failed multi-hour scan
-// on every restart is exactly the churn the record exists to prevent. Under
-// that policy not-due does not imply the last scan succeeded, so boot health
-// reads the outcome separately: a fresh FAILED record boots unhealthy with
-// no startup scan, until the next scheduled scan succeeds.
-func builtinBootState(stamp *scheduler.Stamp, interval time.Duration, now time.Time) (due, healthy bool, last scheduler.RunRecord) {
-	due = stamp.Due(interval, now, scheduler.CountFailed)
-	last, _ = stamp.Last()
-	return due, !due && last.OK, last
+// bootDaemon sets the starting verdict and reports whether built-in
+// mode's startup scan is due. The schedule stamp decides only that scan, under
+// CountFailed so a failed multi-hour scan is not repeated on every restart.
+// The verdict is the last completed run's, the record last_run_ok is seeded
+// from, so the two agree; a due startup scan boots unhealthy.
+func bootDaemon(cfg *config, schedule *scheduler.Stamp, rep *reporter, st *health.Status, now time.Time) (startupDue bool) {
+	builtin := cfg.Mode == modeBuiltin
+	last, _ := schedule.Last()
+	// With no completed-run record yet, external mode is idle with nothing
+	// failed and built-in mode falls back to the schedule stamp.
+	healthy := !builtin || last.OK
+	if completed, known := rep.completed.Last(); known {
+		healthy = completed.OK
+	}
+	if builtin {
+		startupDue = schedule.Due(cfg.Interval, now, scheduler.CountFailed)
+		if startupDue {
+			healthy = false
+		} else {
+			slog.Info("startup scan skipped, a completed scan survived the restart",
+				"completed", last.Time, "healthy", healthy)
+		}
+	}
+	st.Set(healthy)
+	return startupDue
 }
 
 // startTicker runs the built-in interval scheduler: when the /cache record
@@ -185,38 +190,36 @@ func (d *daemon) tick(trig string) {
 	<-j.Result()
 }
 
-// run performs one request: run the scan+action job, route the outcome
-// through the health latch, and return the result. Runs under the
-// shutdown-cancellable ctx on purpose: SIGTERM interrupts an in-flight
-// fclones phase, and jobHealthSignal's interrupted-run carve-out keeps that
-// drain from registering as a failure. A cross-container lock skip
-// (ran=false, no error) performed no scan and writes no marker.
-func (d *daemon) run(ctx context.Context, trig string, _ struct{}) trigger.Outcome {
+// run performs one request: run the scan+action job, report the outcome,
+// and return the result. Runs under the shutdown-cancellable ctx on purpose:
+// SIGTERM interrupts an in-flight fclones phase, and jobHealthSignal's
+// interrupted-run carve-out keeps that drain from registering as a failure. A
+// cross-container lock skip (ran=false, no error) performed no scan and
+// reports nothing.
+func (d *daemon) run(ctx context.Context, trig string, _ struct{}) trigger.Result {
 	start := time.Now()
 
-	ran, err := runFclonesJob(ctx, d.cfg, trig, d.newCmd)
-	d.recordOutcome(trig, ctx.Err(), ran, err)
+	rep := runFclonesJob(ctx, d.cfg, trig, d.newCmd)
+	d.recordOutcome(ctx.Err(), &rep)
 
-	out := trigger.Outcome{OK: err == nil, Duration: time.Since(start)}
-	if !ran && err == nil {
+	out := trigger.Result{OK: rep.err == nil, Duration: time.Since(start)}
+	if !rep.ran && rep.err == nil {
 		out.Reason = "skipped: scan lock held by another process sharing /cache"
 	}
 	return out
 }
 
-// recordOutcome routes a finished run into the health marker and, for the
-// daemon's own scheduled runs, the /cache stamp. A cancelled run or a
-// cross-container lock skip completed no scan (jobHealthSignal reports
-// set=false), so it reaches neither. A stamp write failure never affects the
-// run: an absent record reads as due, costing at most one extra startup scan
-// after the next recreate.
-func (d *daemon) recordOutcome(trig string, ctxErr error, ran bool, runErr error) {
-	set, healthy := jobHealthSignal(ctxErr, ran, runErr)
-	if !set {
+// recordOutcome reports a finished run through the reporter and, for the
+// daemon's own scheduled runs, records the /cache stamp. A cancelled run or a
+// cross-container lock skip completed no scan, so it reaches neither. A stamp
+// write failure never affects the run: an absent record reads as due, costing
+// at most one extra startup scan after the next recreate.
+func (d *daemon) recordOutcome(ctxErr error, rep *jobReport) {
+	completed, healthy := d.reporter.report(ctxErr, rep)
+	if !completed {
 		return
 	}
-	d.health.Set(healthy)
-	if trig != triggerStartup && trig != triggerInterval {
+	if rep.trigger != triggerStartup && rep.trigger != triggerInterval {
 		return
 	}
 	if err := d.stamp.Record(healthy); err != nil {

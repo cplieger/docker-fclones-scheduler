@@ -1,0 +1,88 @@
+# Alert rules for docker-fclones-scheduler as a Prometheus rule group, for any
+# ruler that reads them. Load this file or alerts/logql.yaml, not both. The
+# rules read the page served when METRICS_LISTEN_ADDR is set, scraped as job
+# `fclones`; with SCAN_INTERVAL=0 it exists only while a run lasts, so load
+# alerts/logql.yaml. Thresholds and severity labels are starting points.
+# FclonesScanStalled reads fclones_scheduler_run_deadline_timestamp_seconds,
+# which sizes itself from your settings; its 30h window applies only while that
+# reads 0 (SCAN_INTERVAL=off or SCAN_TIMEOUT=0). Load the file of the release
+# you run. FclonesDown exists only here; FclonesScanStalled covers it in
+# alerts/logql.yaml.
+groups:
+  - name: fclones
+    rules:
+      # Two arms, because neither covers the other: `up == 0` catches a target
+      # that fails its scrape and keeps its labels, `absent(up{...})` catches a
+      # target that is gone. Use an exact job matcher, never a regex.
+      - alert: FclonesDown
+        expr: up{job="fclones"} == 0 or absent(up{job="fclones"})
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "docker-fclones-scheduler is not being scraped"
+          description: >
+            No successful scrape for 5m: the container is stopped, crash-looping
+            or refusing to start, or the scrape cannot reach METRICS_LISTEN_ADDR.
+            Check the container's state and its last ERROR line.
+      # The timestamp guard keeps a fresh install quiet until its first run.
+      - alert: FclonesRunFailed
+        expr: fclones_scheduler_last_run_ok == 0 and fclones_scheduler_last_run_timestamp_seconds > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The last fclones run failed, so no space was reclaimed"
+          description: >
+            The latest completed run failed. fclones_scheduler_last_run_result
+            names the cause, and the run's ERROR line has the detail. For
+            action_no_op, check the container can write to the scanned folders
+            and, for dedupe, that the filesystem supports reflinks.
+      # The deadline decides while it is above 0: each successful run moves it
+      # two intervals plus two timeouts ahead, the healthcheck's lease, so a
+      # stopped schedule and runs that keep failing both cross it. The 30h
+      # window (108000 seconds, the lease at the defaults) reads only while the
+      # deadline is 0; size it to twice your outside scheduler's period plus
+      # twice a run's longest time. Before any run has completed, the timestamp
+      # is 0, so its last branch measures the wait from the process start.
+      - alert: FclonesScanStalled
+        expr: |
+          (time() > fclones_scheduler_run_deadline_timestamp_seconds + 900 and fclones_scheduler_run_deadline_timestamp_seconds > 0)
+          or
+          (time() - fclones_scheduler_last_run_timestamp_seconds > 108000 and fclones_scheduler_last_run_timestamp_seconds > 0 and on (job, instance) fclones_scheduler_run_deadline_timestamp_seconds == 0)
+          or
+          (time() - process_start_time_seconds > 108000 and on (job, instance) fclones_scheduler_last_run_timestamp_seconds == 0 and on (job, instance) fclones_scheduler_run_deadline_timestamp_seconds == 0)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "fclones runs are overdue"
+          description: >
+            No run succeeded by the deadline, or, with deadline 0, none
+            finished in 30h. Failing runs cross it too: check FclonesRunFailed
+            first. Otherwise suspect a stuck schedule or phase, no outside
+            trigger, or another container holding the scan lock.
+      - alert: FclonesFormatDrift
+        expr: fclones_scheduler_action_summary_recognized == 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "fclones printed an action summary the container does not recognize"
+          description: >
+            The latest action's summary was not recognized, so the files and
+            bytes reclaimed read zero after real work. The run still succeeds.
+            A --dry-run in FCLONES_ACTION_ARGS causes this by design. Otherwise
+            check the fclones version.
+      - alert: FclonesSpaceReclaimed
+        expr: increase(fclones_scheduler_files_processed_total[30h]) > 0
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: 'fclones processed {{ printf "%.0f" $value }} duplicate files in the last 30h'
+          description: >
+            Runs in the last 30h linked, removed or deduplicated about
+            {{ printf "%.0f" $value }} duplicate files.
+            fclones_scheduler_reclaimed_bytes_total gives the space freed. This
+            is a success notice and needs no action.

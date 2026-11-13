@@ -3,11 +3,8 @@ package main
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/cplieger/health"
 )
 
 func TestJobHealthSignal(t *testing.T) {
@@ -41,56 +38,36 @@ func TestJobHealthSignal(t *testing.T) {
 	}
 }
 
-// TestProbeOptions pins the freshness-deadline policy: armed only in
-// built-in mode with a bounded phase timeout. t.Setenv forbids t.Parallel.
-func TestProbeOptions(t *testing.T) {
-	setEnv := func(t *testing.T, interval, timeout string) {
-		t.Helper()
-		t.Setenv("SCAN_INTERVAL", interval)
-		t.Setenv("SCAN_TIMEOUT", timeout)
+// TestHealthMarkerPath pins the file the image's healthcheck reads: in
+// /dev/shm, which stays writable under a read-only root with no extra mount.
+func TestHealthMarkerPath(t *testing.T) {
+	t.Parallel()
+	if want := "/dev/shm/docker-fclones-scheduler.healthy"; healthMarkerPath != want {
+		t.Errorf("healthMarkerPath = %q, want %q", healthMarkerPath, want)
 	}
+}
 
-	t.Run("built-in default arms a deadline", func(t *testing.T) {
-		setEnv(t, "1h", "")
-		if got := probeOptions(); len(got) != 1 {
-			t.Errorf("probeOptions(built-in) returned %d options, want 1 (WithMaxAge armed)", len(got))
-		}
-	})
-
-	t.Run("deadline spans two intervals and two phase timeouts", func(t *testing.T) {
-		setEnv(t, "1h", "30m")
-		absent := filepath.Join(t.TempDir(), "no-marker")
-		got := health.Inspect(absent, probeOptions()...).MaxAge
-		if want := 3 * time.Hour; got != want {
-			t.Errorf("probeOptions(SCAN_INTERVAL=1h, SCAN_TIMEOUT=30m) armed max-age %v, want %v", got, want)
-		}
-	})
-
-	t.Run("external mode keeps no deadline", func(t *testing.T) {
-		setEnv(t, "off", "")
-		if got := probeOptions(); got != nil {
-			t.Errorf("probeOptions(external) = %v, want nil", got)
-		}
-	})
-
-	t.Run("run-once keeps no deadline", func(t *testing.T) {
-		setEnv(t, "0", "")
-		if got := probeOptions(); got != nil {
-			t.Errorf("probeOptions(once) = %v, want nil", got)
-		}
-	})
-
-	t.Run("unbounded phase timeout disarms", func(t *testing.T) {
-		setEnv(t, "1h", "0")
-		if got := probeOptions(); got != nil {
-			t.Errorf("probeOptions(timeout=0) = %v, want nil (unbounded run duration)", got)
-		}
-	})
-
-	t.Run("invalid timeout disarms quietly", func(t *testing.T) {
-		setEnv(t, "1h", "not-a-duration")
-		if got := probeOptions(); got != nil {
-			t.Errorf("probeOptions(invalid timeout) = %v, want nil", got)
-		}
-	})
+// TestProbeLease pins the freshness deadline the health subcommand arms:
+// two intervals plus two phase timeouts, only in built-in mode with a bounded
+// phase timeout. t.Setenv forbids t.Parallel.
+func TestProbeLease(t *testing.T) {
+	for _, tc := range []struct {
+		name, interval, timeout string
+		want                    time.Duration
+	}{
+		{name: "built-in default", want: 2*defaultInterval + 2*defaultScanTimeout},
+		{name: "two intervals and two phase timeouts", interval: "1h", timeout: "30m", want: 3 * time.Hour},
+		{name: "external mode keeps no deadline", interval: "off"},
+		{name: "run-once keeps no deadline", interval: "0"},
+		{name: "unbounded phase timeout disarms", interval: "1h", timeout: "0"},
+		{name: "invalid timeout disarms quietly", interval: "1h", timeout: "not-a-duration"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SCAN_INTERVAL", tc.interval)
+			t.Setenv("SCAN_TIMEOUT", tc.timeout)
+			if got := probeLease(); got != tc.want {
+				t.Errorf("probeLease(SCAN_INTERVAL=%q, SCAN_TIMEOUT=%q) = %v, want %v", tc.interval, tc.timeout, got, tc.want)
+			}
+		})
+	}
 }

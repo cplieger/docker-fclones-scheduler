@@ -8,13 +8,13 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/cplieger/scheduler/v4/trigger"
+	"github.com/cplieger/go/scheduler/trigger"
 )
 
 // The `scan` subcommand: a thin trigger client over the scheduler library.
 // The run executes inside the daemon (its logs land on the container's log
 // stream); this file only submits the request and reports the result. The
-// client never touches the health marker — the daemon is its single writer.
+// client never touches the health marker; the daemon writes it.
 
 // runClient performs one triggered run via the daemon at socketPath and
 // returns the process exit code: 0 on success (including the documented

@@ -4,7 +4,9 @@ This page covers what the container accepts and refuses, a hardened compose exam
 
 ## What the container accepts
 
-The image opens no ports and runs no HTTP server. The `scan` command reaches the main process through a socket at `/tmp/fclones-wrapper.sock`, which only the container's own user can open and only from inside the container. The image runs as `nonroot`, UID 65532, unless `user:` sets another user, on a distroless base with no shell and no package manager.
+The image opens no port unless you set `METRICS_LISTEN_ADDR`. Then it serves `GET /metrics` and `GET /healthz` on that address, with no login. Any other path answers 404 and any other method 405. Keep the port on your network, and publish it only to the machine that scrapes or probes it. The page reads nothing from a request and changes nothing. A slow client is cut off after 10 seconds of reading and 30 of writing.
+
+The `scan` command reaches the main process through a socket at `/tmp/fclones-wrapper.sock`, which only the container's own user can open and only from inside the container. The image runs as `nonroot`, UID 65532, unless `user:` sets another user, on a distroless base with no shell and no package manager.
 
 `FCLONES_ACTION` must be `group`, `link`, `remove` or `dedupe`. `--transform`, `--in-place` and `--no-copy` are refused in `FCLONES_ARGS`, `FCLONES_ACTION_ARGS` and `FCLONES_SCAN_PATHS`, because `--transform` runs a command and the other two change files in place. Set `ALLOW_UNSAFE_ARGS=true` only when you need one of these options, such as `--transform` for content-aware deduplication.
 
@@ -14,7 +16,7 @@ Options reach fclones as a list of arguments with no shell to expand them. The o
 
 ## Hardened compose settings
 
-These settings add to the quick start's `compose.yaml`. [Hardening a compose file](https://github.com/cplieger/docs/blob/main/docs/hardening.md) explains each setting. The container writes only to `/scandir`, `/cache` and `/tmp`, so the rest of its filesystem can be read-only, and it runs with every Linux capability dropped:
+These settings add to the quick start's `compose.yaml`. [Hardening a compose file](https://github.com/cplieger/docs/blob/main/docs/hardening.md) explains each setting. The container writes only to `/scandir`, `/cache`, `/tmp` and `/dev/shm`, so the rest of its filesystem can be read-only, and it runs with every Linux capability dropped:
 
 ```yaml
 services:
@@ -28,7 +30,7 @@ services:
       - "/tmp:size=128m,mode=1777,noexec,nosuid,nodev"
 ```
 
-The `/tmp` tmpfs holds the trigger socket, the health file and the home folder the image sets with `HOME=/tmp`.
+The `/tmp` tmpfs holds the trigger socket and the home folder the image sets with `HOME=/tmp`. Under a read-only root without it, the container cannot open the socket and stops at start, unless `SCAN_INTERVAL=0`. The health file goes to `/dev/shm`, which stays writable under a read-only root, so health needs no tmpfs of its own. If `/dev/shm` cannot be written, as under `ipc: none`, the healthcheck passes and the startup log says so, while `/healthz` on the metrics listener still gives the true answer.
 
 ## What the image contains
 
@@ -43,7 +45,4 @@ The `/tmp` tmpfs holds the trigger socket, the health file and the home folder t
 
 ## Accepted scanner findings
 
-Live scan results are on the repository's Security tab. Two findings are accepted:
-
-- hadolint DL3008, unpinned `apt-get` packages, fires in the Rust builder stage, which is not part of the final image.
-- semgrep flags the health file path under `/tmp`. It is a fixed marker file and holds no data.
+Live scan results are on the repository's Security tab. One finding is accepted: hadolint DL3008, unpinned `apt-get` packages, fires in the Rust builder stage, which is not part of the final image.

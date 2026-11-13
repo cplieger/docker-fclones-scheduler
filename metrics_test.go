@@ -1,0 +1,382 @@
+package main
+
+import (
+	"errors"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/cplieger/go/health/v2"
+	"github.com/cplieger/go/measure"
+	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/slogx/capture"
+)
+
+func TestMetricsListenAddrTrimsInvisibleEdges(t *testing.T) {
+	tests := []struct{ name, raw, want string }{
+		{name: "leading space", raw: " :9469", want: ":9469"},
+		{name: "zero-width edges", raw: "\u200b127.0.0.1:9469\ufeff", want: "127.0.0.1:9469"},
+		{name: "blank", raw: " \t", want: ""},
+		{name: "unset", raw: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("METRICS_LISTEN_ADDR", tt.raw)
+			if got := metricsListenAddr(); got != tt.want {
+				t.Errorf("metricsListenAddr() with %q = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestServeMetricsLogsStraysButNotScrapes pins the listener's access log: a
+// scrape and a probe log at Debug, any other path one INFO "http" line.
+func TestServeMetricsLogsStraysButNotScrapes(t *testing.T) {
+	rec := capture.Default(t)
+	st := health.NewStatus()
+	cfg := &config{Action: actionLink}
+	reg, _ := newReporter(cfg, st)
+	addr := freeAddr(t)
+	stop, err := serveMetrics(t.Context(), addr, reg, newHealthz(st, cfg))
+	if err != nil {
+		t.Fatalf("serveMetrics(%q) error = %v", addr, err)
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, path := range []string{"/metrics", "/healthz", "/stray"} {
+		resp, err := client.Get("http://" + addr + path)
+		if err != nil {
+			stop()
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+	}
+	// The shutdown waits for every handler, so each access line is written.
+	stop()
+
+	lines := map[slog.Level][]string{}
+	for _, r := range rec.Records() {
+		if r.Message != "http" {
+			continue
+		}
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "path" {
+				lines[r.Level] = append(lines[r.Level], a.Value.String())
+			}
+			return true
+		})
+	}
+	if got, want := lines[slog.LevelDebug], []string{"/metrics", "/healthz"}; !slices.Equal(got, want) {
+		t.Errorf("Debug access lines = %q, want %q", got, want)
+	}
+	if got, want := lines[slog.LevelInfo], []string{"/stray"}; !slices.Equal(got, want) {
+		t.Errorf("INFO access lines = %q, want %q", got, want)
+	}
+}
+
+// freeAddr returns a loopback address nothing listens on.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
+}
+
+func TestServeMetricsServesThePage(t *testing.T) {
+	addr := freeAddr(t)
+	st := health.NewStatus()
+	cfg := &config{Action: actionLink}
+	reg, _ := newReporter(cfg, st)
+	stop, err := serveMetrics(t.Context(), addr, reg, newHealthz(st, cfg))
+	if err != nil {
+		t.Fatalf("serveMetrics(%q) error = %v", addr, err)
+	}
+	defer stop()
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	resp, err := client.Get("http://" + addr + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "fclones_scheduler_last_run_ok") {
+		t.Errorf("GET /metrics = %d with %q, want 200 with fclones_scheduler_last_run_ok", resp.StatusCode, body)
+	}
+
+	resp, err = client.Post("http://"+addr+"/metrics", "text/plain", nil)
+	if err != nil {
+		t.Fatalf("POST /metrics: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("POST /metrics = %d, want 405", resp.StatusCode)
+	}
+}
+
+// TestRunMetricsServeBuildInfo pins the series a query joins on to find the
+// release a target runs: one line at 1, labelled with the stamped version.
+func TestRunMetricsServeBuildInfo(t *testing.T) {
+	reg, _ := newReporter(&config{Action: actionLink}, health.NewStatus())
+	rec := httptest.NewRecorder()
+	reg.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", http.NoBody))
+	var lines []string
+	for line := range strings.SplitSeq(rec.Body.String(), "\n") {
+		if strings.HasPrefix(line, "fclones_scheduler_build_info") {
+			lines = append(lines, line)
+		}
+	}
+	if want := `fclones_scheduler_build_info{version="` + version + `"} 1`; !slices.Equal(lines, []string{want}) {
+		t.Errorf("build_info lines = %q, want [%q]", lines, want)
+	}
+}
+
+// TestServeRefusesAnAddressItCannotBind pins the refusal before any run: a
+// malformed or taken METRICS_LISTEN_ADDR returns an error (run exits
+// non-zero), logs one ERROR naming the variable, starts no scan and leaves
+// the container unhealthy.
+func TestServeRefusesAnAddressItCannotBind(t *testing.T) {
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = taken.Close() })
+	for name, addr := range map[string]string{"malformed": "not-a-port", "taken": taken.Addr().String()} {
+		t.Run(name, func(t *testing.T) {
+			logs := captureLogs(t, slog.LevelDebug)
+			dir := t.TempDir()
+			prevStamp := completedStampPath
+			completedStampPath = filepath.Join(dir, "last-completed")
+			t.Cleanup(func() { completedStampPath = prevStamp })
+			st := health.NewStatus()
+
+			err := serve(t.Context(), &config{Mode: modeOnce, MetricsListenAddr: addr}, st)
+
+			if err == nil {
+				t.Fatalf("serve with METRICS_LISTEN_ADDR=%q returned nil, want an error", addr)
+			}
+			out := logs.String()
+			if n := strings.Count(out, "level=ERROR"); n != 1 || !strings.Contains(out, "METRICS_LISTEN_ADDR") {
+				t.Errorf("logged %d ERROR lines, want one naming METRICS_LISTEN_ADDR:\n%s", n, out)
+			}
+			if strings.Contains(out, "scan starting") || strings.Contains(out, "container started") {
+				t.Errorf("started before the bind failed:\n%s", out)
+			}
+			if st.Healthy() {
+				t.Error("healthy after a refused start, want unhealthy")
+			}
+		})
+	}
+}
+
+// gauge reads one series of the registry by its name and labels.
+func gauge(t *testing.T, reg *measure.Registry, name string, labels ...string) float64 {
+	t.Helper()
+	families, err := reg.Gather(t.Context())
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, f := range families {
+		if f.Name != metricsPrefix+"_"+name {
+			continue
+		}
+		for _, s := range f.Samples {
+			var vals []string
+			for _, l := range s.Labels {
+				vals = append(vals, l.Value)
+			}
+			if strings.Join(vals, ",") == strings.Join(labels, ",") {
+				return s.Value
+			}
+		}
+	}
+	t.Fatalf("no series %s{%s}", name, strings.Join(labels, ","))
+	return 0
+}
+
+// deadlineConfig is built-in mode at a 1h interval and a 10m timeout, whose
+// health lease is deadlineGap.
+var deadlineConfig = config{Mode: modeBuiltin, Interval: time.Hour, PhaseTimeout: 10 * time.Minute, Action: actionLink}
+
+// deadlineGap is two 1h intervals plus two 10m timeouts.
+const deadlineGap = 2*time.Hour + 20*time.Minute
+
+// deadlineOf reads the run deadline as a time; the zero time when it is 0.
+func deadlineOf(t *testing.T, reg *measure.Registry) time.Time {
+	t.Helper()
+	v := gauge(t, reg, "run_deadline_timestamp_seconds")
+	if v == 0 {
+		return time.Time{}
+	}
+	return time.Unix(int64(v), 0).UTC()
+}
+
+// TestRunDeadlineAtStart pins the boot value: one health lease after the last
+// success on record, or after the start when the record is missing or shows a
+// failure, and 0 in every mode that arms no lease.
+func TestRunDeadlineAtStart(t *testing.T) {
+	start := time.Date(2026, 11, 12, 3, 0, 0, 0, time.UTC)
+	last := start.Add(-time.Hour)
+	success := scheduler.RunRecord{Time: last, OK: true}
+	external, once, unbounded := deadlineConfig, deadlineConfig, deadlineConfig
+	external.Mode, once.Mode, unbounded.PhaseTimeout = modeExternal, modeOnce, 0
+	tests := []struct {
+		want  time.Time
+		cfg   *config
+		name  string
+		rec   scheduler.RunRecord
+		known bool
+	}{
+		{name: "no record", cfg: &deadlineConfig, want: start.Add(deadlineGap)},
+		{name: "success record", cfg: &deadlineConfig, rec: success, known: true, want: last.Add(deadlineGap)},
+		{name: "failure record", cfg: &deadlineConfig, rec: scheduler.RunRecord{Time: last}, known: true, want: start.Add(deadlineGap)},
+		{name: "external mode", cfg: &external, rec: success, known: true},
+		{name: "run once", cfg: &once, rec: success, known: true},
+		{name: "unbounded SCAN_TIMEOUT", cfg: &unbounded, rec: success, known: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := measure.NewRegistry(metricsPrefix)
+			newRunMetrics(reg, tt.cfg, tt.rec, tt.known, start)
+			if got := deadlineOf(t, reg); !got.Equal(tt.want) {
+				t.Errorf("run deadline at start = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRunDeadlineMovesOnlyOnASuccess pins that a success dates the deadline
+// one lease after its end and a failed run leaves it where it was.
+func TestRunDeadlineMovesOnlyOnASuccess(t *testing.T) {
+	start := time.Date(2026, 11, 12, 3, 0, 0, 0, time.UTC)
+	reg := measure.NewRegistry(metricsPrefix)
+	m := newRunMetrics(reg, &deadlineConfig, scheduler.RunRecord{}, false, start)
+	failed := &jobReport{ran: true, result: resultExecError, err: errors.New("scan failed")}
+
+	m.observe(failed, false, start.Add(time.Hour))
+	if got, want := deadlineOf(t, reg), start.Add(deadlineGap); !got.Equal(want) {
+		t.Errorf("run deadline after a failed run = %v, want it left at %v", got, want)
+	}
+	end := start.Add(2 * time.Hour)
+	m.observe(&jobReport{ran: true, result: resultSuccess}, true, end)
+	if got, want := deadlineOf(t, reg), end.Add(deadlineGap); !got.Equal(want) {
+		t.Errorf("run deadline after a success = %v, want %v", got, want)
+	}
+	m.observe(failed, false, end.Add(time.Hour))
+	if got, want := deadlineOf(t, reg), end.Add(deadlineGap); !got.Equal(want) {
+		t.Errorf("run deadline after a later failed run = %v, want it left at %v", got, want)
+	}
+}
+
+// TestRestartSeedsTheTimeSeriesFromTheStamp pins that both time series survive
+// a restart: before the first run, they equal the completed-run record that a
+// run in the previous process wrote on /cache.
+func TestRestartSeedsTheTimeSeriesFromTheStamp(t *testing.T) {
+	for _, ok := range []bool{true, false} {
+		t.Run("last run ok "+strconv.FormatBool(ok), func(t *testing.T) {
+			dir := t.TempDir()
+			prevStamp := completedStampPath
+			completedStampPath = filepath.Join(dir, "last-completed")
+			t.Cleanup(func() { completedStampPath = prevStamp })
+			st := health.NewStatus()
+			result, runErr := resultSuccess, error(nil)
+			if !ok {
+				result, runErr = resultExecError, errors.New("scan failed")
+			}
+
+			_, before := newReporter(&deadlineConfig, st)
+			before.report(nil, &jobReport{ran: true, result: result, err: runErr})
+			rec, known := scheduler.NewStamp(completedStampPath).Last()
+			if !known || rec.OK != ok {
+				t.Fatalf("completed-run record = %+v known %v, want ok %v", rec, known, ok)
+			}
+
+			reg, _ := newReporter(&deadlineConfig, st)
+			if ok {
+				if got, want := deadlineOf(t, reg), rec.Time.Add(deadlineGap).Truncate(time.Second); !got.Equal(want) {
+					t.Errorf("run deadline after restart = %v, want the record's time plus the lease, %v", got, want)
+				}
+			}
+			if got := gauge(t, reg, "last_run_timestamp_seconds"); got != float64(rec.Time.Unix()) {
+				t.Errorf("last_run_timestamp_seconds after restart = %v, want the record's %d", got, rec.Time.Unix())
+			}
+			wantSuccess := float64(0)
+			if ok {
+				wantSuccess = float64(rec.Time.Unix())
+			}
+			if got := gauge(t, reg, "last_success_timestamp_seconds"); got != wantSuccess {
+				t.Errorf("last_success_timestamp_seconds after restart = %v, want %v", got, wantSuccess)
+			}
+			if got := gauge(t, reg, "last_run_ok"); got != float64(flag(ok)) {
+				t.Errorf("last_run_ok after restart = %v, want %d", got, flag(ok))
+			}
+		})
+	}
+}
+
+// TestRunSetsEverySeriesToItsRecord runs real paths and checks that each
+// series equals the field of the run finished record the same run wrote.
+func TestRunSetsEverySeriesToItsRecord(t *testing.T) {
+	for _, name := range []string{"action reclaims space", "action summary not recognized", "action exits non-zero", "scan exits non-zero"} {
+		t.Run(name, func(t *testing.T) {
+			got := runThroughNamed(t, name)
+			rec, reg := got.records[0], got.reg
+			num := func(field string) float64 {
+				v, err := strconv.ParseFloat(rec[field], 64)
+				if err != nil {
+					t.Fatalf("record %s = %q: %v", field, rec[field], err)
+				}
+				return v
+			}
+			if g := gauge(t, reg, "last_run_ok"); g != num("ok") {
+				t.Errorf("last_run_ok = %v, record ok = %s", g, rec["ok"])
+			}
+			for _, r := range runResults {
+				want := float64(flag(string(r) == rec["result"]))
+				if g := gauge(t, reg, "last_run_result", string(r)); g != want {
+					t.Errorf("last_run_result{%s} = %v, want %v for result %s", r, g, want, rec["result"])
+				}
+				if g := gauge(t, reg, "runs_total", string(r)); g != want {
+					t.Errorf("runs_total{%s} = %v, want %v", r, g, want)
+				}
+			}
+			if g := gauge(t, reg, "files_processed_total"); g != num("files_processed") {
+				t.Errorf("files_processed_total = %v, record %s", g, rec["files_processed"])
+			}
+			if g := gauge(t, reg, "reclaimed_bytes_total"); g != num("reclaimed_bytes") {
+				t.Errorf("reclaimed_bytes_total = %v, record %s", g, rec["reclaimed_bytes"])
+			}
+			if _, ok := rec["summary_recognized"]; ok {
+				if g := gauge(t, reg, "action_summary_recognized"); g != num("summary_recognized") {
+					t.Errorf("action_summary_recognized = %v, record %s", g, rec["summary_recognized"])
+				}
+			}
+			for _, pair := range [][2]string{{"duplicate_groups", "groups"}, {"duplicate_files", "duplicate_files"}, {"redundant_bytes", "redundant_bytes"}} {
+				if _, ok := rec[pair[1]]; ok {
+					if g := gauge(t, reg, pair[0]); g != num(pair[1]) {
+						t.Errorf("%s = %v, record %s = %s", pair[0], g, pair[1], rec[pair[1]])
+					}
+				}
+			}
+			if g := gauge(t, reg, "last_run_timestamp_seconds"); g <= 0 {
+				t.Errorf("last_run_timestamp_seconds = %v, want the run's time", g)
+			}
+			if g := gauge(t, reg, "info", modeBuiltin.String(), got.action.String()); g != 1 {
+				t.Errorf("info{mode=built-in,action=%s} = %v, want 1", got.action, g)
+			}
+		})
+	}
+}
