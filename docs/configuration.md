@@ -1,6 +1,6 @@
 # Configuration
 
-This page covers the three scheduling modes, extra fclones options, time limits, a slow first scan, the metrics page and the log settings, which need more than one table row. The [Configuration reference](../README.md#configuration-reference) in the README lists every variable with its default.
+This page covers the three scheduling modes, the folders to scan, extra fclones options, time limits, a slow first scan, the metrics page and the log settings, which need more than one table row. The [Configuration reference](../README.md#configuration-reference) in the README lists every variable with its default.
 
 ## Scheduling
 
@@ -55,6 +55,19 @@ Set `SCAN_INTERVAL` to `0`, or `0s`. The container runs one scan and its action,
 
 With the two long-running modes, a stop signal is a clean shutdown and exits 0.
 
+## Folders to scan
+
+`FCLONES_SCAN_PATHS` lists the folders to scan, separated by spaces. Each must be a volume target or a folder inside one. Linux refuses a hardlink between two mounts, even of one filesystem, so a `link` action cannot join copies that sit in two different volumes. Those copies stay as they are. To link copies across folders, mount their parent once and list the subfolders:
+
+```yaml
+services:
+  fclones:
+    environment:
+      FCLONES_SCAN_PATHS: "/scandir/movies /scandir/tv"
+    volumes:
+      - "/path/to/media:/scandir"
+```
+
 ## Extra fclones options
 
 `FCLONES_ARGS` goes to the scan and `FCLONES_ACTION_ARGS` to the action, the `fclones link`, `remove` or `dedupe` step. Both take flags and their values only. Folders to scan belong in `FCLONES_SCAN_PATHS`, so a word that is not a flag or a flag's value stops the container at start, and the error names it.
@@ -77,6 +90,12 @@ The [fclones README](https://github.com/pkolaczk/fclones#finding-files) shows se
 The container sets `--cache` and the report format itself, so `--cache`, `-f` and `--format` in `FCLONES_ARGS` stop it at start. `--transform`, `--in-place` and `--no-copy` stop it too, unless `ALLOW_UNSAFE_ARGS` is `true`. Only `ALLOW_UNSAFE_ARGS=true`, in any letter case, turns that check off.
 
 To see what an action would do without changing a file, add `--dry-run` to `FCLONES_ACTION_ARGS`. fclones then prints the operations it would run. The container does not recognize that summary, so it logs a `possible fclones format drift` warning for the run.
+
+Without `--priority` in `FCLONES_ACTION_ARGS`, fclones keeps the first file it lists in each group and replaces the others. `--priority bottom` does the same, so the kept file is the one the log names `keeper`. Another value ranks the copies to replace, so `--priority most-recently-modified` keeps the copy changed longest ago and replaces the others. The [fclones README](https://github.com/pkolaczk/fclones#removing-files) has more examples.
+
+Every file that matches `--keep-name` or `--keep-path` is kept, in place of the first file. With another `--priority` or a keep pattern, the `keeper` field of each `duplicate file` log line still names the first file in the group, so it can name a file fclones replaces.
+
+fclones skips empty files and checks files of every other size. To leave small files such as subtitles alone, add a minimum size to `FCLONES_ARGS`, such as `--min 1MiB`.
 
 ## Time limits
 
