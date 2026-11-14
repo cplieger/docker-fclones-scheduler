@@ -12,15 +12,15 @@ docker-fclones-scheduler gets back the disk space that duplicate files take, wit
 - Scans your folders on the interval you set, 3 hours by default, or when your scheduler asks.
 - Replaces each extra copy with a hardlink or a copy-on-write clone, deletes it, or only reports it.
 - Logs each duplicate it found, up to 500 pairs per scan, and the space it freed.
-- Marks itself unhealthy when a scan fails or an action changes no duplicate, until the next good scan.
+- Shows in its Docker health status when a scan or its action fails, until the next good scan.
 
 ## Who it is for
 
-docker-fclones-scheduler is built for a media library or a file share on an always-on Linux machine with Docker, where the same file can land in several folders. It checks every setting before the first scan and, by default, refuses fclones options that run commands. You need a folder the container's user can write to, and hardlinks need the copies on one filesystem.
+docker-fclones-scheduler is built for a media library or a file share on an always-on Linux machine with Docker, where the same file can land in several folders. It checks every setting before the first scan and, by default, refuses fclones options that run commands. You need a folder the container's user can write to, and hardlinks need the copies on one filesystem, in one volume.
 
 Two other projects suit a different setup:
 
-- Consider [fclones-gui](https://github.com/pkolaczk/fclones-gui) if you want to pick by hand, in a desktop window, which copies to remove. It is the fclones author's interactive frontend.
+- Consider [fclones-gui](https://github.com/pkolaczk/fclones-gui) if you want to pick in a desktop window which copies to remove, with the fclones author's interactive frontend.
 - Consider [Krokiet](https://github.com/qarmin/czkawka) if you also want to find similar images, similar videos or music duplicates, in a desktop app.
 
 docker-fclones-scheduler is free software under the Apache-2.0 license.
@@ -45,7 +45,7 @@ services:
       FCLONES_SCAN_PATHS: "/scandir"  # must match a volume target below
       FCLONES_ARGS: "--rf-over 1"  # report files that have more than one copy
       FCLONES_ACTION: "link"  # group only reports, link replaces copies with hardlinks, remove deletes them, dedupe uses reflinks
-      FCLONES_ACTION_ARGS: "--priority bottom"  # keep the first copy fclones lists, replace the others
+      FCLONES_ACTION_ARGS: "--priority bottom"  # keep the first file of each group, the one the log names keeper, and replace the others
 
     volumes:
       - "/path/to/media:/scandir"  # link, remove and dedupe change files here, so this user must be able to write to it
@@ -68,7 +68,7 @@ Settings are environment variables, read once at start, so recreate the containe
 | Variable | Description | Default |
 | --- | --- | --- |
 | `SCAN_INTERVAL` | Time between scans, such as `30m`, `1h` or `12h`. `off` waits for an outside trigger, and `0` scans once and exits | `3h` |
-| `FCLONES_SCAN_PATHS` | Folders inside the container to scan, separated by spaces. Each one needs its own volume | `/scandir` |
+| `FCLONES_SCAN_PATHS` | Folders inside the container to scan, separated by spaces. Each must be a volume or a folder inside one | `/scandir` |
 | `FCLONES_ARGS` | Extra fclones options for the scan, as flags and their values. `--cache`, `-f` and `--format` are refused | _(unset)_ |
 | `FCLONES_ACTION` | `group` only reports, `link` makes hardlinks, `remove` deletes, `dedupe` makes copy-on-write clones | `group` |
 | `FCLONES_ACTION_ARGS` | Extra fclones options for the action, as flags and their values | _(unset)_ |
@@ -86,18 +86,18 @@ The image publishes no port. With `METRICS_LISTEN_ADDR` set, publish the port it
 
 ## Security
 
-The image opens no port unless you set `METRICS_LISTEN_ADDR`, which serves only `/metrics` and `/healthz`, with no login, so keep that port on your network. An outside scheduler starts a scan with `docker exec fclones /app/wrapper scan`, through a local socket that only the container's own user can open. The container runs as the user that `user:` names, on a distroless base with no shell. Without a `user:` line it runs as UID 65532. `FCLONES_ACTION` must be one of the four actions.
+The image opens no port unless you set `METRICS_LISTEN_ADDR`, which serves only `/metrics` and `/healthz`, with no login, so keep that port on your network. Another program can start a scan with `docker exec fclones /app/wrapper scan`. That command talks to the app through a socket file inside the container, which only the container's own user can open. The container runs as the user that `user:` names, on a distroless base with no shell. Without a `user:` line it runs as UID 65532.
 
-The fclones options that run a command or change a file in place are refused unless `ALLOW_UNSAFE_ARGS` is `true`. Leave it `false` unless you need one of them, such as `--transform`. Options reach fclones as a list, with no shell to expand them. [Security](docs/hardening.md) has a hardened compose example and what the image contains.
+`FCLONES_ACTION` must be one of the four actions. The fclones options that run a command or change a file in place are refused unless `ALLOW_UNSAFE_ARGS` is `true`. Leave it `false` unless you need one of them, such as `--transform`. Options reach fclones as a list, with no shell to expand them. [Security](docs/hardening.md) has a hardened compose example and what the image contains.
 
 ## Troubleshooting
 
-The healthcheck reads a file the container updates after each scan. Unhealthy means the last scan or action failed, or its report could not be read. It also means an action changed none of the duplicates the scan found, or the check of `/cache` at start failed. It turns healthy again after the next good scan, with no restart.
+The container is unhealthy when the last scan failed, when its action failed or changed none of the duplicates the scan found, or when fclones' report was unreadable. It is also unhealthy when it could not write to `/cache` at start. It turns healthy again after the next good scan, with no restart.
 
-With the built-in schedule, a container that has not scanned for twice `SCAN_INTERVAL` plus twice `SCAN_TIMEOUT` is unhealthy too. With the defaults that is 30 hours. [How it works](docs/how-it-works.md#health) has the full rules. An unhealthy container notifies nobody. [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what does.
+With the built-in schedule, the container also turns unhealthy after 30 hours without a good scan, counted from its last good scan or its start, whichever is later. The 30 hours are twice `SCAN_INTERVAL` plus twice `SCAN_TIMEOUT` at the defaults, and [How it works](docs/how-it-works.md#health) has the full rules. An unhealthy container notifies nobody. [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what does.
 
 - The container restarts in a loop with `cache directory verification failed`. The cache folder does not belong to the container's user. Repeat step 1 of the quick start.
-- A run fails with `action reclaimed nothing`, and with the shipped rules loaded `FclonesRunFailed` fires. The container's user cannot write to the scanned folder, or, for `dedupe`, the filesystem has no reflink support.
+- A run fails with `action reclaimed nothing`. With the shipped alert rules loaded, `FclonesRunFailed` fires too. The container's user cannot write to the scanned folder, or, for `dedupe`, the filesystem has no reflink support.
 - The container exits with `positional argument not allowed`. Give each pattern its own flag, as in `--name '*.mp4' --name '*.mkv'`.
 - The container shows unhealthy during a long first scan. Raise `start_period`, as [Configuration](docs/configuration.md#a-slow-first-scan) shows.
 

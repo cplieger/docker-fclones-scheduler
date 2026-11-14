@@ -84,7 +84,7 @@ These lines are for reading a run by hand. No alert rule reads them.
 | `fclones report decode failed; failing the run` | ERROR | `error`, with `outcome=decode_error` |
 | `http` | INFO, or DEBUG for `/metrics` and `/healthz` | `method`, `path`, `status`, `duration_ms`, `request_id`, one line per request to the metrics listener |
 
-On these lines `result` holds fclones' own summary text, not the run's result. The `duplicate file` lines stop at 500 pairs or 64 KB per scan, taken from the first 100 groups. A `duplicate pairs truncated` line then gives the full totals. fclones' own messages reach the log with control characters and other unsafe characters shown as `\xNN`. A file name inside an fclones message cannot fake or hide a log line.
+On these lines `result` holds fclones' own summary text, not the run's result. The `duplicate file` lines stop at 500 pairs or 64 KB per scan, taken from the first 100 groups. A `duplicate pairs truncated` line then gives the full totals, and the action still gets every duplicate in the report. fclones' own messages reach the log with control characters and other unsafe characters shown as `\xNN`. A file name inside an fclones message cannot fake or hide a log line.
 
 With an outside scheduler, the `wrapper scan` command writes only its own short lines, `triggered scan accepted`, `triggered scan started` and `triggered scan complete` or `triggered scan failed`, to the log of whatever ran it. The scan's full output and its `run finished` record still go to the container log.
 
@@ -96,7 +96,7 @@ Load `alerts/promql.yaml` into Prometheus or the Mimir ruler, or `alerts/logql.y
 | --- | --- | --- |
 | `FclonesDown` | Prometheus has not scraped the metrics page for 5 minutes | warning |
 | `FclonesRunFailed` | the last completed run failed, including an action that processed none of the duplicates it found | warning |
-| `FclonesScanStalled` | in `alerts/promql.yaml`, no run has succeeded by `fclones_scheduler_run_deadline_timestamp_seconds` plus 15 minutes, or, while that deadline is 0, no run has finished for 30 hours. In `alerts/logql.yaml`, no run has finished for 30 hours | warning |
+| `FclonesScanStalled` | in `alerts/promql.yaml`, 30 minutes after `fclones_scheduler_run_deadline_timestamp_seconds` with no successful run, or, while that deadline is 0, 30 hours and 15 minutes after the last finished run. In `alerts/logql.yaml`, 30 hours and 15 minutes after the last finished run | warning |
 | `FclonesFormatDrift` | the container did not recognize the summary line of the last fclones action | warning |
 | `FclonesSpaceReclaimed` | runs in the last 30 hours processed duplicate files, with the count in its value | info |
 
@@ -106,7 +106,11 @@ Thresholds and the `severity` labels are starting points. The 30-hour windows ar
 
 `FclonesRunFailed` reads the latest run's verdict, so it fires at the first failed run and resolves at the next good one. The record's `result` field, or the `fclones_scheduler_last_run_result` series, names the cause, and the run's ERROR line has the detail. `action_no_op` means fclones opened none of the duplicates for writing. fclones only warns when that fails and then exits 0, so the container fails the run itself. The usual causes are a scanned folder the container's user cannot write to, or, for `dedupe`, a filesystem with no reflink support.
 
-`FclonesScanStalled` in `alerts/promql.yaml` has two arms, and `fclones_scheduler_run_deadline_timestamp_seconds` picks one. While the deadline is above 0, which is the built-in schedule with a `SCAN_TIMEOUT` above 0, the alert fires 15 minutes after the deadline passes. The container works the deadline out from `SCAN_INTERVAL` and `SCAN_TIMEOUT`, so this arm has no window to change. Only a successful run moves the deadline, so runs that keep failing cross it too, beside `FclonesRunFailed`. One failed run between two good ones does not, because the deadline holds two intervals. While the deadline reads 0, the alert fires when no run has finished for 30 hours, or, before the first run, 30 hours after the process started. Load the rule file of the release you run, because an older image serves no deadline and neither arm can fire.
+`FclonesScanStalled` in `alerts/promql.yaml` has two arms, and `fclones_scheduler_run_deadline_timestamp_seconds` picks one. The deadline is above 0 with the built-in schedule and a `SCAN_TIMEOUT` above 0. Then the condition holds from 15 minutes after the deadline, and the alert fires 15 minutes later, 30 minutes after the deadline. The container works the deadline out from `SCAN_INTERVAL` and `SCAN_TIMEOUT`, so this arm has no window to change.
+
+Only a successful run moves the deadline, so runs that keep failing cross it too, beside `FclonesRunFailed`. One failed run between two good ones does not, because the deadline holds two intervals.
+
+While the deadline reads 0, the condition is that no run has finished for 30 hours, or, before the first run, that 30 hours have passed since the process started. This arm and the log rule also wait 15 minutes under their `for:` before the alert fires. Load the rule file of the release you run, because an older image serves no deadline and neither arm can fire.
 
 The log rule, and the second metric arm, fire on silence. They cannot tell a stuck schedule from a container that never started or runs under another name, or from logs that stopped reaching Loki, so rule those out first. With `SCAN_TIMEOUT=0`, a phase has no time limit and no window is safe. With `SCAN_INTERVAL=off`, use two phase timeouts plus the cadence of your scheduler. With `SCAN_INTERVAL=0`, drop the rule, because a container that exits after one run is silent on purpose. A restart adds nothing to the gap, because the records on `/cache` keep the schedule in step.
 
