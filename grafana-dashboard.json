@@ -343,7 +343,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "0 * max(ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=~\"$instance|\"})",
+                        "expr": "0 * max((ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=\"$instance\"} or ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=\"\"}))",
                         "legendFormat": "",
                         "instant": true,
                         "range": false
@@ -1225,7 +1225,7 @@
         "spec": {
           "id": 24,
           "title": "Space freed",
-          "description": "The space the actions freed, as bars over the selected range. A run that freed nothing draws no bar, and a gap means the container was not scraped.",
+          "description": "The space the actions freed in each time slot, as bars, with the total for the selected range in the legend. A run that freed nothing draws no bar, and a gap means the container was not scraped. A slot near a container restart, a failed scrape or a scrape outage can show fewer or more than happened.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -1242,7 +1242,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "round(increase(fclones_scheduler_reclaimed_bytes_total{instance=\"$instance\"}[$__interval]))",
+                        "expr": "round(sum by (instance) (((last_over_time(fclones_scheduler_reclaimed_bytes_total{instance=\"$instance\"}[$__interval]) - last_over_time(fclones_scheduler_reclaimed_bytes_total{instance=\"$instance\"}[$__interval] offset $__interval)) unless on (instance) ((last_over_time(process_start_time_seconds{instance=\"$instance\"}[$__interval]) != last_over_time(process_start_time_seconds{instance=\"$instance\"}[$__interval] offset $__interval)) or (last_over_time(process_start_time_seconds{instance=\"$instance\"}[$__interval]) > time() - ${__interval_ms} / 1000))) or (last_over_time(fclones_scheduler_reclaimed_bytes_total{instance=\"$instance\"}[$__interval]) and on (instance) ((last_over_time(process_start_time_seconds{instance=\"$instance\"}[$__interval]) != last_over_time(process_start_time_seconds{instance=\"$instance\"}[$__interval] offset $__interval)) or (last_over_time(process_start_time_seconds{instance=\"$instance\"}[$__interval]) > time() - ${__interval_ms} / 1000))) or (last_over_time(fclones_scheduler_reclaimed_bytes_total{instance=\"$instance\"}[$__interval]) - min_over_time(fclones_scheduler_reclaimed_bytes_total{instance=\"$instance\"}[$__interval]))))",
                         "legendFormat": "Freed"
                       }
                     },
@@ -1390,7 +1390,7 @@
         "spec": {
           "id": 30,
           "title": "Runs by result",
-          "description": "Completed runs by how they ended, as bars over the selected range. Any result but Succeeded is a failed run, and the container log names its cause. No value means no run finished in the range.",
+          "description": "Completed runs in each time slot by how they ended, as bars, with the total for the selected range in the legend. Any result but Succeeded is a failed run, and the container log names its cause. No value means no run finished in the range. A slot near a container restart, a failed scrape or a scrape outage can show fewer or more than happened.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -1407,7 +1407,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "round(sum by (result) (increase(fclones_scheduler_runs_total{instance=\"$instance\"}[$__interval]))) > 0",
+                        "expr": "round(sum by (result) (((last_over_time(fclones_scheduler_runs_total{instance=\"$instance\"}[$__interval]) - last_over_time(fclones_scheduler_runs_total{instance=\"$instance\"}[$__interval] offset $__interval)) unless on (instance) ((last_over_time(process_start_time_seconds{instance=\"$instance\"}[$__interval]) != last_over_time(process_start_time_seconds{instance=\"$instance\"}[$__interval] offset $__interval)) or (last_over_time(process_start_time_seconds{instance=\"$instance\"}[$__interval]) > time() - ${__interval_ms} / 1000))) or (last_over_time(fclones_scheduler_runs_total{instance=\"$instance\"}[$__interval]) and on (instance) ((last_over_time(process_start_time_seconds{instance=\"$instance\"}[$__interval]) != last_over_time(process_start_time_seconds{instance=\"$instance\"}[$__interval] offset $__interval)) or (last_over_time(process_start_time_seconds{instance=\"$instance\"}[$__interval]) > time() - ${__interval_ms} / 1000))) or (last_over_time(fclones_scheduler_runs_total{instance=\"$instance\"}[$__interval]) - min_over_time(fclones_scheduler_runs_total{instance=\"$instance\"}[$__interval])))) > 0",
                         "legendFormat": "{{result}}"
                       }
                     },
@@ -2295,10 +2295,10 @@
               "name": "${datasource}"
             },
             "spec": {
-              "query": "query_result(count(label_replace(count(0 * max(ALERTS{alertname=\"FclonesRunFailed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"1\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesScanStalled\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"2\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesFormatDrift\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"3\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=~\"$instance|\"})), \"tile\", \"4\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesSpaceReclaimed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"5\", \"\", \"\")) or vector(0))"
+              "query": "query_result(count(label_replace(count(0 * max(ALERTS{alertname=\"FclonesRunFailed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"1\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesScanStalled\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"2\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesFormatDrift\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"3\", \"\", \"\") or label_replace(count(0 * max((ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=\"$instance\"} or ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=\"\"}))), \"tile\", \"4\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesSpaceReclaimed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"5\", \"\", \"\")) or vector(0))"
             }
           },
-          "definition": "query_result(count(label_replace(count(0 * max(ALERTS{alertname=\"FclonesRunFailed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"1\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesScanStalled\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"2\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesFormatDrift\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"3\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=~\"$instance|\"})), \"tile\", \"4\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesSpaceReclaimed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"5\", \"\", \"\")) or vector(0))",
+          "definition": "query_result(count(label_replace(count(0 * max(ALERTS{alertname=\"FclonesRunFailed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"1\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesScanStalled\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"2\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesFormatDrift\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"3\", \"\", \"\") or label_replace(count(0 * max((ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=\"$instance\"} or ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=\"\"}))), \"tile\", \"4\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesSpaceReclaimed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"5\", \"\", \"\")) or vector(0))",
           "regex": "/^\\{\\} ([0-9]+) /",
           "sort": "disabled",
           "options": [],

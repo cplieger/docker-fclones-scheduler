@@ -276,7 +276,74 @@ var (
 	alertsRe          = regexp.MustCompile(`ALERTS\{alertname="([A-Za-z]+)"([^}]*)\}`)
 	legendLabelRe     = regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
 	lastRunResultCode = regexp.MustCompile(`(?:(\d+) \* )?sum\(` + metricsPrefix + `_last_run_result\{[^}]*result="(\w+)"\}\)`)
+	// bracedVariableRe matches ${name}, whose braces are no selector.
+	bracedVariableRe = regexp.MustCompile(`\$\{\w+(?::\w+)?\}`)
+	matcherPartRe    = regexp.MustCompile(`^([a-zA-Z_][a-zA-Z0-9_]*|` + promqlString + `)\s*(=~|!~|!=|=)\s*(` + promqlString + `)$`)
+	stringPartRe     = regexp.MustCompile(`^(?:` + promqlString + `)$`)
 )
+
+// promqlString matches a PromQL string literal in any of its three quotings.
+const promqlString = `"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|` + "`[^`]*`"
+
+// skipString returns the index just past the string literal opening at s[i].
+func skipString(s string, i int) int {
+	q := s[i]
+	for i++; i < len(s); i++ {
+		switch {
+		case s[i] == '\\' && q != '`':
+			i++
+		case s[i] == q:
+			return i + 1
+		}
+	}
+	return len(s)
+}
+
+// promqlUnquote decodes a string literal. PromQL escapes as Go does
+// (https://prometheus.io/docs/prometheus/latest/querying/basics/#string-literals),
+// so "inst\x61nce" names the instance label.
+func promqlUnquote(s string) (string, error) {
+	if s[0] == '\'' {
+		s = `"` + strings.ReplaceAll(strings.ReplaceAll(s[1:len(s)-1], `\'`, `'`), `"`, `\"`) + `"`
+	}
+	return strconv.Unquote(s)
+}
+
+type selectorBlock struct {
+	name, text string
+	parts      []string
+}
+
+// selectors returns each {...} block of expr with the series name written
+// before it, split at its commas. Quoted strings are skipped, so a brace or
+// comma inside a label value neither ends a block nor splits a matcher.
+func selectors(expr string) []selectorBlock {
+	var out []selectorBlock
+	start, part := -1, 0
+	var parts []string
+	for i := 0; i < len(expr); i++ {
+		switch c := expr[i]; {
+		case c == '"' || c == '\'' || c == '`':
+			i = skipString(expr, i) - 1
+		case c == '{':
+			start, part, parts = i, i+1, nil
+		case (c == ',' || c == '}') && start >= 0:
+			if p := strings.TrimSpace(expr[part:i]); p != "" {
+				parts = append(parts, p)
+			}
+			part = i + 1
+			if c == '}' {
+				before := strings.TrimRight(expr[:start], " ")
+				name := before[len(strings.TrimRightFunc(before, func(r rune) bool {
+					return r == '_' || r == ':' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+				})):]
+				out = append(out, selectorBlock{name: name, text: name + expr[start:i+1], parts: parts})
+				start = -1
+			}
+		}
+	}
+	return out
+}
 
 var promqlKeywords = []string{"and", "or", "unless", "bool", "offset"}
 
@@ -369,9 +436,13 @@ func TestDashboardReadsOnlySeriesTheSchedulerServes(t *testing.T) {
 }
 
 // TestDashboardScopesEveryQueryToTheInstance fails when a query reads a series
-// without the instance variable, or matches a label the user's own scrape or
-// log config names (job, hostname, container), so the dashboard works under
-// any job name and shows only the picked scheduler.
+// without instance="$instance" or matches job, hostname or container, labels
+// the user's own config names. Grafana regex-escapes only a multi-value or
+// include-all value (interpolateQueryExpr,
+// https://github.com/grafana/grafana-prometheus-datasource/blob/v13.2.3/packages/grafana-prometheus/src/escaping.ts),
+// so a regex instance matcher lets an IPv6 target's brackets or a host's dots
+// match other instances. instance="" passes only beside instance="$instance",
+// for the alert absent() raises.
 func TestDashboardScopesEveryQueryToTheInstance(t *testing.T) {
 	d := loadDashboard(t)
 	inst := d.variables()["instance"]
@@ -382,19 +453,58 @@ func TestDashboardScopesEveryQueryToTheInstance(t *testing.T) {
 			q, inst.Spec.Sort, inst.Spec.Refresh)
 	}
 	for where, expr := range dashboardQueries(&d) {
-		for _, sel := range selectorRe.FindAllStringSubmatch(expr, -1) {
-			scoped := false
-			for _, m := range matcherRe.FindAllStringSubmatch(sel[2], -1) {
-				switch m[1] {
+		type pick struct{ series, matcher string }
+		var picks []pick
+		pinned := false
+		for _, sel := range selectors(bracedVariableRe.ReplaceAllString(expr, "$$v")) {
+			p := pick{series: sel.name}
+			instances := 0
+			for _, part := range sel.parts {
+				m := matcherPartRe.FindStringSubmatch(part)
+				if m == nil {
+					if !stringPartRe.MatchString(part) {
+						t.Errorf("%s holds %q in %s, which is no label matcher", where, part, sel.text)
+					} else if p.series == "" {
+						p.series = part
+					}
+					continue
+				}
+				label := m[1]
+				if strings.ContainsAny(label[:1], "\"'`") {
+					var err error
+					if label, err = promqlUnquote(label); err != nil {
+						t.Errorf("%s quotes the label name %s in %s in a form the check cannot read", where, m[1], sel.text)
+						continue
+					}
+				}
+				value := m[3][1 : len(m[3])-1]
+				switch label {
+				case "__name__":
+					if p.series == "" && m[2] == "=" {
+						p.series = value
+					}
 				case "job", "hostname", "container":
-					t.Errorf("%s matches %s on %s, a label the user's own config names", where, m[1], sel[1])
+					t.Errorf("%s matches %s in %s, a label the user's own config names", where, label, sel.text)
 				case "instance":
-					scoped = m[2] == `=` && m[3] == "$instance" ||
-						m[2] == `=~` && slices.Contains(strings.Split(m[3], "|"), "$instance")
+					instances++
+					p.matcher = m[2] + `"` + value + `"`
 				}
 			}
-			if !scoped {
-				t.Errorf("%s reads %s without instance=\"$instance\"", where, sel[1])
+			if instances > 1 {
+				t.Errorf("%s matches instance twice in %s", where, sel.text)
+			}
+			if p.series == "" {
+				p.series = sel.text
+			}
+			pinned = pinned || p.matcher == `="$instance"`
+			picks = append(picks, p)
+		}
+		for _, p := range picks {
+			switch {
+			case p.matcher == "":
+				t.Errorf("%s reads %s without instance=\"$instance\"", where, p.series)
+			case p.matcher != `="$instance"` && (p.matcher != `=""` || !pinned):
+				t.Errorf("%s reads %s with instance%s, want instance=\"$instance\"", where, p.series, p.matcher)
 			}
 		}
 		// The instance variable lists every instance, so it alone reads unscoped.
@@ -408,7 +518,8 @@ func TestDashboardScopesEveryQueryToTheInstance(t *testing.T) {
 // alerts/promql.yaml has no Needs attention tile, or a tile names a rule the
 // file does not hold. Each tile reads its rule's firing ALERTS series, names
 // the rule, and starts hidden until its query answers. A rule with an absent()
-// arm fires with no instance label, so its tile also matches an empty one.
+// arm fires with no instance label, so its tile also reads the rule's alerts
+// with instance="".
 func TestDashboardAttentionTilesMirrorEveryShippedRule(t *testing.T) {
 	d := loadDashboard(t)
 	rules := ruleExprs(t, promqlRules)
@@ -437,6 +548,7 @@ func TestDashboardAttentionTilesMirrorEveryShippedRule(t *testing.T) {
 			p.Spec.Data.Spec.QueryOptions.MaxDataPoints <= 0 {
 			t.Errorf("%q does not show exactly while its query answers: want a shown group or'ing a has-data rule with a 0s range rule, and a maxDataPoints pin", p.Spec.Title)
 		}
+		instances := map[string][]string{}
 		for _, e := range panelExprs(&p) {
 			if !strings.Contains(counted, "count("+e+")") {
 				t.Errorf("%q query is not counted by the row's variable", p.Spec.Title)
@@ -448,12 +560,21 @@ func TestDashboardAttentionTilesMirrorEveryShippedRule(t *testing.T) {
 				if !strings.Contains(p.Spec.Description, m[1]) {
 					t.Errorf("%q reads %s, which its description does not name", p.Spec.Title, m[1])
 				}
-				if strings.Contains(rules[m[1]], "absent(") && !strings.Contains(m[2], `instance=~"$instance|"`) {
-					t.Errorf("%q reads %s, whose absent() arm carries no instance, without instance=~\"$instance|\"", p.Spec.Title, m[1])
+				got := instances[m[1]]
+				for _, im := range matcherRe.FindAllStringSubmatch(m[2], -1) {
+					if im[1] == "instance" {
+						got = append(got, im[2]+`"`+im[3]+`"`)
+					}
 				}
+				instances[m[1]] = got
 				if !slices.Contains(mirrored, m[1]) {
 					mirrored = append(mirrored, m[1])
 				}
+			}
+		}
+		for name, got := range instances {
+			if strings.Contains(rules[name], "absent(") && (!slices.Contains(got, `="$instance"`) || !slices.Contains(got, `=""`)) {
+				t.Errorf("%q reads %s, whose absent() arm carries no instance, with instance%v, want both instance=\"$instance\" and instance=\"\"", p.Spec.Title, name, got)
 			}
 		}
 	}
@@ -726,5 +847,78 @@ func TestDashboardRangeFiguresNameTheRangeLength(t *testing.T) {
 	}
 	if figures == 0 {
 		t.Error("no range figure found; the check no longer reads the dashboard")
+	}
+}
+
+var (
+	counterCallRe = regexp.MustCompile(`\b(increase|rate|irate)\s*\(`)
+	// oneSlotRangeRe matches a range or subquery range of exactly one
+	// $__interval, in each of Grafana's spellings of it.
+	oneSlotRangeRe = regexp.MustCompile(`\[\s*\$(?:__interval|\{__interval\}|\{__interval_ms\}ms)\s*(?::[^\]]*)?\]`)
+)
+
+// callArgs returns the arguments of the call whose parenthesis opens at
+// expr[open], up to its matching parenthesis, skipping quoted strings.
+func callArgs(expr string, open int) string {
+	depth := 0
+	for i := open; i < len(expr); i++ {
+		switch expr[i] {
+		case '"', '\'', '`':
+			i = skipString(expr, i) - 1
+		case '(':
+			depth++
+		case ')':
+			if depth--; depth == 0 {
+				return expr[open+1 : i]
+			}
+		}
+	}
+	return expr[open+1:]
+}
+
+// TestDashboardCounterChangesSpanSeveralScrapes fails when increase, rate or
+// irate reads a range of [$__interval]: at a short time range Grafana lowers
+// $__interval to the scrape interval, the window holds one sample, and the
+// call returns nothing, so the panel empties as the user zooms in.
+func TestDashboardCounterChangesSpanSeveralScrapes(t *testing.T) {
+	d := loadDashboard(t)
+	for where, expr := range dashboardQueries(&d) {
+		for _, loc := range counterCallRe.FindAllStringSubmatchIndex(expr, -1) {
+			if args := callArgs(expr, loc[1]-1); oneSlotRangeRe.MatchString(args) {
+				t.Errorf("%s calls %s over $__interval, want $__rate_interval or an offset difference: %s(%s)", where, expr[loc[2]:loc[3]], expr[loc[2]:loc[3]], args)
+			}
+		}
+	}
+}
+
+// TestDashboardQueriesAreTheTestedOnes fails when a panel query differs from
+// the one alerts/promql_test.yaml evaluates under its anchor, so a change to
+// its instance match or slot arithmetic runs through promtool in CI.
+func TestDashboardQueriesAreTheTestedOnes(t *testing.T) {
+	d := loadDashboard(t)
+	raw, err := os.ReadFile("alerts/promql_test.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ title, anchor, instance string }{
+		{"fclones Scheduler scrape", "down_tile", "[::1]:9469"},
+		{"Space freed", "space_freed", "fc:9469"},
+		{"Runs by result", "runs_by_result", "fc:9469"},
+	} {
+		t.Run(c.anchor, func(t *testing.T) {
+			exprs := panelExprs(panelTitled(t, &d, c.title))
+			if len(exprs) != 1 {
+				t.Fatalf("%q has %d queries, want 1", c.title, len(exprs))
+			}
+			want := strings.NewReplacer(`$instance`, c.instance, `${__interval_ms}`, "300000",
+				`$__interval`, "5m").Replace(exprs[0])
+			m := regexp.MustCompile(`(?m)expr: &` + c.anchor + ` '([^']*)'$`).FindSubmatch(raw)
+			if m == nil {
+				t.Fatalf("alerts/promql_test.yaml has no expr anchored as %s", c.anchor)
+			}
+			if string(m[1]) != want {
+				t.Errorf("alerts/promql_test.yaml tests\n%s\nthe %q panel reads, with its variables filled in,\n%s", m[1], c.title, want)
+			}
+		})
 	}
 }
