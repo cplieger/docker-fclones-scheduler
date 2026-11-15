@@ -73,7 +73,8 @@ func TestServeMetricsLogsStraysButNotScrapes(t *testing.T) {
 			return true
 		})
 	}
-	if got, want := lines[slog.LevelDebug], []string{"/metrics", "/healthz"}; !slices.Equal(got, want) {
+	// A handler logs after its response is sent, so the next request can log first.
+	if got, want := slices.Sorted(slices.Values(lines[slog.LevelDebug])), []string{"/healthz", "/metrics"}; !slices.Equal(got, want) {
 		t.Errorf("Debug access lines = %q, want %q", got, want)
 	}
 	if got, want := lines[slog.LevelInfo], []string{"/stray"}; !slices.Equal(got, want) {
