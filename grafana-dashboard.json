@@ -815,7 +815,7 @@
         "spec": {
           "id": 13,
           "title": "Next success due",
-          "description": "The time by which the next run must succeed: the last success plus twice SCAN_INTERVAL and twice SCAN_TIMEOUT. FclonesScanStalled fires 30 minutes after it passes. No deadline means an outside scheduler, SCAN_INTERVAL=0 or SCAN_TIMEOUT=0, or that the container was not scraped.",
+          "description": "The time by which the next run must succeed: the last success, or the container's start when none is known, plus twice SCAN_INTERVAL and twice SCAN_TIMEOUT. FclonesScanStalled fires 30 minutes after it passes. No deadline means an outside scheduler, SCAN_INTERVAL=0 or SCAN_TIMEOUT=0, or that the container was not scraped.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -1061,7 +1061,7 @@
         "spec": {
           "id": 22,
           "title": "Duplicate files found",
-          "description": "Duplicate files, keepers left out, in the latest scan report, before its action ran. A number that stays high run after run means the action is not freeing them, so check the configured action. No value means no scan has run since the container started, or the container was not scraped.",
+          "description": "Duplicate files, keepers left out, in the latest scan report, before its action ran. A number that stays high run after run means the action is not freeing them, so check the configured action. A scan whose report was not read keeps the previous number, 0 after a restart, and Last run names why. No value means no scan has run since the container started, or the container was not scraped.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -1143,7 +1143,7 @@
         "spec": {
           "id": 23,
           "title": "Space duplicates take",
-          "description": "The space the duplicates in the latest scan report take up, the most the next action can free. No value means no scan has run since the container started, or the container was not scraped.",
+          "description": "The space the duplicates in the latest scan report take up, the most the next action can free. A scan whose report was not read keeps the previous number, 0 after a restart, and Last run names why. No value means no scan has run since the container started, or the container was not scraped.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -1312,7 +1312,7 @@
         "spec": {
           "id": 25,
           "title": "Duplicate space per scan",
-          "description": "The space the duplicates in each scan report take up, over the selected range. A line that grows means duplicates arrive faster than the action frees them. A gap means no scan has run since the container started, or the container was not scraped.",
+          "description": "The space the duplicates in each scan report take up, over the selected range. A line that grows means duplicates arrive faster than the action frees them. A scan whose report was not read keeps the line flat, at 0 after a restart. A gap means no scan has run since the container started, or the container was not scraped.",
           "links": [],
           "data": {
             "kind": "QueryGroup",

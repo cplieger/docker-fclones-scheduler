@@ -530,6 +530,29 @@ func TestDashboardLastRunNamesEveryResult(t *testing.T) {
 	}
 }
 
+// TestDashboardScanFiguresWaitForAScan fails when a query reads a duplicate
+// gauge without the scan-phase guard: those gauges restart at 0, and only a
+// scan in this process sets them.
+func TestDashboardScanFiguresWaitForAScan(t *testing.T) {
+	d := loadDashboard(t)
+	guard := " and on (instance) " + metricsPrefix + `_phase_duration_seconds{instance="$instance", phase="scan"} > 0`
+	read := 0
+	for where, expr := range dashboardQueries(&d) {
+		if !slices.ContainsFunc(seriesIn(expr), func(s string) bool {
+			return slices.Contains([]string{"duplicate_groups", "duplicate_files", "redundant_bytes"}, strings.TrimPrefix(s, metricsPrefix+"_"))
+		}) {
+			continue
+		}
+		read++
+		if !strings.Contains(expr, guard) {
+			t.Errorf("%s reads a duplicate gauge without%s", where, guard)
+		}
+	}
+	if read == 0 {
+		t.Error("no query reads a duplicate gauge")
+	}
+}
+
 // TestDashboardRowHeadersFoldTwoPanels fails when a row shows a header over
 // fewer than two always-shown panels, which costs a click and hides nothing.
 // A row of tiles shown only with data needs two of them, since it lights
