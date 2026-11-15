@@ -103,13 +103,13 @@ With the built-in schedule, the container also turns unhealthy after 30 hours wi
 
 ## Monitoring
 
-docker-fclones-scheduler logs one `run finished` record per run and can serve a Prometheus metrics page when `METRICS_LISTEN_ADDR` is set. The same alerts ship for Prometheus in [`alerts/promql.yaml`](alerts/promql.yaml) and for Loki in [`alerts/logql.yaml`](alerts/logql.yaml). Load one of the two files. The image has a Docker healthcheck, and [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what it proves and who is told.
+docker-fclones-scheduler logs one `run finished` record per run and can serve a Prometheus metrics page when `METRICS_LISTEN_ADDR` is set. The same alerts ship for Prometheus in [`alerts/promql.yaml`](alerts/promql.yaml) and for Loki in [`alerts/logql.yaml`](alerts/logql.yaml). Load one of the two files. A Grafana dashboard of each run and the space it freed ships as [`grafana-dashboard.json`](grafana-dashboard.json) and needs Grafana 13.2 or newer. The image has a Docker healthcheck, and [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what it proves and who is told.
 
 ## Documentation
 
 - [Configuration](docs/configuration.md) covers the scheduling modes, extra fclones options and a slow first scan.
 - [How it works](docs/how-it-works.md) explains the schedule, the two phases of a run and the health rules.
-- [Monitoring and alerts](docs/monitoring.md) lists the metrics, the `run finished` record, both rule files, and who tells you the schedule stopped.
+- [Monitoring and alerts](docs/monitoring.md) lists the metrics, the `run finished` record, both rule files and the dashboard, and says who tells you the schedule stopped.
 - [Security](docs/hardening.md) has the hardened compose example and what the image contains.
 
 ## Credits

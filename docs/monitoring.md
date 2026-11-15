@@ -1,12 +1,12 @@
 # Monitoring and alerts
 
-This page covers what docker-fclones-scheduler reports, how to get alerts from it and who tells you when it stops. docker-fclones-scheduler writes one `run finished` record per run to its log and can serve a Prometheus metrics page. The same alerts ship twice, in [`alerts/promql.yaml`](../alerts/promql.yaml) for a metric store and in [`alerts/logql.yaml`](../alerts/logql.yaml) for Loki. Load one of the two.
+This page covers what docker-fclones-scheduler reports, how to get alerts from it and who tells you when it stops. docker-fclones-scheduler writes one `run finished` record per run to its log and can serve a Prometheus metrics page. The same alerts ship twice, in [`alerts/promql.yaml`](../alerts/promql.yaml) for a metric store and in [`alerts/logql.yaml`](../alerts/logql.yaml) for Loki. Load one of the two. A [Grafana dashboard](#dashboard) of the metrics ships beside them.
 
 ## What you get
 
 | You run | You get | You set up |
 | --- | --- | --- |
-| Prometheus, Mimir or VictoriaMetrics, with Alertmanager | Five alerts, `FclonesDown` included, and graphs of each run and the space it freed | `METRICS_LISTEN_ADDR`, a scrape job named `fclones`, and `alerts/promql.yaml` |
+| Prometheus, Mimir or VictoriaMetrics, with Alertmanager | Five alerts, `FclonesDown` included, and a Grafana dashboard of each run and the space it freed | `METRICS_LISTEN_ADDR`, a scrape job named `fclones`, and `alerts/promql.yaml` |
 | Loki and Alertmanager, no metric store | Four alerts, all but `FclonesDown`, which `FclonesScanStalled` covers | `alerts/logql.yaml`, with `LOG_LEVEL` left at `info` |
 | Grafana-managed alerting only | The same alerts, as Grafana rules | One of the two files imported into Grafana, with its data source |
 | Docker or Unraid only | The container log and Docker's health status, which notify nobody | `METRICS_LISTEN_ADDR` and an uptime prober on `/healthz`, or something that watches Docker health |
@@ -38,12 +38,6 @@ Every series starts with `fclones_scheduler_`. After a restart, the last run's t
 | `build_info` | gauge | `version` | Always 1. `version` is the release the image was built from |
 
 `result` is one of `success`, `exec_error`, `timeout`, `decode_error`, `action_no_op`, `start_error` and `lock_error`. The page also carries the Go runtime and process families (`go_*`, `process_*`) under the names Go's official Prometheus client uses, so stock Go dashboards work.
-
-No dashboard ships. These queries are a start in Grafana's Metrics Drilldown:
-
-- Space freed per day: `increase(fclones_scheduler_reclaimed_bytes_total[1d])`
-- Duplicates left after each scan: `fclones_scheduler_duplicate_files`
-- Scan time: `fclones_scheduler_phase_duration_seconds{phase="scan"}`
 
 ## Logs
 
@@ -117,6 +111,17 @@ The log rule, and the second metric arm, fire on silence. They cannot tell a stu
 `FclonesFormatDrift` matters because the action still runs and the run still succeeds, so `FclonesRunFailed` does not catch it. Only the files and bytes reclaimed read wrong. A `--dry-run` in `FCLONES_ACTION_ARGS` causes it on purpose, because fclones then prints what it would do. The scan report is covered separately. It is read strictly, and an unreadable report fails the run with `result=decode_error`.
 
 `FclonesSpaceReclaimed` is a success notice at `info`, for every action that changes files. The count is in its value and its annotation, so each count does not open a new alert. The space freed is in each record's `reclaimed_bytes`, or `fclones_scheduler_reclaimed_bytes_total`. The changed paths are in the same run's `duplicate file` lines. Find them with `{container="fclones"} |= "duplicate file"` and filter by the run's `scan_id`.
+
+## Dashboard
+
+[`grafana-dashboard.json`](../grafana-dashboard.json) imports as the fclones Scheduler dashboard. It reads the metrics above from a Prometheus data source and needs Grafana 13.2 or newer. Every panel matches on the `instance` label only, so any scrape job name works. The Needs attention tiles read the shipped rules, which expect the job `fclones`, so rename it there if yours differs. With several containers, the fclones Scheduler variable picks the one to show. It has four rows:
+
+- Needs attention appears only while an alert of `alerts/promql.yaml` fires, with one tile per rule. Each tile reads its rule's `ALERTS` series, which Prometheus and the Mimir ruler store, so the row stays hidden until those rules load. The blue `FclonesSpaceReclaimed` tile reports freed space and needs no action.
+- Last run shows how the latest run ended, when it ended, the last success and when the next success is due. It reads `last_run_result`, `last_run_ok`, `last_run_timestamp_seconds`, `last_success_timestamp_seconds` and `run_deadline_timestamp_seconds`. After a restart, the outcome reads only Succeeded or Failed until the next run ends. The due time reads No deadline with an outside scheduler, with `SCAN_INTERVAL=0` and with `SCAN_TIMEOUT=0`.
+- Space reclaimed shows the space and files freed in the selected range, from `reclaimed_bytes_total` and `files_processed_total`. Beside them are the latest scan's duplicate files and their space, from `duplicate_files` and `redundant_bytes`. Its charts show both spaces over the range. After a restart, the duplicate figures wait for the next scan.
+- Runs charts the completed runs by result, from `runs_total`, and the time each phase took, from `phase_duration_seconds`. After a restart, each phase time waits for that phase to run.
+
+Each release's copy matches the metrics its image serves. Each release attaches it with its checksum at `https://github.com/cplieger/docker-fclones-scheduler/releases/download/<tag>/grafana-dashboard.json`, and each image publish pushes it as the OCI artifact `ghcr.io/cplieger/docker-fclones-scheduler/dashboard:<tag>`. The file sets `metadata.name` to `docker-fclones-scheduler`, which Grafana uses as the dashboard UID, so importing a newer copy updates the old one in place. To import it, open **Dashboards**, **New** and **Import** in Grafana, and upload the file.
 
 ## Knowing the app is alive
 
