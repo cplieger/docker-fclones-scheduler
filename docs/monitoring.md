@@ -23,7 +23,7 @@ Every series starts with `fclones_scheduler_`. After a restart, the last run's t
 | --- | --- | --- | --- |
 | `runs_total` | counter | `result` | Completed runs by how they ended |
 | `last_run_result` | gauge | `result` | 1 for how the last completed run ended, 0 for the other results |
-| `last_run_ok` | gauge | | 1 when the last completed run succeeded, else 0, the healthcheck's verdict |
+| `last_run_ok` | gauge | | 1 when the last completed run succeeded, else 0 |
 | `last_run_timestamp_seconds` | gauge | | Unix time the last run completed, 0 before the first |
 | `last_success_timestamp_seconds` | gauge | | Unix time the last run succeeded, 0 until a success is known |
 | `phase_duration_seconds` | gauge | `phase` | How long `scan` or `action` took the last time it ran |
