@@ -243,3 +243,230 @@ tests:
       - eval_time: 8m
         alertname: FclonesSpaceReclaimed
         exp_alerts: []
+
+  # The dashboard's fclones Scheduler scrape tile, with $instance filled in as an IPv6 target.
+  # TestDashboardQueriesAreTheTestedOnes fails when the two differ.
+  - name: "Scrape tile: a down IPv6 target shows its tile"
+    interval: 1m
+    input_series:
+      - series: 'up{job="fclones", instance="[::1]:9469"}'
+        values: "0x10"
+    promql_expr_test:
+      - expr: &down_tile '0 * max((ALERTS{alertname="FclonesDown", alertstate="firing", instance="[::1]:9469"} or ALERTS{alertname="FclonesDown", alertstate="firing", instance=""}))'
+        eval_time: 8m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+  - name: "Scrape tile: a gone target shows the tile, through the alert with no instance"
+    interval: 1m
+    input_series:
+      - series: 'up{job="other", instance="x:1"}'
+        values: "1x10"
+    promql_expr_test:
+      - expr: *down_tile
+        eval_time: 8m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+  - name: "Scrape tile: a down neighbour whose name the picked IPv6 target matches as a pattern leaves it hidden"
+    interval: 1m
+    input_series:
+      - series: 'up{job="fclones", instance="[::1]:9469"}'
+        values: "1x10"
+      - series: 'up{job="fclones", instance="1:9469"}'
+        values: "0x10"
+    promql_expr_test:
+      - expr: *down_tile
+        eval_time: 8m
+        exp_samples: []
+
+  # The dashboard's Space freed query, with $instance and its 5m slot filled in.
+  # TestDashboardQueriesAreTheTestedOnes fails when the two differ.
+  - name: "Space freed: a slot counts the bytes freed in it, on the picked instance only"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_reclaimed_bytes_total{job="fclones", instance="fc:9469"}'
+        values: "0+1000x30"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x30"
+      - series: 'fclones_scheduler_reclaimed_bytes_total{job="fclones", instance="other:9469"}'
+        values: "0+7x30"
+      - series: 'process_start_time_seconds{job="fclones", instance="other:9469"}'
+        values: "0x30"
+    promql_expr_test:
+      - expr: &space_freed 'round(sum by (instance) (((last_over_time(fclones_scheduler_reclaimed_bytes_total{instance="fc:9469"}[5m]) - last_over_time(fclones_scheduler_reclaimed_bytes_total{instance="fc:9469"}[5m] offset 5m)) unless on (instance) ((last_over_time(process_start_time_seconds{instance="fc:9469"}[5m]) != last_over_time(process_start_time_seconds{instance="fc:9469"}[5m] offset 5m)) or (last_over_time(process_start_time_seconds{instance="fc:9469"}[5m]) > time() - 300000 / 1000))) or (last_over_time(fclones_scheduler_reclaimed_bytes_total{instance="fc:9469"}[5m]) and on (instance) ((last_over_time(process_start_time_seconds{instance="fc:9469"}[5m]) != last_over_time(process_start_time_seconds{instance="fc:9469"}[5m] offset 5m)) or (last_over_time(process_start_time_seconds{instance="fc:9469"}[5m]) > time() - 300000 / 1000))) or (last_over_time(fclones_scheduler_reclaimed_bytes_total{instance="fc:9469"}[5m]) - min_over_time(fclones_scheduler_reclaimed_bytes_total{instance="fc:9469"}[5m]))))'
+        eval_time: 20m
+        exp_samples:
+          - labels: '{instance="fc:9469"}'
+            value: 5000
+  - name: "Space freed: a slot that freed nothing reads 0, not a gap"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_reclaimed_bytes_total{job="fclones", instance="fc:9469"}'
+        values: "5000x40"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x40"
+    promql_expr_test:
+      - expr: *space_freed
+        eval_time: 30m
+        exp_samples:
+          - labels: '{instance="fc:9469"}'
+            value: 0
+  - name: "Space freed: a restart counts the bytes its first run freed even when the new total matches the old one"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_reclaimed_bytes_total{job="fclones", instance="fc:9469"}'
+        values: "1000x29 1000x20"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x29 1770x20"
+    promql_expr_test:
+      - expr: *space_freed
+        eval_time: 34m
+        exp_samples:
+          - labels: '{instance="fc:9469"}'
+            value: 1000
+  - name: "Space freed: a restart counts the new total, not the drop from the old one"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_reclaimed_bytes_total{job="fclones", instance="fc:9469"}'
+        values: "3000x29 0 2000 3000 4000x20"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x29 1770x20"
+    promql_expr_test:
+      - expr: *space_freed
+        eval_time: 34m
+        exp_samples:
+          - labels: '{instance="fc:9469"}'
+            value: 4000
+  - name: "Space freed: a failed scrape at the slot end still counts the slot, and the next slot reads 0"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_reclaimed_bytes_total{job="fclones", instance="fc:9469"}'
+        values: "0x15 1000x3 stale 1000x10"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x18 stale 0x10"
+    promql_expr_test:
+      - expr: *space_freed
+        eval_time: 20m
+        exp_samples:
+          - labels: '{instance="fc:9469"}'
+            value: 1000
+      - expr: *space_freed
+        eval_time: 25m
+        exp_samples:
+          - labels: '{instance="fc:9469"}'
+            value: 0
+  - name: "Space freed: a scrape outage that leaves no stale marker puts the whole outage's bytes in the slot after it"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_reclaimed_bytes_total{job="fclones", instance="fc:9469"}'
+        values: "0x6 _x5 1000x8"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x6 _x5 0x8"
+    promql_expr_test:
+      - expr: *space_freed
+        eval_time: 15m
+        exp_samples:
+          - labels: '{instance="fc:9469"}'
+            value: 1000
+
+  # The dashboard's Runs by result query, with $instance and its 5m slot filled in.
+  # TestDashboardQueriesAreTheTestedOnes fails when the two differ.
+  - name: "Runs by result: a slot counts the runs that ended in it, by result"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_runs_total{job="fclones", instance="fc:9469", result="success"}'
+        values: "0+1x30"
+      - series: 'fclones_scheduler_runs_total{job="fclones", instance="fc:9469", result="timeout"}'
+        values: "0x17 1x13"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x30"
+      - series: 'fclones_scheduler_runs_total{job="fclones", instance="other:9469", result="success"}'
+        values: "0+3x30"
+      - series: 'process_start_time_seconds{job="fclones", instance="other:9469"}'
+        values: "0x30"
+    promql_expr_test:
+      - expr: &runs_by_result 'round(sum by (result) (((last_over_time(fclones_scheduler_runs_total{instance="fc:9469"}[5m]) - last_over_time(fclones_scheduler_runs_total{instance="fc:9469"}[5m] offset 5m)) unless on (instance) ((last_over_time(process_start_time_seconds{instance="fc:9469"}[5m]) != last_over_time(process_start_time_seconds{instance="fc:9469"}[5m] offset 5m)) or (last_over_time(process_start_time_seconds{instance="fc:9469"}[5m]) > time() - 300000 / 1000))) or (last_over_time(fclones_scheduler_runs_total{instance="fc:9469"}[5m]) and on (instance) ((last_over_time(process_start_time_seconds{instance="fc:9469"}[5m]) != last_over_time(process_start_time_seconds{instance="fc:9469"}[5m] offset 5m)) or (last_over_time(process_start_time_seconds{instance="fc:9469"}[5m]) > time() - 300000 / 1000))) or (last_over_time(fclones_scheduler_runs_total{instance="fc:9469"}[5m]) - min_over_time(fclones_scheduler_runs_total{instance="fc:9469"}[5m])))) > 0'
+        eval_time: 20m
+        exp_samples:
+          - labels: '{result="success"}'
+            value: 5
+          - labels: '{result="timeout"}'
+            value: 1
+  - name: "Runs by result: a slot with no run draws no bar"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_runs_total{job="fclones", instance="fc:9469", result="success"}'
+        values: "5x40"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x40"
+    promql_expr_test:
+      - expr: *runs_by_result
+        eval_time: 30m
+        exp_samples: []
+  - name: "Runs by result: a restart counts the startup run even when its total matches the old one"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_runs_total{job="fclones", instance="fc:9469", result="success"}'
+        values: "1x29 1x20"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x29 1770x20"
+    promql_expr_test:
+      - expr: *runs_by_result
+        eval_time: 34m
+        exp_samples:
+          - labels: '{result="success"}'
+            value: 1
+  - name: "Runs by result: the slot after a restart draws no bar"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_runs_total{job="fclones", instance="fc:9469", result="success"}'
+        values: "1x29 1x20"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x29 1770x20"
+    promql_expr_test:
+      - expr: *runs_by_result
+        eval_time: 39m
+        exp_samples: []
+  - name: "Runs by result: a first scrape counts the growth inside the slot, not the lifetime total"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_runs_total{job="fclones", instance="fc:9469", result="success"}'
+        values: "_x29 7 7 8x10"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "_x29 0x12"
+    promql_expr_test:
+      - expr: *runs_by_result
+        eval_time: 34m
+        exp_samples:
+          - labels: '{result="success"}'
+            value: 1
+  - name: "Runs by result: a failed scrape at the slot end still counts the run, and the next slot draws no bar"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_runs_total{job="fclones", instance="fc:9469", result="success"}'
+        values: "0x15 1x3 stale 1x10"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x18 stale 0x10"
+    promql_expr_test:
+      - expr: *runs_by_result
+        eval_time: 20m
+        exp_samples:
+          - labels: '{result="success"}'
+            value: 1
+      - expr: *runs_by_result
+        eval_time: 25m
+        exp_samples: []
+  - name: "Runs by result: a scrape outage that leaves no stale marker puts the whole outage's runs in the slot after it"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_runs_total{job="fclones", instance="fc:9469", result="success"}'
+        values: "0x6 _x5 3x8"
+      - series: 'process_start_time_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x6 _x5 0x8"
+    promql_expr_test:
+      - expr: *runs_by_result
+        eval_time: 15m
+        exp_samples:
+          - labels: '{result="success"}'
+            value: 3
