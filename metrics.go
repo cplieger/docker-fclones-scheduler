@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/cplieger/go/httpserver"
-	"github.com/cplieger/go/measure"
+	"github.com/cplieger/go/measure/v2"
 	"github.com/cplieger/go/scheduler"
 )
 
@@ -63,33 +63,33 @@ type runMetrics struct {
 func newRunMetrics(reg *measure.Registry, cfg *config, last scheduler.RunRecord, known bool, start time.Time) *runMetrics {
 	m := &runMetrics{
 		runs: measure.NewLabeledCounter("runs_total",
-			"Completed runs by how they ended.", []string{keyResult}),
+			"Completed runs by how they ended.", measure.UnitCount, []string{keyResult}),
 		lastResult: measure.NewLabeledGauge("last_run_result",
-			"1 for how the last completed run ended, 0 for the other results.", []string{keyResult}),
+			"1 for how the last completed run ended, 0 for the other results.", measure.UnitNone, []string{keyResult}),
 		phaseDuration: measure.NewLabeledGauge("phase_duration_seconds",
-			"How long the phase took the last time it ran.", []string{"phase"}),
+			"How long the phase took the last time it ran.", measure.UnitSeconds, []string{"phase"}),
 		info: measure.NewLabeledGauge("info",
-			"Always 1; the labels name the scheduling mode and the configured action.", []string{"mode", phaseAction}),
+			"Always 1; the labels name the scheduling mode and the configured action.", measure.UnitNone, []string{"mode", phaseAction}),
 		lastOK: measure.NewGauge("last_run_ok",
-			"1 when the last completed run succeeded, else 0."),
+			"1 when the last completed run succeeded, else 0.", measure.UnitNone),
 		lastRun: measure.NewGauge("last_run_timestamp_seconds",
-			"Unix time the last run completed, read back from /cache after a restart; 0 before the first."),
+			"Unix time the last run completed, read back from /cache after a restart; 0 before the first.", measure.UnitSeconds),
 		lastSuccess: measure.NewGauge("last_success_timestamp_seconds",
-			"Unix time the last run succeeded; 0 until a success is known since the record on /cache."),
+			"Unix time the last run succeeded; 0 until a success is known since the record on /cache.", measure.UnitSeconds),
 		groups: measure.NewGauge("duplicate_groups",
-			"Duplicate groups in the last decoded scan report."),
+			"Duplicate groups in the last decoded scan report.", measure.UnitCount),
 		duplicateFiles: measure.NewGauge("duplicate_files",
-			"Duplicate files, keepers excluded, in the last decoded scan report."),
+			"Duplicate files, keepers excluded, in the last decoded scan report.", measure.UnitCount),
 		redundantBytes: measure.NewGauge("redundant_bytes",
-			"Bytes the duplicates in the last decoded scan report take up."),
+			"Bytes the duplicates in the last decoded scan report take up.", measure.UnitBytes),
 		summaryRecognized: measure.NewGauge("action_summary_recognized",
-			"0 when the last action's summary line was not recognized, else 1."),
+			"0 when the last action's summary line was not recognized, else 1.", measure.UnitNone),
 		filesProcessed: measure.NewCounter("files_processed_total",
-			"Duplicate files the actions processed, from their summary lines."),
+			"Duplicate files the actions processed, from their summary lines.", measure.UnitCount),
 		reclaimedBytes: measure.NewCounter("reclaimed_bytes_total",
-			"Bytes the actions reclaimed, from fclones' rounded summary; an upper bound for dedupe."),
+			"Bytes the actions reclaimed, from fclones' rounded summary; an upper bound for dedupe.", measure.UnitBytes),
 		deadline: measure.NewGauge("run_deadline_timestamp_seconds",
-			"Unix time by which the next successful run is due; 0 in external and run-once modes and with SCAN_TIMEOUT=0."),
+			"Unix time by which the next successful run is due; 0 in external and run-once modes and with SCAN_TIMEOUT=0.", measure.UnitSeconds),
 		gap: healthLease(cfg.Mode, cfg.Interval, cfg.PhaseTimeout),
 	}
 	reg.MustRegister(m.runs, m.lastResult, m.phaseDuration, m.info, m.lastOK, m.lastRun,
@@ -129,7 +129,7 @@ func (m *runMetrics) setDeadline(lastSuccess time.Time) {
 // process runs, for a query to join on.
 func registerBuildInfo(reg *measure.Registry) {
 	info := measure.NewLabeledGauge("build_info",
-		"Always 1; the version label is the release this process runs.", []string{"version"})
+		"Always 1; the version label is the release this process runs.", measure.UnitNone, []string{"version"})
 	reg.MustRegister(info)
 	info.Set(1, version)
 }
