@@ -45,4 +45,4 @@ The `/tmp` tmpfs holds the trigger socket and the home folder the image sets wit
 
 ## Accepted scanner findings
 
-Live scan results are on the repository's Security tab. One finding is accepted: hadolint DL3008, unpinned `apt-get` packages, fires in the Rust builder stage, which is not part of the final image.
+Live scan results are on the repository's Security tab. One finding is accepted. hadolint DL3008, unpinned `apt-get` packages, fires in the Rust builder stage, which is not part of the final image.

@@ -1,12 +1,12 @@
 # Monitoring and alerts
 
-This page covers what docker-fclones-scheduler reports, how to get alerts from it and who tells you when it stops. docker-fclones-scheduler writes one `run finished` record per run to its log and can serve a Prometheus metrics page. The same alerts ship twice, in [`alerts/promql.yaml`](../alerts/promql.yaml) for a metric store and in [`alerts/logql.yaml`](../alerts/logql.yaml) for Loki. Load one of the two.
+This page covers what docker-fclones-scheduler reports, how to get alerts from it and who tells you when it stops. docker-fclones-scheduler writes one `run finished` record per run to its log and can serve a Prometheus metrics page. The same alerts ship twice, in [`alerts/promql.yaml`](../alerts/promql.yaml) for a metric store and in [`alerts/logql.yaml`](../alerts/logql.yaml) for Loki. Load one of the two. A [Grafana dashboard](#dashboard) of the metrics ships beside them.
 
 ## What you get
 
 | You run | You get | You set up |
 | --- | --- | --- |
-| Prometheus, Mimir or VictoriaMetrics, with Alertmanager | Five alerts, `FclonesDown` included, and graphs of each run and the space it freed | `METRICS_LISTEN_ADDR`, a scrape job named `fclones`, and `alerts/promql.yaml` |
+| Prometheus, Mimir or VictoriaMetrics, with Alertmanager | Five alerts, `FclonesDown` included, and a Grafana dashboard of each run and the space it freed | `METRICS_LISTEN_ADDR`, a scrape job named `fclones`, and `alerts/promql.yaml` |
 | Loki and Alertmanager, no metric store | Four alerts, all but `FclonesDown`, which `FclonesScanStalled` covers | `alerts/logql.yaml`, with `LOG_LEVEL` left at `info` |
 | Grafana-managed alerting only | The same alerts, as Grafana rules | One of the two files imported into Grafana, with its data source |
 | Docker or Unraid only | The container log and Docker's health status, which notify nobody | `METRICS_LISTEN_ADDR` and an uptime prober on `/healthz`, or something that watches Docker health |
@@ -23,7 +23,7 @@ Every series starts with `fclones_scheduler_`. After a restart, the last run's t
 | --- | --- | --- | --- |
 | `runs_total` | counter | `result` | Completed runs by how they ended |
 | `last_run_result` | gauge | `result` | 1 for how the last completed run ended, 0 for the other results |
-| `last_run_ok` | gauge | | 1 when the last completed run succeeded, else 0, the healthcheck's verdict |
+| `last_run_ok` | gauge | | 1 when the last completed run succeeded, else 0 |
 | `last_run_timestamp_seconds` | gauge | | Unix time the last run completed, 0 before the first |
 | `last_success_timestamp_seconds` | gauge | | Unix time the last run succeeded, 0 until a success is known |
 | `phase_duration_seconds` | gauge | `phase` | How long `scan` or `action` took the last time it ran |
@@ -38,12 +38,6 @@ Every series starts with `fclones_scheduler_`. After a restart, the last run's t
 | `build_info` | gauge | `version` | Always 1. `version` is the release the image was built from |
 
 `result` is one of `success`, `exec_error`, `timeout`, `decode_error`, `action_no_op`, `start_error` and `lock_error`. The page also carries the Go runtime and process families (`go_*`, `process_*`) under the names Go's official Prometheus client uses, so stock Go dashboards work.
-
-No dashboard ships. These queries are a start in Grafana's Metrics Drilldown:
-
-- Space freed per day: `increase(fclones_scheduler_reclaimed_bytes_total[1d])`
-- Duplicates left after each scan: `fclones_scheduler_duplicate_files`
-- Scan time: `fclones_scheduler_phase_duration_seconds{phase="scan"}`
 
 ## Logs
 
@@ -84,7 +78,7 @@ These lines are for reading a run by hand. No alert rule reads them.
 | `fclones report decode failed; failing the run` | ERROR | `error`, with `outcome=decode_error` |
 | `http` | INFO, or DEBUG for `/metrics` and `/healthz` | `method`, `path`, `status`, `duration_ms`, `request_id`, one line per request to the metrics listener |
 
-On these lines `result` holds fclones' own summary text, not the run's result. The `duplicate file` lines stop at 500 pairs or 64 KB per scan, taken from the first 100 groups. A `duplicate pairs truncated` line then gives the full totals. fclones' own messages reach the log with control characters and other unsafe characters shown as `\xNN`. A file name inside an fclones message cannot fake or hide a log line.
+On these lines `result` holds fclones' own summary text, not the run's result. The `duplicate file` lines stop at 500 pairs or 64 KB per scan, taken from the first 100 groups. A `duplicate pairs truncated` line then gives the full totals, and the action still gets every duplicate in the report. fclones' own messages reach the log with control characters and other unsafe characters shown as `\xNN`. A file name inside an fclones message cannot fake or hide a log line.
 
 With an outside scheduler, the `wrapper scan` command writes only its own short lines, `triggered scan accepted`, `triggered scan started` and `triggered scan complete` or `triggered scan failed`, to the log of whatever ran it. The scan's full output and its `run finished` record still go to the container log.
 
@@ -96,7 +90,7 @@ Load `alerts/promql.yaml` into Prometheus or the Mimir ruler, or `alerts/logql.y
 | --- | --- | --- |
 | `FclonesDown` | Prometheus has not scraped the metrics page for 5 minutes | warning |
 | `FclonesRunFailed` | the last completed run failed, including an action that processed none of the duplicates it found | warning |
-| `FclonesScanStalled` | in `alerts/promql.yaml`, no run has succeeded by `fclones_scheduler_run_deadline_timestamp_seconds` plus 15 minutes, or, while that deadline is 0, no run has finished for 30 hours. In `alerts/logql.yaml`, no run has finished for 30 hours | warning |
+| `FclonesScanStalled` | in `alerts/promql.yaml`, 30 minutes after `fclones_scheduler_run_deadline_timestamp_seconds` with no successful run, or, while that deadline is 0, 30 hours and 15 minutes after the last finished run. In `alerts/logql.yaml`, 30 hours and 15 minutes after the last finished run | warning |
 | `FclonesFormatDrift` | the container did not recognize the summary line of the last fclones action | warning |
 | `FclonesSpaceReclaimed` | runs in the last 30 hours processed duplicate files, with the count in its value | info |
 
@@ -106,13 +100,28 @@ Thresholds and the `severity` labels are starting points. The 30-hour windows ar
 
 `FclonesRunFailed` reads the latest run's verdict, so it fires at the first failed run and resolves at the next good one. The record's `result` field, or the `fclones_scheduler_last_run_result` series, names the cause, and the run's ERROR line has the detail. `action_no_op` means fclones opened none of the duplicates for writing. fclones only warns when that fails and then exits 0, so the container fails the run itself. The usual causes are a scanned folder the container's user cannot write to, or, for `dedupe`, a filesystem with no reflink support.
 
-`FclonesScanStalled` in `alerts/promql.yaml` has two arms, and `fclones_scheduler_run_deadline_timestamp_seconds` picks one. While the deadline is above 0, which is the built-in schedule with a `SCAN_TIMEOUT` above 0, the alert fires 15 minutes after the deadline passes. The container works the deadline out from `SCAN_INTERVAL` and `SCAN_TIMEOUT`, so this arm has no window to change. Only a successful run moves the deadline, so runs that keep failing cross it too, beside `FclonesRunFailed`. One failed run between two good ones does not, because the deadline holds two intervals. While the deadline reads 0, the alert fires when no run has finished for 30 hours, or, before the first run, 30 hours after the process started. Load the rule file of the release you run, because an older image serves no deadline and neither arm can fire.
+`FclonesScanStalled` in `alerts/promql.yaml` has two arms, and `fclones_scheduler_run_deadline_timestamp_seconds` picks one. The deadline is above 0 with the built-in schedule and a `SCAN_TIMEOUT` above 0. Then the condition holds from 15 minutes after the deadline, and the alert fires 15 minutes later, 30 minutes after the deadline. The container works the deadline out from `SCAN_INTERVAL` and `SCAN_TIMEOUT`, so this arm has no window to change.
+
+Only a successful run moves the deadline, so runs that keep failing cross it too, beside `FclonesRunFailed`. One failed run between two good ones does not, because the deadline holds two intervals.
+
+While the deadline reads 0, the condition is that no run has finished for 30 hours, or, before the first run, that 30 hours have passed since the process started. This arm and the log rule also wait 15 minutes under their `for:` before the alert fires. Load the rule file of the release you run, because an older image serves no deadline and neither arm can fire.
 
 The log rule, and the second metric arm, fire on silence. They cannot tell a stuck schedule from a container that never started or runs under another name, or from logs that stopped reaching Loki, so rule those out first. With `SCAN_TIMEOUT=0`, a phase has no time limit and no window is safe. With `SCAN_INTERVAL=off`, use two phase timeouts plus the cadence of your scheduler. With `SCAN_INTERVAL=0`, drop the rule, because a container that exits after one run is silent on purpose. A restart adds nothing to the gap, because the records on `/cache` keep the schedule in step.
 
 `FclonesFormatDrift` matters because the action still runs and the run still succeeds, so `FclonesRunFailed` does not catch it. Only the files and bytes reclaimed read wrong. A `--dry-run` in `FCLONES_ACTION_ARGS` causes it on purpose, because fclones then prints what it would do. The scan report is covered separately. It is read strictly, and an unreadable report fails the run with `result=decode_error`.
 
 `FclonesSpaceReclaimed` is a success notice at `info`, for every action that changes files. The count is in its value and its annotation, so each count does not open a new alert. The space freed is in each record's `reclaimed_bytes`, or `fclones_scheduler_reclaimed_bytes_total`. The changed paths are in the same run's `duplicate file` lines. Find them with `{container="fclones"} |= "duplicate file"` and filter by the run's `scan_id`.
+
+## Dashboard
+
+[`grafana-dashboard.json`](../grafana-dashboard.json) imports as the fclones Scheduler dashboard. It reads the metrics above from a Prometheus data source and needs Grafana 13.2 or newer. Every panel matches on `instance` only, so any scrape job name works. The Needs attention tiles read the shipped rules, which expect the job `fclones`, so rename it there if yours differs. With several containers, the fclones Scheduler variable picks one. It has four rows:
+
+- Needs attention appears only while an alert of `alerts/promql.yaml` fires, with one tile per rule. Each tile reads its rule's `ALERTS` series, which Prometheus and the Mimir ruler store, so the row stays hidden until those rules load. The blue `FclonesSpaceReclaimed` tile reports freed space and needs no action.
+- Last run shows how the latest run ended, when it ended, the last success and when the next success is due. It reads `last_run_result`, `last_run_ok`, `last_run_timestamp_seconds`, `last_success_timestamp_seconds` and `run_deadline_timestamp_seconds`. After a restart, the outcome reads only Succeeded or Failed until the next run ends. The due time reads No deadline with an outside scheduler, `SCAN_INTERVAL=0` or `SCAN_TIMEOUT=0`.
+- Space reclaimed shows the space and files freed in the selected range, from `reclaimed_bytes_total` and `files_processed_total`. Beside them are the latest scan's duplicate files and their space, from `duplicate_files` and `redundant_bytes`. Its charts show both spaces over the range. After a restart, the duplicate figures wait for a scan, and read 0 if its report went unread.
+- Runs charts the completed runs by result, from `runs_total`, and the time each phase took, from `phase_duration_seconds`. After a restart, each phase time waits for that phase to run.
+
+Each release's copy matches the metrics its image serves. Each release attaches it with its checksum at `https://github.com/cplieger/docker-fclones-scheduler/releases/download/<tag>/grafana-dashboard.json`, and each image publish pushes it as the OCI artifact `ghcr.io/cplieger/docker-fclones-scheduler/dashboard:<tag>`. The file sets `metadata.name` to `docker-fclones-scheduler`, which Grafana uses as the dashboard UID, so importing a newer copy updates the old one in place. To import it, open **Dashboards**, **New** and **Import** in Grafana, and upload the file.
 
 ## Knowing the app is alive
 

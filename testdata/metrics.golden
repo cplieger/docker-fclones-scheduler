@@ -1,0 +1,58 @@
+# HELP fclones_scheduler_runs_total Completed runs by how they ended.
+# TYPE fclones_scheduler_runs_total counter
+fclones_scheduler_runs_total{result="action_no_op"} 0
+fclones_scheduler_runs_total{result="decode_error"} 0
+fclones_scheduler_runs_total{result="exec_error"} 1
+fclones_scheduler_runs_total{result="lock_error"} 0
+fclones_scheduler_runs_total{result="start_error"} 0
+fclones_scheduler_runs_total{result="success"} 1
+fclones_scheduler_runs_total{result="timeout"} 0
+# HELP fclones_scheduler_files_processed_total Duplicate files the actions processed, from their summary lines.
+# TYPE fclones_scheduler_files_processed_total counter
+fclones_scheduler_files_processed_total 12
+# HELP fclones_scheduler_reclaimed_bytes_total Bytes the actions reclaimed, from fclones' rounded summary; an upper bound for dedupe.
+# TYPE fclones_scheduler_reclaimed_bytes_total counter
+fclones_scheduler_reclaimed_bytes_total 3758096384
+# HELP fclones_scheduler_build_info Always 1; the version label is the release this process runs.
+# TYPE fclones_scheduler_build_info gauge
+fclones_scheduler_build_info{version="dev"} 1
+# HELP fclones_scheduler_last_run_result 1 for how the last completed run ended, 0 for the other results.
+# TYPE fclones_scheduler_last_run_result gauge
+fclones_scheduler_last_run_result{result="action_no_op"} 0
+fclones_scheduler_last_run_result{result="decode_error"} 0
+fclones_scheduler_last_run_result{result="exec_error"} 1
+fclones_scheduler_last_run_result{result="lock_error"} 0
+fclones_scheduler_last_run_result{result="start_error"} 0
+fclones_scheduler_last_run_result{result="success"} 0
+fclones_scheduler_last_run_result{result="timeout"} 0
+# HELP fclones_scheduler_phase_duration_seconds How long the phase took the last time it ran.
+# TYPE fclones_scheduler_phase_duration_seconds gauge
+fclones_scheduler_phase_duration_seconds{phase="action"} 0.125
+fclones_scheduler_phase_duration_seconds{phase="scan"} 2.75
+# HELP fclones_scheduler_info Always 1; the labels name the scheduling mode and the configured action.
+# TYPE fclones_scheduler_info gauge
+fclones_scheduler_info{action="link",mode="built-in"} 1
+# HELP fclones_scheduler_last_run_ok 1 when the last completed run succeeded, else 0.
+# TYPE fclones_scheduler_last_run_ok gauge
+fclones_scheduler_last_run_ok 0
+# HELP fclones_scheduler_last_run_timestamp_seconds Unix time the last run completed, read back from /cache after a restart; 0 before the first.
+# TYPE fclones_scheduler_last_run_timestamp_seconds gauge
+fclones_scheduler_last_run_timestamp_seconds 1794715800
+# HELP fclones_scheduler_last_success_timestamp_seconds Unix time the last run succeeded; 0 until a success is known since the record on /cache.
+# TYPE fclones_scheduler_last_success_timestamp_seconds gauge
+fclones_scheduler_last_success_timestamp_seconds 1794712200
+# HELP fclones_scheduler_duplicate_groups Duplicate groups in the last decoded scan report.
+# TYPE fclones_scheduler_duplicate_groups gauge
+fclones_scheduler_duplicate_groups 7
+# HELP fclones_scheduler_duplicate_files Duplicate files, keepers excluded, in the last decoded scan report.
+# TYPE fclones_scheduler_duplicate_files gauge
+fclones_scheduler_duplicate_files 20
+# HELP fclones_scheduler_redundant_bytes Bytes the duplicates in the last decoded scan report take up.
+# TYPE fclones_scheduler_redundant_bytes gauge
+fclones_scheduler_redundant_bytes 1024
+# HELP fclones_scheduler_action_summary_recognized 0 when the last action's summary line was not recognized, else 1.
+# TYPE fclones_scheduler_action_summary_recognized gauge
+fclones_scheduler_action_summary_recognized 0
+# HELP fclones_scheduler_run_deadline_timestamp_seconds Unix time by which the next successful run is due; 0 in external and run-once modes and with SCAN_TIMEOUT=0.
+# TYPE fclones_scheduler_run_deadline_timestamp_seconds gauge
+fclones_scheduler_run_deadline_timestamp_seconds 1794720600

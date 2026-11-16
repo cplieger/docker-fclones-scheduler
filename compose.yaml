@@ -13,7 +13,7 @@ services:
       FCLONES_SCAN_PATHS: "/scandir"  # must match a volume target below
       FCLONES_ARGS: "--rf-over 1"  # report files that have more than one copy
       FCLONES_ACTION: "link"  # group only reports, link replaces copies with hardlinks, remove deletes them, dedupe uses reflinks
-      FCLONES_ACTION_ARGS: "--priority bottom"  # keep the first copy fclones lists, replace the others
+      FCLONES_ACTION_ARGS: "--priority bottom"  # keep the first file of each group, the one the log names keeper, and replace the others
 
     volumes:
       - "/path/to/media:/scandir"  # link, remove and dedupe change files here, so this user must be able to write to it
