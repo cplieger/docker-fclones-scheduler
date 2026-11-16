@@ -5,9 +5,9 @@ go 1.27.4
 require (
 	github.com/cplieger/go/envx v1.1.0
 	github.com/cplieger/go/health/v2 v2.0.0
-	github.com/cplieger/go/httpserver v1.5.0-dev.3
+	github.com/cplieger/go/httpserver v1.5.0
 	github.com/cplieger/go/jsonx v1.1.0
-	github.com/cplieger/go/measure/v2 v2.0.0-dev.3
+	github.com/cplieger/go/measure/v2 v2.0.0
 	github.com/cplieger/go/scheduler v1.1.0
 	github.com/cplieger/go/slogx v1.1.0
 	github.com/cplieger/go/textsafe v1.1.0
