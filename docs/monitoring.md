@@ -121,6 +121,8 @@ The log rule, and the second metric arm, fire on silence. They cannot tell a stu
 - Space reclaimed shows the space and files freed in the selected range, from `reclaimed_bytes_total` and `files_processed_total`. Beside them are the latest scan's duplicate files and their space, from `duplicate_files` and `redundant_bytes`. Its charts show both spaces over the range. After a restart, the duplicate figures wait for a scan, and read 0 if its report went unread.
 - Runs charts the completed runs by result, from `runs_total`, and the time each phase took, from `phase_duration_seconds`. After a restart, each phase time waits for that phase to run.
 
+The charts that count per interval also read `process_start_time_seconds` to find a container restart. Keep the `process_*` series in your scrape. Without them, a restart draws a negative Space freed bar and drops that interval's runs from Runs by result.
+
 Each release's copy matches the metrics its image serves. Each release attaches it with its checksum at `https://github.com/cplieger/docker-fclones-scheduler/releases/download/<tag>/grafana-dashboard.json`, and each image publish pushes it as the OCI artifact `ghcr.io/cplieger/docker-fclones-scheduler/dashboard:<tag>`. The file sets `metadata.name` to `docker-fclones-scheduler`, which Grafana uses as the dashboard UID, so importing a newer copy updates the old one in place. To import it, open **Dashboards**, **New** and **Import** in Grafana, and upload the file.
 
 ## Knowing the app is alive
