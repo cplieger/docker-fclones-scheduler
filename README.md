@@ -5,6 +5,8 @@
 <!-- hub-overview BEGIN -->
 docker-fclones-scheduler runs the [fclones](https://github.com/pkolaczk/fclones) duplicate finder on a schedule, in a rootless container, and replaces the copies it finds with hardlinks or removes them. It has no web interface and writes its results to its log.
 
+![The bundled Grafana dashboard showing the last run succeeded, the space freed, files processed and duplicates found in 7 days, charts of the space freed and the duplicate space per scan, and the runs by result and phase times](docs/images/header.png)
+
 ## What it does
 
 docker-fclones-scheduler gets back the disk space that duplicate files take, with no cron job to write:
