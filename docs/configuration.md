@@ -125,7 +125,7 @@ services:
       - "9469:9469"
 ```
 
-The value is a `host:port` or `:port` address, read once at start. Empty, the default, opens no port. An address the container cannot listen on stops it at start with `cannot listen on METRICS_LISTEN_ADDR`. The page has no login, so keep the port on your network. With `SCAN_INTERVAL=0` the page exists only while the one run lasts, so a scraper would see the container as down between runs. [Monitoring and alerts](monitoring.md#metrics) lists the series.
+The value is a `host:port` or `:port` address, read once at start. Empty, the default, opens no port. An address the container cannot listen on stops it at start with `cannot start the ops listener`. The page has no login, so keep the port on your network. `ALLOWED_HOSTS` limits the `Host` names the port serves: a request whose `Host` is not listed gets `403` with the code `host_not_allowed`, a request from the container itself always passes, and unset serves every `Host`. An entry no `Host` can match stops the start with an error naming `ALLOWED_HOSTS`. With `SCAN_INTERVAL=0` the page exists only while the one run lasts, so a scraper would see the container as down between runs. [Monitoring and alerts](monitoring.md#metrics) lists the series.
 
 ## Logs
 

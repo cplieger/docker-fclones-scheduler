@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/cplieger/go/httpserver"
+	"github.com/cplieger/go/httpserver/v2"
 	"github.com/cplieger/go/measure/v2"
-	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/scheduler/v2"
 )
 
 // metricsPrefix names every series on the metrics page.
@@ -172,24 +172,30 @@ func (m *runMetrics) observe(rep *jobReport, ok bool, at time.Time) {
 	}
 }
 
-// serveMetrics binds addr and serves reg's page and healthz on it until ctx
-// ends; stop cancels the server and waits until it has shut down. An empty
-// addr opens no listener. A bind failure is logged once, naming
-// METRICS_LISTEN_ADDR, and returned so the container refuses to start rather
-// than run with no page.
-func serveMetrics(ctx context.Context, addr string, reg *measure.Registry, healthz http.Handler) (stop func(), err error) {
-	ms, err := httpserver.ListenMetrics(ctx, addr, httpserver.MetricsHandlers{Metrics: reg.Handler(), Healthz: healthz})
+// serveOps binds the ops listener and serves reg's page and healthz on it until
+// ctx ends; stop cancels the server and waits until it has shut down. An empty
+// METRICS_LISTEN_ADDR opens no listener. A bind or host-list failure is logged once
+// and returned so the container refuses to start rather than run with no page.
+func serveOps(ctx context.Context, cfg *config, reg *measure.Registry, healthz http.Handler) (stop func(), err error) {
+	ops, err := httpserver.ListenOps(ctx, httpserver.OpsConfig{
+		Metrics:      reg.Handler(),
+		Healthz:      healthz,
+		Setting:      "METRICS_LISTEN_ADDR",
+		Addr:         cfg.MetricsListenAddr,
+		HostsSetting: "ALLOWED_HOSTS",
+		Hosts:        cfg.AllowedHosts,
+	})
 	if err != nil {
-		slog.Error("cannot listen on METRICS_LISTEN_ADDR; refusing to start",
-			"value", addr, logKeyOutcome, "config_error", "error", err)
+		slog.Error("cannot start the ops listener; refusing to start",
+			"value", cfg.MetricsListenAddr, logKeyOutcome, "config_error", "error", err)
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if err := ms.Serve(ctx); err != nil {
-			slog.Error("metrics listener stopped", "address", addr, "error", err)
+		if err := httpserver.RunWithOps(ctx, ops); err != nil {
+			slog.Error("ops listener stopped", "address", cfg.MetricsListenAddr, "error", err)
 		}
 	}()
 	return func() {

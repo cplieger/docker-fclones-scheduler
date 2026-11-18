@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/cplieger/docker-fclones-scheduler/internal/parsing"
-	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/scheduler/v2"
 )
 
 // runFinishedMsg is the message of the one record each completed run writes.

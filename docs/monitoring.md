@@ -13,7 +13,7 @@ This page covers what docker-fclones-scheduler reports, how to get alerts from i
 
 ## Metrics
 
-Set `METRICS_LISTEN_ADDR` to an address such as `:9469`, and publish that port. The container then serves Prometheus metrics at `/metrics` and a health check at `/healthz` on it. Left unset, the image opens no port. The page has no login, so keep the port on your network. A port that another process holds stops the container at start with `cannot listen on METRICS_LISTEN_ADDR`.
+Set `METRICS_LISTEN_ADDR` to an address such as `:9469`, and publish that port. The container then serves Prometheus metrics at `/metrics` and a health check at `/healthz` on it. Left unset, the image opens no port. The page has no login, so keep the port on your network. A port that another process holds stops the container at start with `cannot start the ops listener`.
 
 With `SCAN_INTERVAL=0` the container exits after its one run, so the page exists only while that run lasts and `FclonesDown` would fire between runs. Use `alerts/logql.yaml` in that mode.
 
