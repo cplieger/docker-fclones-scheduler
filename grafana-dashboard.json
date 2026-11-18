@@ -964,8 +964,8 @@
         "kind": "Panel",
         "spec": {
           "id": 22,
-          "title": "Duplicate files found",
-          "description": "Duplicate files, keepers left out, in the latest scan report, before its action ran. A number that stays high run after run means the action is not freeing them, so check the configured action. A scan whose report was not read keeps the previous number, 0 after a restart, and Last run names why. No value means no scan has run since the container started, or the container was not scraped.",
+          "title": "Duplicates found in ${span} ${spanunit}",
+          "description": "The most duplicate files, keepers left out, one scan report held in the selected range, before its action ran. The next scan finds again what an action did not free, so this is the largest count, not a sum, and Files processed says how many were freed. A scan whose report was not read keeps the previous number, and Last run names why. No value means no scan ran in the range, or the container was not scraped.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -982,7 +982,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "fclones_scheduler_duplicate_files{instance=\"$instance\"} and on (instance) fclones_scheduler_phase_duration_seconds{instance=\"$instance\", phase=\"scan\"} > 0",
+                        "expr": "max_over_time((fclones_scheduler_duplicate_files{instance=\"$instance\"} and on (instance) fclones_scheduler_phase_duration_seconds{instance=\"$instance\", phase=\"scan\"} > 0)[$__range:])",
                         "legendFormat": "",
                         "instant": true,
                         "range": false
@@ -1021,7 +1021,7 @@
               "fieldConfig": {
                 "defaults": {
                   "unit": "none",
-                  "noValue": "No scan since start",
+                  "noValue": "No scan in the range",
                   "color": {
                     "mode": "fixed",
                     "fixedColor": "text"
@@ -1046,8 +1046,8 @@
         "kind": "Panel",
         "spec": {
           "id": 23,
-          "title": "Space duplicates take",
-          "description": "The space the duplicates in the latest scan report take up, the most the next action can free. A scan whose report was not read keeps the previous number, 0 after a restart, and Last run names why. No value means no scan has run since the container started, or the container was not scraped.",
+          "title": "Duplicate space in ${span} ${spanunit}",
+          "description": "The most space the duplicates in one scan report took up in the selected range, the most one action could free. Space freed beside it says what the actions freed. A scan whose report was not read keeps the previous number, and Last run names why. No value means no scan ran in the range, or the container was not scraped.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -1064,7 +1064,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "fclones_scheduler_redundant_bytes{instance=\"$instance\"} and on (instance) fclones_scheduler_phase_duration_seconds{instance=\"$instance\", phase=\"scan\"} > 0",
+                        "expr": "max_over_time((fclones_scheduler_redundant_bytes{instance=\"$instance\"} and on (instance) fclones_scheduler_phase_duration_seconds{instance=\"$instance\", phase=\"scan\"} > 0)[$__range:])",
                         "legendFormat": "",
                         "instant": true,
                         "range": false
@@ -1103,7 +1103,7 @@
               "fieldConfig": {
                 "defaults": {
                   "unit": "bytes",
-                  "noValue": "No scan since start",
+                  "noValue": "No scan in the range",
                   "color": {
                     "mode": "fixed",
                     "fixedColor": "text"
