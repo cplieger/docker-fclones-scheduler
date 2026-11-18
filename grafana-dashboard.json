@@ -417,102 +417,6 @@
           }
         }
       },
-      "panel-5": {
-        "kind": "Panel",
-        "spec": {
-          "id": 5,
-          "title": "Space reclaimed",
-          "description": "Shows while the FclonesSpaceReclaimed notice fires: runs in the last 30 hours linked, removed or deduplicated duplicate files. It needs no action, and the Space reclaimed row shows how much was freed. Needs the rules from alerts/promql.yaml in a ruler that stores its `ALERTS` series beside the metrics, as Prometheus and Mimir do.",
-          "links": [],
-          "data": {
-            "kind": "QueryGroup",
-            "spec": {
-              "queries": [
-                {
-                  "kind": "PanelQuery",
-                  "spec": {
-                    "query": {
-                      "kind": "DataQuery",
-                      "group": "prometheus",
-                      "version": "v0",
-                      "datasource": {
-                        "name": "${datasource}"
-                      },
-                      "spec": {
-                        "expr": "0 * max(ALERTS{alertname=\"FclonesSpaceReclaimed\", alertstate=\"firing\", instance=\"$instance\"})",
-                        "legendFormat": "",
-                        "instant": true,
-                        "range": false
-                      }
-                    },
-                    "refId": "A",
-                    "hidden": false
-                  }
-                }
-              ],
-              "transformations": [],
-              "queryOptions": {
-                "maxDataPoints": 500
-              }
-            }
-          },
-          "vizConfig": {
-            "kind": "VizConfig",
-            "group": "stat",
-            "version": "",
-            "spec": {
-              "options": {
-                "colorMode": "background",
-                "graphMode": "none",
-                "justifyMode": "center",
-                "reduceOptions": {
-                  "calcs": [
-                    "lastNotNull"
-                  ],
-                  "values": false
-                },
-                "textMode": "auto",
-                "text": {
-                  "titleSize": 14,
-                  "valueSize": 28
-                }
-              },
-              "fieldConfig": {
-                "defaults": {
-                  "unit": "none",
-                  "noValue": "Nothing to report",
-                  "color": {
-                    "mode": "thresholds"
-                  },
-                  "thresholds": {
-                    "mode": "absolute",
-                    "steps": [
-                      {
-                        "value": null,
-                        "color": "blue"
-                      }
-                    ]
-                  },
-                  "decimals": 0,
-                  "mappings": [
-                    {
-                      "type": "value",
-                      "options": {
-                        "0": {
-                          "index": 0,
-                          "text": "Duplicates processed",
-                          "color": "blue"
-                        }
-                      }
-                    }
-                  ]
-                },
-                "overrides": []
-              }
-            }
-          }
-        }
-      },
       "panel-10": {
         "kind": "Panel",
         "spec": {
@@ -1865,36 +1769,6 @@
                           }
                         }
                       }
-                    },
-                    {
-                      "kind": "AutoGridLayoutItem",
-                      "spec": {
-                        "element": {
-                          "kind": "ElementReference",
-                          "name": "panel-5"
-                        },
-                        "conditionalRendering": {
-                          "kind": "ConditionalRenderingGroup",
-                          "spec": {
-                            "visibility": "show",
-                            "condition": "or",
-                            "items": [
-                              {
-                                "kind": "ConditionalRenderingData",
-                                "spec": {
-                                  "value": true
-                                }
-                              },
-                              {
-                                "kind": "ConditionalRenderingTimeRangeSize",
-                                "spec": {
-                                  "value": "0s"
-                                }
-                              }
-                            ]
-                          }
-                        }
-                      }
                     }
                   ]
                 }
@@ -2295,10 +2169,10 @@
               "name": "${datasource}"
             },
             "spec": {
-              "query": "query_result(count(label_replace(count(0 * max(ALERTS{alertname=\"FclonesRunFailed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"1\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesScanStalled\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"2\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesFormatDrift\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"3\", \"\", \"\") or label_replace(count(0 * max((ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=\"$instance\"} or ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=\"\"}))), \"tile\", \"4\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesSpaceReclaimed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"5\", \"\", \"\")) or vector(0))"
+              "query": "query_result(count(label_replace(count(0 * max(ALERTS{alertname=\"FclonesRunFailed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"1\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesScanStalled\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"2\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesFormatDrift\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"3\", \"\", \"\") or label_replace(count(0 * max((ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=\"$instance\"} or ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=\"\"}))), \"tile\", \"4\", \"\", \"\")) or vector(0))"
             }
           },
-          "definition": "query_result(count(label_replace(count(0 * max(ALERTS{alertname=\"FclonesRunFailed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"1\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesScanStalled\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"2\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesFormatDrift\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"3\", \"\", \"\") or label_replace(count(0 * max((ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=\"$instance\"} or ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=\"\"}))), \"tile\", \"4\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesSpaceReclaimed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"5\", \"\", \"\")) or vector(0))",
+          "definition": "query_result(count(label_replace(count(0 * max(ALERTS{alertname=\"FclonesRunFailed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"1\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesScanStalled\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"2\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"FclonesFormatDrift\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"3\", \"\", \"\") or label_replace(count(0 * max((ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=\"$instance\"} or ALERTS{alertname=\"FclonesDown\", alertstate=\"firing\", instance=\"\"}))), \"tile\", \"4\", \"\", \"\")) or vector(0))",
           "regex": "/^\\{\\} ([0-9]+) /",
           "sort": "disabled",
           "options": [],

@@ -511,8 +511,9 @@ func attentionTile(name, expr string) string {
 }
 
 // TestDashboardAttentionTilesMirrorEveryShippedRule fails when a rule in
-// alerts/promql.yaml has no Needs attention tile, a tile names a rule the file
-// does not hold or does not name it in its description, a tile's query is not
+// alerts/promql.yaml other than a severity: info notice has no Needs attention
+// tile, a tile names a rule the file does not hold, a notice, or a rule its
+// description does not name, a tile's query is not
 // exactly attentionTile's for its rule, the row's variable does not count
 // exactly those tiles in layout order, a tile is not hidden until its query
 // answers, or any query reads an ALERTS selector that is not one of
@@ -520,6 +521,7 @@ func attentionTile(name, expr string) string {
 func TestDashboardAttentionTilesMirrorEveryShippedRule(t *testing.T) {
 	d := loadDashboard(t)
 	rules := ruleExprs(t, promqlRules)
+	notices := noticeRules(t, promqlRules)
 	for where, expr := range dashboardQueries(&d) {
 		for _, sel := range selectors(bracedVariableRe.ReplaceAllString(expr, "$$v")) {
 			if sel.name != "ALERTS" {
@@ -578,6 +580,9 @@ func TestDashboardAttentionTilesMirrorEveryShippedRule(t *testing.T) {
 			t.Errorf("a tile mirrors %s, which %s does not hold", name, promqlRules)
 			continue
 		}
+		if notices[name] {
+			t.Errorf("%q mirrors %s, a severity: info notice: Needs attention shows only alerts that need action", p.Spec.Title, name)
+		}
 		if want := attentionTile(name, expr); exprs[0] != want {
 			t.Errorf("%q must read exactly\n%s\nso it shows only the picked scheduler's firing %s alerts; it reads\n%s",
 				p.Spec.Title, want, name, exprs[0])
@@ -588,7 +593,7 @@ func TestDashboardAttentionTilesMirrorEveryShippedRule(t *testing.T) {
 		t.Errorf("the row's variable must count exactly its tiles in layout order:\n%s\nit reads\n%s", want, got)
 	}
 	for _, name := range slices.Sorted(maps.Keys(rules)) {
-		if !slices.Contains(mirrored, name) {
+		if !notices[name] && !slices.Contains(mirrored, name) {
 			t.Errorf("%s has no Needs attention tile reading its firing alerts", name)
 		}
 	}

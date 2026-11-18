@@ -53,6 +53,25 @@ func ruleExprs(t *testing.T, path string) map[string]string {
 	return rules
 }
 
+// noticeRules returns the rules in path labelled severity: info.
+func noticeRules(t *testing.T, path string) map[string]bool {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	notices := make(map[string]bool)
+	for _, block := range strings.Split(string(raw), "- alert: ")[1:] {
+		name, rest, _ := strings.Cut(block, "\n")
+		if severityInfoRe.MatchString(rest) {
+			notices[strings.TrimSpace(name)] = true
+		}
+	}
+	return notices
+}
+
+var severityInfoRe = regexp.MustCompile(`(?m)^\s*severity:\s*"?info"?\s*$`)
+
 // seriesNames returns the series an expression reads.
 func seriesNames(expr string) []string {
 	expr = labelMatchersRe.ReplaceAllString(expr, " ")
