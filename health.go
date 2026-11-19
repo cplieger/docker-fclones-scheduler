@@ -8,7 +8,7 @@ import (
 
 	"github.com/cplieger/go/envx"
 	"github.com/cplieger/go/health/v2"
-	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/scheduler/v2"
 )
 
 // healthMarkerPath is the file the daemon mirrors its verdict to; Docker's

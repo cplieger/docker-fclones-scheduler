@@ -7,8 +7,9 @@ import (
 	"time"
 
 	"github.com/cplieger/go/health/v2"
-	"github.com/cplieger/go/scheduler"
-	"github.com/cplieger/go/scheduler/trigger"
+	"github.com/cplieger/go/ownersock"
+	"github.com/cplieger/go/scheduler/v2"
+	"github.com/cplieger/go/scheduler/v2/trigger"
 )
 
 // In the two long-running modes, PID 1 owns every run: the built-in ticker
@@ -19,9 +20,10 @@ import (
 // The queue, socket server, and wire protocol are the scheduler library's
 // trigger broker; this file wires it and owns the log wording.
 
-// socketPath is the daemon's trigger socket. /tmp is per-container tmpfs, so
-// a stale file can only be our own previous life's.
-const socketPath = "/tmp/fclones-wrapper.sock"
+// socketPath is the daemon's trigger socket, in a directory of its own that
+// ownersock creates at mode 0700. /tmp is per-container tmpfs, so a stale
+// file can only be our own previous life's.
+const socketPath = "/tmp/fclones-scheduler/trigger.sock"
 
 // queueCapacity bounds pending requests; a full queue rejects immediately
 // with a clear reason rather than queueing unboundedly.
@@ -53,12 +55,11 @@ type daemon struct {
 // — in built-in mode — drives the interval ticker. Returning an error exits
 // non-zero.
 func runDaemon(ctx context.Context, cfg *config, st *health.Status, rep *reporter, newCmd scheduler.CommandRunner) error {
-	ln, err := trigger.Listen(socketPath)
+	ln, err := ownersock.Listen(ownersock.Config{Path: socketPath})
 	if err != nil {
 		slog.Error("cannot bind trigger socket", "path", socketPath, "error", err)
 		return err
 	}
-	defer func() { _ = os.Remove(socketPath) }()
 
 	stamp := scheduler.NewStamp(stampFile)
 	builtin := cfg.Mode == modeBuiltin

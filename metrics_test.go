@@ -16,11 +16,11 @@ import (
 
 	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/measure/v2"
-	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/scheduler/v2"
 	"github.com/cplieger/go/slogx/capture"
 )
 
-func TestMetricsListenAddrTrimsInvisibleEdges(t *testing.T) {
+func TestLoadConfigReadsTheOpsSettings(t *testing.T) {
 	tests := []struct{ name, raw, want string }{
 		{name: "leading space", raw: " :9469", want: ":9469"},
 		{name: "zero-width edges", raw: "\u200b127.0.0.1:9469\ufeff", want: "127.0.0.1:9469"},
@@ -29,25 +29,31 @@ func TestMetricsListenAddrTrimsInvisibleEdges(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			setCleanFclonesEnv(t)
+			t.Setenv("FCLONES_SCAN_PATHS", "/data")
 			t.Setenv("METRICS_LISTEN_ADDR", tt.raw)
-			if got := metricsListenAddr(); got != tt.want {
-				t.Errorf("metricsListenAddr() with %q = %q, want %q", tt.raw, got, tt.want)
+			cfg, err := loadConfig()
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			if cfg.MetricsListenAddr != tt.want {
+				t.Errorf("MetricsListenAddr with %q = %q, want %q", tt.raw, cfg.MetricsListenAddr, tt.want)
 			}
 		})
 	}
 }
 
-// TestServeMetricsLogsStraysButNotScrapes pins the listener's access log: a
+// TestServeOpsLogsStraysButNotScrapes pins the listener's access log: a
 // scrape and a probe log at Debug, any other path one INFO "http" line.
-func TestServeMetricsLogsStraysButNotScrapes(t *testing.T) {
+func TestServeOpsLogsStraysButNotScrapes(t *testing.T) {
 	rec := capture.Default(t)
 	st := health.NewStatus()
 	cfg := &config{Action: actionLink}
 	reg, _ := newReporter(cfg, st)
 	addr := freeAddr(t)
-	stop, err := serveMetrics(t.Context(), addr, reg, newHealthz(st, cfg))
+	stop, err := serveOps(t.Context(), withOps(cfg, addr), reg, newHealthz(st, cfg))
 	if err != nil {
-		t.Fatalf("serveMetrics(%q) error = %v", addr, err)
+		t.Fatalf("serveOps(%q) error = %v", addr, err)
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	for _, path := range []string{"/metrics", "/healthz", "/stray"} {
@@ -96,14 +102,14 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
-func TestServeMetricsServesThePage(t *testing.T) {
+func TestServeOpsServesThePage(t *testing.T) {
 	addr := freeAddr(t)
 	st := health.NewStatus()
 	cfg := &config{Action: actionLink}
 	reg, _ := newReporter(cfg, st)
-	stop, err := serveMetrics(t.Context(), addr, reg, newHealthz(st, cfg))
+	stop, err := serveOps(t.Context(), withOps(cfg, addr), reg, newHealthz(st, cfg))
 	if err != nil {
-		t.Fatalf("serveMetrics(%q) error = %v", addr, err)
+		t.Fatalf("serveOps(%q) error = %v", addr, err)
 	}
 	defer stop()
 	client := &http.Client{Timeout: 5 * time.Second}

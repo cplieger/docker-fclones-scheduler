@@ -12,7 +12,7 @@ import (
 
 	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/measure/v2"
-	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/scheduler/v2"
 )
 
 // --- Main ---
@@ -97,11 +97,11 @@ func newReporter(cfg *config, st *health.Status) (*measure.Registry, *reporter) 
 // container at once instead of leaving it scanning with no page.
 func serve(ctx context.Context, cfg *config, st *health.Status) error {
 	reg, rep := newReporter(cfg, st)
-	stopMetrics, err := serveMetrics(ctx, cfg.MetricsListenAddr, reg, newHealthz(st, cfg))
+	stopOps, err := serveOps(ctx, cfg, reg, newHealthz(st, cfg))
 	if err != nil {
 		return err
 	}
-	defer stopMetrics()
+	defer stopOps()
 
 	switch cfg.Mode {
 	case modeOnce:

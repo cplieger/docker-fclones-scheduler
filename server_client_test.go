@@ -7,18 +7,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/go/scheduler/trigger"
+	"github.com/cplieger/go/ownersock"
+	"github.com/cplieger/go/scheduler/v2/trigger"
 )
 
 // startTestDaemon binds a trigger server on a per-test socket with a fake
 // executor that finishes every request with out. It returns the socket path.
 func startTestDaemon(t *testing.T, out trigger.Result) string {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "trigger.sock")
+	sock := filepath.Join(t.TempDir(), "d", "trigger.sock")
 
-	ln, err := trigger.Listen(sock)
+	ln, err := ownersock.Listen(ownersock.Config{Path: sock})
 	if err != nil {
-		t.Fatalf("trigger.Listen: %v", err)
+		t.Fatalf("ownersock.Listen: %v", err)
 	}
 	q := trigger.NewQueue[struct{}](queueCapacity)
 	srv := &trigger.Server[struct{}]{Queue: q}
@@ -74,10 +75,10 @@ func TestRunClient_NoDaemonExitsOne(t *testing.T) {
 }
 
 func TestRunClient_QueueClosedExitsOne(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "trigger.sock")
-	ln, err := trigger.Listen(sock)
+	sock := filepath.Join(t.TempDir(), "d", "trigger.sock")
+	ln, err := ownersock.Listen(ownersock.Config{Path: sock})
 	if err != nil {
-		t.Fatalf("trigger.Listen: %v", err)
+		t.Fatalf("ownersock.Listen: %v", err)
 	}
 	q := trigger.NewQueue[struct{}](queueCapacity)
 	q.Close() // shutting down: submissions rejected with a reason

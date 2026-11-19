@@ -13,11 +13,11 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/cplieger/docker-fclones-scheduler/internal/args"
 	"github.com/cplieger/go/envx"
-	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/httpserver/v2"
+	"github.com/cplieger/go/scheduler/v2"
 	"github.com/cplieger/go/slogx"
 )
 
@@ -29,11 +29,14 @@ type config struct {
 	Args       string
 	Action     action
 	ActionArgs string
-	// MetricsListenAddr is METRICS_LISTEN_ADDR with invisible edge bytes
-	// trimmed; empty opens no listener.
+	// MetricsListenAddr is METRICS_LISTEN_ADDR read as httpserver.ListenAddr reads it;
+	// empty opens no listener.
 	MetricsListenAddr string
-	Interval          time.Duration
-	PhaseTimeout      time.Duration
+	// AllowedHosts are ALLOWED_HOSTS' entries for the ops listener; none
+	// serves every Host.
+	AllowedHosts []string
+	Interval     time.Duration
+	PhaseTimeout time.Duration
 
 	// Mode is derived from SCAN_INTERVAL (see parseInterval); Interval is
 	// consulted only in modeBuiltin.
@@ -215,18 +218,9 @@ func loadConfig() (config, error) {
 		Action:            parsedAction,
 		ActionArgs:        actionArgs,
 		PhaseTimeout:      scanTimeout,
-		MetricsListenAddr: metricsListenAddr(),
+		MetricsListenAddr: httpserver.ListenAddr(os.Getenv("METRICS_LISTEN_ADDR"), ""),
+		AllowedHosts:      strings.Split(os.Getenv("ALLOWED_HOSTS"), ","),
 	}, nil
-}
-
-// metricsListenAddr reads METRICS_LISTEN_ADDR with whitespace and invisible
-// runes trimmed from its edges: an untrimmed " :9469" fails as a host lookup
-// the operator cannot see. Nothing else is checked; the bind is the check.
-func metricsListenAddr() string {
-	return strings.TrimFunc(os.Getenv("METRICS_LISTEN_ADDR"), func(r rune) bool {
-		return unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) ||
-			unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r)
-	})
 }
 
 // parseInterval interprets SCAN_INTERVAL into the built-in scan interval and

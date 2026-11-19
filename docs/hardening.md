@@ -6,7 +6,7 @@ This page covers what the container accepts and refuses, a hardened compose exam
 
 The image opens no port unless you set `METRICS_LISTEN_ADDR`. Then it serves `GET /metrics` and `GET /healthz` on that address, with no login. Any other path answers 404 and any other method 405. Keep the port on your network, and publish it only to the machine that scrapes or probes it. The page reads nothing from a request and changes nothing. A slow client is cut off after 10 seconds of reading and 30 of writing.
 
-The `scan` command reaches the main process through a socket at `/tmp/fclones-wrapper.sock`, which only the container's own user can open and only from inside the container. The image runs as `nonroot`, UID 65532, unless `user:` sets another user, on a distroless base with no shell and no package manager.
+The `scan` command reaches the main process through a socket at `/tmp/fclones-scheduler/trigger.sock`, in a directory only the container's own user can open. The server checks the user of every connection, so a command run as another user, root included, is refused. Run `docker exec --user` with the container's user. The image runs as `nonroot`, UID 65532, unless `user:` sets another user, on a distroless base with no shell and no package manager.
 
 `FCLONES_ACTION` must be `group`, `link`, `remove` or `dedupe`. `--transform`, `--in-place` and `--no-copy` are refused in `FCLONES_ARGS`, `FCLONES_ACTION_ARGS` and `FCLONES_SCAN_PATHS`, because `--transform` runs a command and the other two change files in place. Set `ALLOW_UNSAFE_ARGS=true` only when you need one of these options, such as `--transform` for content-aware deduplication.
 

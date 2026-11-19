@@ -17,7 +17,7 @@ import (
 
 	"github.com/cplieger/docker-fclones-scheduler/internal/capbuf"
 	"github.com/cplieger/docker-fclones-scheduler/internal/parsing"
-	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/scheduler/v2"
 	"pgregory.net/rapid"
 )
 

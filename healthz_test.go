@@ -32,18 +32,18 @@ func getHealthz(t *testing.T, h http.Handler) (int, healthzBody) {
 	return rec.Code, body
 }
 
-// TestServeMetricsServesHealthz pins the route on METRICS_LISTEN_ADDR: GET and
+// TestServeOpsServesHealthz pins the route on METRICS_LISTEN_ADDR: GET and
 // HEAD answer 200 {"status":"ok"} after a good run, 503 with one reason after
 // a failed one, and any other method gets 405.
-func TestServeMetricsServesHealthz(t *testing.T) {
+func TestServeOpsServesHealthz(t *testing.T) {
 	st := health.NewStatus()
 	cfg := &config{Mode: modeBuiltin, Interval: time.Hour, PhaseTimeout: 30 * time.Minute}
 	addr := freeAddr(t)
 	ctx, cancel := context.WithCancel(t.Context())
-	stop, err := serveMetrics(ctx, addr, measure.NewRegistry(metricsPrefix), newHealthz(st, cfg))
+	stop, err := serveOps(ctx, withOps(cfg, addr), measure.NewRegistry(metricsPrefix), newHealthz(st, cfg))
 	if err != nil {
 		cancel()
-		t.Fatalf("serveMetrics(%q) error = %v", addr, err)
+		t.Fatalf("serveOps(%q) error = %v", addr, err)
 	}
 	t.Cleanup(func() {
 		cancel()
@@ -192,4 +192,11 @@ func TestHealthzAgreesWithTheHealthSubcommand(t *testing.T) {
 			})
 		})
 	}
+}
+
+// withOps is cfg with its ops listener on addr.
+func withOps(cfg *config, addr string) *config {
+	c := *cfg
+	c.MetricsListenAddr = addr
+	return &c
 }

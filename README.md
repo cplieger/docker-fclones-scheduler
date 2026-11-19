@@ -78,6 +78,7 @@ Settings are environment variables, read once at start, so recreate the containe
 | `SCAN_TIMEOUT` | Longest time the scan and the action may each run before the run is stopped and fails. `0` means no limit | `12h` |
 | `LOG_LEVEL` | `debug`, `info`, `warn` or `error`. Any other value means `info` | `info` |
 | `METRICS_LISTEN_ADDR` | Address for a Prometheus metrics page and a health check, for example `:9469`. Empty opens no port | _(unset)_ |
+| `ALLOWED_HOSTS` | Comma-separated `Host` names or IPs that port serves, such as `fclones,192.0.2.10`. Unset serves every `Host`. A request from the container itself is always served | _(unset)_ |
 
 | Mount | Description |
 | --- | --- |
@@ -88,7 +89,7 @@ The image publishes no port. With `METRICS_LISTEN_ADDR` set, publish the port it
 
 ## Security
 
-The image opens no port unless you set `METRICS_LISTEN_ADDR`, which serves only `/metrics` and `/healthz`, with no login, so keep that port on your network. Another program can start a scan with `docker exec fclones /app/wrapper scan`. That command talks to the app through a socket file inside the container, which only the container's own user can open. The container runs as the user that `user:` names, on a distroless base with no shell. Without a `user:` line it runs as UID 65532.
+The image opens no port unless you set `METRICS_LISTEN_ADDR`, which serves only `/metrics` and `/healthz`, with no login, so keep that port on your network. Another program can start a scan with `docker exec fclones /app/wrapper scan`. That command talks to the app through a socket file inside the container, which only the container's own user can open, so run it as that user: `docker exec --user root` is refused. The container runs as the user that `user:` names, on a distroless base with no shell. Without a `user:` line it runs as UID 65532.
 
 `FCLONES_ACTION` must be one of the four actions. The fclones options that run a command or change a file in place are refused unless `ALLOW_UNSAFE_ARGS` is `true`. Leave it `false` unless you need one of them, such as `--transform`. Options reach fclones as a list, with no shell to expand them. [Security](docs/hardening.md) has a hardened compose example and what the image contains.
 
