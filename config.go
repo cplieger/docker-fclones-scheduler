@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/cplieger/docker-fclones-scheduler/internal/args"
-	"github.com/cplieger/go/envx"
+	"github.com/cplieger/go/envx/v2"
 	"github.com/cplieger/go/httpserver/v2"
 	"github.com/cplieger/go/scheduler/v2"
 	"github.com/cplieger/go/slogx"
