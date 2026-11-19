@@ -16,7 +16,7 @@ require (
 )
 
 require (
-	github.com/cplieger/go/filesafe v1.2.0-dev.1 // indirect
+	github.com/cplieger/go/filesafe v1.2.0-dev.2 // indirect
 	github.com/cplieger/go/pathinside v1.1.0 // indirect
 	github.com/cplieger/go/ssrf v1.1.0 // indirect
 	github.com/cplieger/go/urlform v1.2.0 // indirect
