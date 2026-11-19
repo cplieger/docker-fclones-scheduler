@@ -4,7 +4,7 @@ This page explains what happens during a run, how the schedule survives a restar
 
 ## One process runs every scan
 
-The container's main process runs every scan, whichever mode `SCAN_INTERVAL` picks. Scheduled scans and scans started with `docker exec fclones /app/wrapper scan` wait in one queue and run strictly in order, so two scans never run at the same time. The queue holds 16 requests, and a request that arrives when it is full is refused at once. The `scan` command talks to the main process through a socket at `/tmp/fclones-wrapper.sock` that only the container's own user can open.
+The container's main process runs every scan, whichever mode `SCAN_INTERVAL` picks. Scheduled scans and scans started with `docker exec fclones /app/wrapper scan` wait in one queue and run strictly in order, so two scans never run at the same time. The queue holds 16 requests, and a request that arrives when it is full is refused at once. The `scan` command talks to the main process through a socket at `/tmp/fclones-scheduler/trigger.sock` that only the container's own user can open.
 
 Because the main process runs every scan, all scan output and each run's `run finished` record reach the container log in every mode. The same alert rules therefore work whether the container schedules itself or an outside scheduler starts it. The same process serves the optional metrics page, so it counts every run too.
 
