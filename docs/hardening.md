@@ -30,7 +30,7 @@ services:
       - "/tmp:size=128m,mode=1777,noexec,nosuid,nodev"
 ```
 
-The `/tmp` tmpfs holds the trigger socket and the home folder the image sets with `HOME=/tmp`. Under a read-only root without it, the container cannot open the socket and stops at start, unless `SCAN_INTERVAL=0`. The health file goes to `/dev/shm`, which stays writable under a read-only root, so health needs no tmpfs of its own. If `/dev/shm` cannot be written, as under `ipc: none`, the healthcheck passes and the startup log says so, while `/healthz` on the metrics listener still gives the true answer.
+The `/tmp` tmpfs holds the trigger socket, its lock file `trigger.sock.lock` beside it, and the home folder the image sets with `HOME=/tmp`. Under a read-only root without it, the container cannot open the socket and stops at start, unless `SCAN_INTERVAL=0`. The health file goes to `/dev/shm`, which stays writable under a read-only root, so health needs no tmpfs of its own. If `/dev/shm` cannot be written, as under `ipc: none`, the healthcheck passes and the startup log says so, while `/healthz` on the metrics listener still gives the true answer.
 
 ## What the image contains
 
