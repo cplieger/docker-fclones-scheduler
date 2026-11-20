@@ -51,6 +51,7 @@ type runMetrics struct {
 	filesProcessed    *measure.Counter
 	reclaimedBytes    *measure.Counter
 	deadline          *measure.Gauge
+	next              *measure.Gauge
 	// gap is the health lease: a success dates the deadline this far ahead.
 	gap time.Duration
 }
@@ -90,11 +91,13 @@ func newRunMetrics(reg *measure.Registry, cfg *config, last scheduler.RunRecord,
 			"Bytes the actions reclaimed, from fclones' rounded summary; an upper bound for dedupe.", measure.UnitBytes),
 		deadline: measure.NewGauge("run_deadline_timestamp_seconds",
 			"Unix time by which the next successful run is due; 0 in external and run-once modes and with SCAN_TIMEOUT=0.", measure.UnitSeconds),
+		next: measure.NewGauge("next_run_timestamp_seconds",
+			"Unix time the interval scheduler next starts a scan; 0 in external and run-once modes.", measure.UnitSeconds),
 		gap: healthLease(cfg.Mode, cfg.Interval, cfg.PhaseTimeout),
 	}
 	reg.MustRegister(m.runs, m.lastResult, m.phaseDuration, m.info, m.lastOK, m.lastRun,
 		m.lastSuccess, m.groups, m.duplicateFiles, m.redundantBytes, m.summaryRecognized,
-		m.filesProcessed, m.reclaimedBytes, m.deadline)
+		m.filesProcessed, m.reclaimedBytes, m.deadline, m.next)
 	for _, r := range runResults {
 		m.runs.Add(0, string(r))
 		m.lastResult.Set(0, string(r))
@@ -115,6 +118,11 @@ func newRunMetrics(reg *measure.Registry, cfg *config, last scheduler.RunRecord,
 	}
 	m.setDeadline(lastSuccess)
 	return m
+}
+
+// setNextRun records at as the time the interval scheduler next starts a scan.
+func (m *runMetrics) setNextRun(at time.Time) {
+	m.next.Set(unixSeconds(at))
 }
 
 // setDeadline dates the run deadline one gap after a success at

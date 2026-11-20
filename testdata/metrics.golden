@@ -56,3 +56,6 @@ fclones_scheduler_action_summary_recognized 0
 # HELP fclones_scheduler_run_deadline_timestamp_seconds Unix time by which the next successful run is due; 0 in external and run-once modes and with SCAN_TIMEOUT=0.
 # TYPE fclones_scheduler_run_deadline_timestamp_seconds gauge
 fclones_scheduler_run_deadline_timestamp_seconds 1794720600
+# HELP fclones_scheduler_next_run_timestamp_seconds Unix time the interval scheduler next starts a scan; 0 in external and run-once modes.
+# TYPE fclones_scheduler_next_run_timestamp_seconds gauge
+fclones_scheduler_next_run_timestamp_seconds 0

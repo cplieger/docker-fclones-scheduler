@@ -369,3 +369,75 @@ func TestDaemonRecordOutcomeStampWriteFailureWarns(t *testing.T) {
 		t.Errorf("stamp write failure logged %q, want a WARN carrying \"cannot record the scan outcome\"", got)
 	}
 }
+
+// nextRunLog records every time startTicker reports as the next scheduled run.
+type nextRunLog struct {
+	mu   sync.Mutex
+	runs []time.Time
+}
+
+func (l *nextRunLog) report(next time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.runs = append(l.runs, next)
+}
+
+func (l *nextRunLog) snapshot() []time.Time {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.runs)
+}
+
+// TestStartTickerReportsTheNextRun pins the next-run report the Next run tile
+// reads: a due startup scan reports now, then each arm of the interval loop
+// reports the time its scan starts; a scan that is not due reports only the
+// loop's first arm; external mode reports nothing.
+func TestStartTickerReportsTheNextRun(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name             string
+		enabled, due     bool
+		boot, afterOneHr []time.Duration
+	}{
+		{
+			name: "startup due", enabled: true, due: true,
+			boot: []time.Duration{0, time.Hour}, afterOneHr: []time.Duration{0, time.Hour, 2 * time.Hour},
+		},
+		{
+			name: "startup not due", enabled: true,
+			boot: []time.Duration{time.Hour}, afterOneHr: []time.Duration{time.Hour, 2 * time.Hour},
+		},
+		{name: "external mode"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				log := &nextRunLog{}
+				d := &daemon{
+					queue: trigger.NewQueue[struct{}](queueCapacity), nextRun: log.report,
+					stamp: scheduler.NewStamp(filepath.Join(t.TempDir(), "last-run")),
+				}
+				startRecordingExecutor(t, d)
+				t0 := time.Now()
+				at := func(ds []time.Duration) []time.Time {
+					out := make([]time.Time, len(ds))
+					for i, d := range ds {
+						out[i] = t0.Add(d)
+					}
+					return out
+				}
+
+				startTicker(t.Context(), d, time.Hour, tt.enabled, tt.due)
+				synctest.Wait()
+				if got, want := log.snapshot(), at(tt.boot); !slices.EqualFunc(got, want, time.Time.Equal) {
+					t.Errorf("next runs reported at boot = %v, want %v", got, want)
+				}
+
+				synctest.Sleep(time.Hour + time.Minute)
+				if got, want := log.snapshot(), at(tt.afterOneHr); !slices.EqualFunc(got, want, time.Time.Equal) {
+					t.Errorf("next runs reported after one interval = %v, want %v", got, want)
+				}
+			})
+		})
+	}
+}

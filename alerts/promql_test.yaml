@@ -470,3 +470,28 @@ tests:
         exp_samples:
           - labels: '{result="success"}'
             value: 3
+
+  # The dashboard's Next run tile, with $instance filled in.
+  # TestDashboardQueriesAreTheTestedOnes fails when the two differ.
+  - name: "Next run tile: the scheduled start in milliseconds, on the picked instance only"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_next_run_timestamp_seconds{job="fclones", instance="fc:9469"}'
+        values: "1794720600x10"
+      - series: 'fclones_scheduler_next_run_timestamp_seconds{job="fclones", instance="other:9469"}'
+        values: "1794000000x10"
+    promql_expr_test:
+      - expr: &next_run_tile '(fclones_scheduler_next_run_timestamp_seconds{instance="fc:9469"} > 0) * 1000'
+        eval_time: 5m
+        exp_samples:
+          - labels: '{instance="fc:9469", job="fclones"}'
+            value: 1794720600000
+  - name: "Next run tile: external and run-once modes serve 0, which shows no value"
+    interval: 1m
+    input_series:
+      - series: 'fclones_scheduler_next_run_timestamp_seconds{job="fclones", instance="fc:9469"}'
+        values: "0x10"
+    promql_expr_test:
+      - expr: *next_run_tile
+        eval_time: 5m
+        exp_samples: []
