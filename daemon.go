@@ -48,6 +48,8 @@ type daemon struct {
 	// stamp is the restart-surviving last-run record on /cache.
 	stamp  *scheduler.Stamp
 	newCmd scheduler.CommandRunner
+	// nextRun is told the time the interval scheduler next starts a scan.
+	nextRun func(next time.Time)
 }
 
 // runDaemon runs the two long-running modes (built-in and external): binds
@@ -72,6 +74,7 @@ func runDaemon(ctx context.Context, cfg *config, st *health.Status, rep *reporte
 		cfg:      cfg,
 		stamp:    stamp,
 		newCmd:   newCmd,
+		nextRun:  rep.metrics.setNextRun,
 	}
 
 	executorDone := make(chan struct{})
@@ -164,6 +167,7 @@ func startTicker(ctx context.Context, d *daemon, interval time.Duration, enabled
 	go func() {
 		defer close(done)
 		if startupDue {
+			d.reportNextRun(time.Now())
 			d.tick(triggerStartup)
 		}
 		scheduler.RunLoop(ctx, func(context.Context) {
@@ -174,9 +178,17 @@ func startTicker(ctx context.Context, d *daemon, interval time.Duration, enabled
 			// Phase the first tick from the recorded previous scan, so a
 			// restart neither adds a scan nor delays the cadence.
 			FirstDelay: d.stamp.Remaining(interval, time.Now(), scheduler.CountFailed),
+			Scheduled:  d.reportNextRun,
 		})
 	}()
 	return done
+}
+
+// reportNextRun tells nextRun, when set, the time the next scan starts.
+func (d *daemon) reportNextRun(next time.Time) {
+	if d.nextRun != nil {
+		d.nextRun(next)
+	}
 }
 
 // tick submits one scheduled run and waits for its result. A rejected

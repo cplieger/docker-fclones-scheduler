@@ -387,3 +387,18 @@ func TestRunSetsEverySeriesToItsRecord(t *testing.T) {
 		})
 	}
 }
+
+// TestNextRunGauge pins next_run_timestamp_seconds: 0 until the interval
+// scheduler reports a run, then the reported time in Unix seconds.
+func TestNextRunGauge(t *testing.T) {
+	start := time.Date(2026, 11, 12, 3, 0, 0, 0, time.UTC)
+	reg := measure.NewRegistry(metricsPrefix)
+	m := newRunMetrics(reg, &deadlineConfig, scheduler.RunRecord{}, false, start)
+	if got := gauge(t, reg, "next_run_timestamp_seconds"); got != 0 {
+		t.Errorf("next_run_timestamp_seconds at start = %v, want 0 until the scheduler arms", got)
+	}
+	m.setNextRun(start.Add(6 * time.Hour))
+	if got, want := gauge(t, reg, "next_run_timestamp_seconds"), float64(start.Add(6*time.Hour).Unix()); got != want {
+		t.Errorf("next_run_timestamp_seconds after setNextRun(start+6h) = %v, want %v", got, want)
+	}
+}

@@ -910,6 +910,7 @@ func TestDashboardQueriesAreTheTestedOnes(t *testing.T) {
 		{"fclones Scheduler scrape", "down_tile", "[::1]:9469"},
 		{"Space freed", "space_freed", "fc:9469"},
 		{"Runs by result", "runs_by_result", "fc:9469"},
+		{"Next run", "next_run_tile", "fc:9469"},
 	} {
 		t.Run(c.anchor, func(t *testing.T) {
 			exprs := panelExprs(panelTitled(t, &d, c.title))
