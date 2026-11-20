@@ -5,10 +5,10 @@ go 1.27.4
 require (
 	github.com/cplieger/go/envx/v2 v2.0.0-dev.1
 	github.com/cplieger/go/health/v2 v2.0.0
-	github.com/cplieger/go/httpserver/v2 v2.0.0-dev.11
+	github.com/cplieger/go/httpserver/v2 v2.0.0-dev.12
 	github.com/cplieger/go/jsonx v1.1.0
 	github.com/cplieger/go/measure/v2 v2.1.0-dev.2
-	github.com/cplieger/go/ownersock v1.0.0-dev.5
+	github.com/cplieger/go/ownersock v1.0.0-dev.6
 	github.com/cplieger/go/scheduler/v2 v2.0.0-dev.1
 	github.com/cplieger/go/slogx v1.1.0
 	github.com/cplieger/go/textsafe v1.1.0
